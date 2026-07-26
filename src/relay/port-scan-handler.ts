@@ -18,7 +18,8 @@ type ProcNetSocket = {
   port: number
   host: string
   inode: number
-  uid: number
+  /** Absent when /proc uid field is malformed — port still surfaces without ownership. */
+  uid?: number
 }
 
 const SYSTEM_PORTS_TO_EXCLUDE = new Set([22])
@@ -218,10 +219,9 @@ export function parseProcNetListeningSockets(content: string): ProcNetSocket[] {
       continue
     }
 
-    const uid = Number.parseInt(fields[7], 10)
-    if (Number.isNaN(uid) || uid < 0) {
-      continue
-    }
+    // Why: degrade uid like pid — keep the listen row when ownership metadata is unparseable.
+    const parsedUid = Number.parseInt(fields[7], 10)
+    const uid = Number.isNaN(parsedUid) || parsedUid < 0 ? undefined : parsedUid
 
     results.push({ port: parsed.port, host: parsed.host, inode, uid })
   }
@@ -255,10 +255,13 @@ export function resolveUsernameForUid(uid: number, uidUsernames: Map<number, str
 }
 
 export function ownershipFieldsForSocket(
-  uid: number,
+  uid: number | undefined,
   connectingUid: number | undefined,
   uidUsernames: Map<number, string>
 ): Pick<DetectedPort, 'uid' | 'username' | 'ownedByConnectingUser'> {
+  if (uid === undefined) {
+    return {}
+  }
   return {
     uid,
     username: resolveUsernameForUid(uid, uidUsernames),

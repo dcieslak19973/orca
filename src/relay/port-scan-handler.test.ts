@@ -90,14 +90,16 @@ describe('parseProcNetListeningSockets', () => {
     ])
   })
 
-  it('skips rows with invalid uid or inode', () => {
+  it('keeps listen rows with invalid uid but drops invalid inode', () => {
     const content = [
       '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
       '   0: 0100007F:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  notuid     0 12345 1',
       '   1: 0100007F:0BB9 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 0 1'
     ].join('\n')
 
-    expect(parseProcNetListeningSockets(content)).toEqual([])
+    expect(parseProcNetListeningSockets(content)).toEqual([
+      { host: '127.0.0.1', port: 3000, inode: 12345, uid: undefined }
+    ])
   })
 })
 
@@ -131,6 +133,8 @@ describe('parsePasswdUidUsernames / ownershipFieldsForSocket', () => {
       uid: 1000,
       username: '1000'
     })
+    // Why: unparseable /proc uid → surface the port without ownership metadata.
+    expect(ownershipFieldsForSocket(undefined, 1000, empty)).toEqual({})
   })
 })
 
