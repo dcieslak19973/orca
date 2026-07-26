@@ -1108,11 +1108,13 @@ function normalizeSshTarget(t: SshTarget): SshTarget {
   const currentGracePeriodSeconds = target.relayGracePeriodSeconds
   const legacyGracePeriodSeconds = target.remoteWorkspaceSyncGracePeriodSeconds
   const systemSshConnectionReuse = target.systemSshConnectionReuse
+  const runGitLabCliOnHost = target.runGitLabCliOnHost
   // Why: remote sync now follows the SSH relay lifecycle, so retired per-target sync/grace fields are dropped at disk load.
   delete target.remoteWorkspaceSyncEnabled
   delete target.remoteWorkspaceSyncGracePeriodSeconds
   delete target.relayGracePeriodSeconds
   delete target.systemSshConnectionReuse
+  delete target.runGitLabCliOnHost
   // Why: prefer the synced grace over stale relayGracePeriodSeconds so a user's "unlimited" (0) survives migration.
   const relayGracePeriodSeconds =
     legacySyncEnabled === true && typeof legacyGracePeriodSeconds === 'number'
@@ -1131,6 +1133,10 @@ function normalizeSshTarget(t: SshTarget): SshTarget {
   }
   if (systemSshConnectionReuse === false) {
     normalized.systemSshConnectionReuse = false
+  }
+  // Why: opt-in only — omit the field when false so persisted targets stay compact and default-off.
+  if (runGitLabCliOnHost === true) {
+    normalized.runGitLabCliOnHost = true
   }
   return normalized
 }
@@ -6213,6 +6219,9 @@ export class Store {
     }
     if (!Object.hasOwn(normalized, 'systemSshConnectionReuse')) {
       delete target.systemSshConnectionReuse
+    }
+    if (!Object.hasOwn(normalized, 'runGitLabCliOnHost')) {
+      delete target.runGitLabCliOnHost
     }
     this.scheduleSave()
     return { ...target }

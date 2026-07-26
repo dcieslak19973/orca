@@ -54,6 +54,7 @@ export function buildSshTargetSavePayload(form: EditingTarget): SshTargetSavePay
   const proxyCommand = form.proxyCommand.trim() || undefined
   const jumpHost = form.jumpHost.trim() || undefined
   const systemSshConnectionReuse = form.systemSshConnectionReuse ? undefined : false
+  const runGitLabCliOnHost = form.runGitLabCliOnHost ? true : undefined
 
   const target: Omit<SshTarget, 'id'> = {
     label: form.label.trim() || (username ? `${username}@${host}` : configHost),
@@ -65,7 +66,8 @@ export function buildSshTargetSavePayload(form: EditingTarget): SshTargetSavePay
     ...(identityFile ? { identityFile } : {}),
     ...(proxyCommand ? { proxyCommand } : {}),
     ...(jumpHost ? { jumpHost } : {}),
-    ...(systemSshConnectionReuse === false ? { systemSshConnectionReuse } : {})
+    ...(systemSshConnectionReuse === false ? { systemSshConnectionReuse } : {}),
+    ...(runGitLabCliOnHost ? { runGitLabCliOnHost } : {})
   }
 
   return {
@@ -80,6 +82,7 @@ export function buildSshTargetSavePayload(form: EditingTarget): SshTargetSavePay
         proxyCommand,
         jumpHost,
         systemSshConnectionReuse,
+        runGitLabCliOnHost,
         source: 'manual'
       }
     }
