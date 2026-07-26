@@ -41,11 +41,13 @@ describe('glabExecFileAsync SSH execution host routing', () => {
 
   it('uses remote result when tryGlabOnSshHost succeeds', async () => {
     tryGlabOnSshHostMock.mockResolvedValueOnce({ stdout: 'remote-mr', stderr: '' })
+    const controller = new AbortController()
 
     await expect(
       glabExecFileAsync(['mr', 'view', '1'], {
         sshTargetId: 'ssh-1',
-        remoteCwd: '/remote/repo'
+        remoteCwd: '/remote/repo',
+        signal: controller.signal
       })
     ).resolves.toEqual({ stdout: 'remote-mr', stderr: '' })
 
@@ -53,7 +55,8 @@ describe('glabExecFileAsync SSH execution host routing', () => {
       ['mr', 'view', '1'],
       expect.objectContaining({
         sshTargetId: 'ssh-1',
-        remoteCwd: '/remote/repo'
+        remoteCwd: '/remote/repo',
+        signal: controller.signal
       })
     )
     expect(execFileMock).not.toHaveBeenCalled()

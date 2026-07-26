@@ -14,7 +14,11 @@ type GlabRemoteExecResult = {
 }
 
 type MuxLike = {
-  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+  request: (
+    method: string,
+    params: Record<string, unknown>,
+    options?: { signal?: AbortSignal; timeoutMs?: number }
+  ) => Promise<unknown>
 }
 
 export type GlabSshExecutionDeps = {
@@ -99,14 +103,19 @@ async function requestRemoteGlab(
     remoteCwd?: string
     timeout?: number
     env?: NodeJS.ProcessEnv
+    signal?: AbortSignal
   }
 ): Promise<{ stdout: string; stderr: string }> {
-  const result = (await mux.request(GLAB_EXEC_METHOD, {
-    args,
-    ...(options.remoteCwd ? { cwd: options.remoteCwd } : {}),
-    ...(typeof options.timeout === 'number' ? { timeoutMs: options.timeout } : {}),
-    ...(options.env ? { env: options.env } : {})
-  })) as GlabRemoteExecResult
+  const result = (await mux.request(
+    GLAB_EXEC_METHOD,
+    {
+      args,
+      ...(options.remoteCwd ? { cwd: options.remoteCwd } : {}),
+      ...(typeof options.timeout === 'number' ? { timeoutMs: options.timeout } : {}),
+      ...(options.env ? { env: options.env } : {})
+    },
+    options.signal ? { signal: options.signal } : undefined
+  )) as GlabRemoteExecResult
 
   if (typeof result.spawnError === 'string' && result.spawnError.length > 0) {
     throwRemoteGlabFailure(result)
@@ -135,6 +144,7 @@ export async function tryGlabOnSshHost(
     remoteCwd?: string
     timeout?: number
     env?: NodeJS.ProcessEnv
+    signal?: AbortSignal
   }
 ): Promise<{ stdout: string; stderr: string } | null> {
   const target = deps.getTarget(options.sshTargetId)

@@ -78,12 +78,35 @@ describe('tryGlabOnSshHost', () => {
       })
     ).resolves.toEqual({ stdout: '{"iid":1}', stderr: '' })
 
-    expect(requestA).toHaveBeenCalledWith(GLAB_EXEC_METHOD, {
-      args: ['mr', 'view', '1', '--output', 'json'],
-      cwd: '/home/user/repo',
-      timeoutMs: 12_000,
-      env: { GITLAB_HOST: 'gitlab.example.com' }
-    })
+    expect(requestA).toHaveBeenCalledWith(
+      GLAB_EXEC_METHOD,
+      {
+        args: ['mr', 'view', '1', '--output', 'json'],
+        cwd: '/home/user/repo',
+        timeoutMs: 12_000,
+        env: { GITLAB_HOST: 'gitlab.example.com' }
+      },
+      undefined
+    )
+  })
+
+  it('forwards AbortSignal to the mux request so callers can cancel remote glab', async () => {
+    targets.set('host-a', { runGitLabCliOnHost: true })
+    const controller = new AbortController()
+    requestA.mockResolvedValueOnce({ stdout: 'ok', stderr: '', exitCode: 0 })
+
+    await expect(
+      tryGlabOnSshHost(['auth', 'status'], {
+        sshTargetId: 'host-a',
+        signal: controller.signal
+      })
+    ).resolves.toEqual({ stdout: 'ok', stderr: '' })
+
+    expect(requestA).toHaveBeenCalledWith(
+      GLAB_EXEC_METHOD,
+      { args: ['auth', 'status'] },
+      { signal: controller.signal }
+    )
   })
 
   it('falls back to local and caches method-not-found per mux (no repeated probes)', async () => {

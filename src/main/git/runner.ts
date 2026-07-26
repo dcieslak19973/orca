@@ -1536,7 +1536,8 @@ export async function glabExecFileAsync(
       sshTargetId: options.sshTargetId,
       remoteCwd: options.remoteCwd,
       timeout: options.timeout,
-      env: options.env
+      env: options.env,
+      signal: options.signal
     })
     if (remote) {
       return remote
