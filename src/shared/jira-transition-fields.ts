@@ -59,6 +59,11 @@ export function transitionAllowedValueLabel(value: JiraCreateFieldAllowedValue):
   return value.name ?? value.value ?? value.id ?? 'Option'
 }
 
+/** Stable select value / draft key — keep in sync with option `value` and draft seed. */
+export function transitionAllowedValueKey(value: JiraCreateFieldAllowedValue): string {
+  return value.id ?? value.value ?? value.name ?? ''
+}
+
 export function buildResolutionFieldValue(
   field: JiraCreateField,
   selectedId: string

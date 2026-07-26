@@ -52,6 +52,7 @@ import type { TaskSourceContext } from '../../../shared/task-source-context'
 import {
   buildResolutionFieldValue,
   classifyTransitionRequirements,
+  transitionAllowedValueKey,
   transitionAllowedValueLabel,
   type JiraTransitionRequirement
 } from '../../../shared/jira-transition-fields'
@@ -418,9 +419,7 @@ export default function JiraIssueWorkspace({
       setUnsupportedTransition(null)
       setTransitionForm({ transition, requirement })
       const firstResolution = requirement.resolution?.allowedValues?.[0]
-      setResolutionDraft(
-        firstResolution?.id ?? firstResolution?.name ?? firstResolution?.value ?? ''
-      )
+      setResolutionDraft(firstResolution ? transitionAllowedValueKey(firstResolution) : '')
       setTransitionCommentDraft('')
     },
     [applyTransition, resetTransitionPopover]
@@ -767,7 +766,7 @@ export default function JiraIssueWorkspace({
                           >
                             {(transitionForm.requirement.resolution.allowedValues ?? []).map(
                               (value) => {
-                                const optionValue = value.id ?? value.value ?? value.name ?? ''
+                                const optionValue = transitionAllowedValueKey(value)
                                 return (
                                   <option key={optionValue} value={optionValue}>
                                     {transitionAllowedValueLabel(value)}

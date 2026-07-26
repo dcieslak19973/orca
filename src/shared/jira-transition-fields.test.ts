@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildResolutionFieldValue,
+  transitionAllowedValueKey,
   classifyTransitionRequirements,
   requiredTransitionFields,
   transitionAllowedValueLabel
@@ -109,5 +110,9 @@ describe('jira-transition-fields', () => {
     expect(buildResolutionFieldValue(field, 'Duplicate')).toEqual({ name: 'Duplicate' })
     expect(buildResolutionFieldValue(field, '  ')).toBeNull()
     expect(transitionAllowedValueLabel({ id: '1', name: 'Done' })).toBe('Done')
+    // Why: draft seed and <option value> must share this id??value??name precedence.
+    expect(transitionAllowedValueKey({ id: '1', name: 'Done', value: 'done' })).toBe('1')
+    expect(transitionAllowedValueKey({ name: 'Duplicate', value: 'dup' })).toBe('dup')
+    expect(transitionAllowedValueKey({ name: 'OnlyName' })).toBe('OnlyName')
   })
 })
