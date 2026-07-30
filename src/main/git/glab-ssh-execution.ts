@@ -11,6 +11,7 @@ type GlabRemoteExecResult = {
   exitCode?: unknown
   timedOut?: unknown
   spawnError?: unknown
+  outputLimitExceeded?: unknown
 }
 
 type MuxLike = {
@@ -74,17 +75,26 @@ function asString(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+function outputLimitExceededStream(
+  value: unknown
+): 'stdout' | 'stderr' | undefined {
+  return value === 'stdout' || value === 'stderr' ? value : undefined
+}
+
 function throwRemoteGlabFailure(result: GlabRemoteExecResult): never {
   const stdout = asString(result.stdout)
   const stderr = asString(result.stderr)
   const spawnError = typeof result.spawnError === 'string' ? result.spawnError : undefined
   const timedOut = result.timedOut === true
+  const outputLimitExceeded = outputLimitExceededStream(result.outputLimitExceeded)
   const exitCode = typeof result.exitCode === 'number' ? result.exitCode : null
   const message =
     spawnError ??
     (timedOut
       ? 'glab timed out on SSH host'
-      : stderr.trim() || `glab exited with code ${exitCode ?? 'unknown'} on SSH host`)
+      : outputLimitExceeded
+        ? `glab ${outputLimitExceeded} exceeded capture limit on SSH host`
+        : stderr.trim() || `glab exited with code ${exitCode ?? 'unknown'} on SSH host`)
   const error = new Error(message) as Error & {
     code?: string | number | null
     stdout?: string
@@ -121,6 +131,9 @@ async function requestRemoteGlab(
     throwRemoteGlabFailure(result)
   }
   if (result.timedOut === true) {
+    throwRemoteGlabFailure(result)
+  }
+  if (outputLimitExceededStream(result.outputLimitExceeded)) {
     throwRemoteGlabFailure(result)
   }
   const exitCode = typeof result.exitCode === 'number' ? result.exitCode : null

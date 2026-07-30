@@ -23,6 +23,8 @@ type GlabExecResult = {
   timedOut: boolean
   /** Set when `glab` could not be spawned (e.g. ENOENT). */
   spawnError?: string
+  /** Which stream hit MAX_OUTPUT_BYTES before process close. */
+  outputLimitExceeded?: 'stdout' | 'stderr'
 }
 
 /**
@@ -106,7 +108,16 @@ export class GlabExecHandler {
       const onStdoutData = (chunk: Buffer): void => {
         stdoutBytes += chunk.byteLength
         if (stdoutBytes > MAX_OUTPUT_BYTES) {
+          // Why: finish inline like timeout — deferred onClose yields exitCode null
+          // and "exited with code unknown" with no signal the 4 MiB guard fired.
           terminateRelaySubprocessTree(child)
+          finish({
+            stdout,
+            stderr,
+            exitCode: null,
+            timedOut: false,
+            outputLimitExceeded: 'stdout'
+          })
           return
         }
         stdout += chunk.toString('utf-8')
@@ -115,6 +126,13 @@ export class GlabExecHandler {
         stderrBytes += chunk.byteLength
         if (stderrBytes > MAX_OUTPUT_BYTES) {
           terminateRelaySubprocessTree(child)
+          finish({
+            stdout,
+            stderr,
+            exitCode: null,
+            timedOut: false,
+            outputLimitExceeded: 'stderr'
+          })
           return
         }
         stderr += chunk.toString('utf-8')

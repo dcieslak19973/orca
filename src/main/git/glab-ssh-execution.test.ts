@@ -208,4 +208,20 @@ describe('tryGlabOnSshHost', () => {
     )
     expect(requestA).toHaveBeenCalledTimes(1)
   })
+
+  it('surfaces outputLimitExceeded as a diagnosable error (not code unknown)', async () => {
+    targets.set('host-a', { runGitLabCliOnHost: true })
+    requestA.mockResolvedValueOnce({
+      stdout: 'partial',
+      stderr: '',
+      exitCode: null,
+      timedOut: false,
+      outputLimitExceeded: 'stdout'
+    })
+
+    await expect(
+      tryGlabOnSshHost(['api', 'projects'], { sshTargetId: 'host-a', remoteCwd: '/repo' })
+    ).rejects.toThrow('glab stdout exceeded capture limit on SSH host')
+  })
+
 })

@@ -121,4 +121,54 @@ describe('GlabExecHandler', () => {
       spawnError: expect.stringContaining('ENOENT')
     })
   })
+
+  it('finishes immediately with outputLimitExceeded when stdout exceeds 4 MiB', async () => {
+    const child = createFakeChild()
+    spawnMock.mockReturnValue(child as never)
+    const handlers = createHandler()
+
+    const pending = handlers.get(GLAB_EXEC_METHOD)!({
+      args: ['api', 'projects'],
+      timeoutMs: 30_000
+    })
+
+    // Under limit first so partial stdout is retained, then overflow.
+    child.stdout.emit('data', Buffer.from('partial-ok'))
+    child.stdout.emit('data', Buffer.alloc(4 * 1024 * 1024 + 1, 0x61))
+
+    await expect(pending).resolves.toEqual({
+      stdout: 'partial-ok',
+      stderr: '',
+      exitCode: null,
+      timedOut: false,
+      outputLimitExceeded: 'stdout'
+    })
+    expect(child.kill).toHaveBeenCalled()
+
+    // Late close must not overwrite the limit result (finish is settled).
+    child.emit('close', null)
+    await expect(pending).resolves.toMatchObject({ outputLimitExceeded: 'stdout' })
+  })
+
+  it('finishes immediately with outputLimitExceeded when stderr exceeds 4 MiB', async () => {
+    const child = createFakeChild()
+    spawnMock.mockReturnValue(child as never)
+    const handlers = createHandler()
+
+    const pending = handlers.get(GLAB_EXEC_METHOD)!({
+      args: ['mr', 'list'],
+      timeoutMs: 30_000
+    })
+
+    child.stderr.emit('data', Buffer.alloc(4 * 1024 * 1024 + 1, 0x62))
+
+    await expect(pending).resolves.toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      timedOut: false,
+      outputLimitExceeded: 'stderr'
+    })
+    expect(child.kill).toHaveBeenCalled()
+  })
 })
