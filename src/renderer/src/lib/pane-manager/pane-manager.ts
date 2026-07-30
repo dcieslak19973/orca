@@ -47,6 +47,7 @@ import { PaneIdentityRegistry } from './pane-identity-registry'
 import {
   closeManagedPane,
   detachManagedPaneForExternalMove,
+  retireManagedPanePreservingPty,
   splitManagedPane
 } from './pane-split-close'
 import { FIRST_PANE_ID } from '../../../../shared/pane-key'
@@ -190,8 +191,30 @@ export class PaneManager {
     })
   }
 
+  retirePanePreservingPty(paneId: number): boolean {
+    return retireManagedPanePreservingPty({
+      paneId,
+      activePaneId: this.activePaneId,
+      panes: this.panes,
+      root: this.root,
+      styleOptions: this.styleOptions,
+      managerOptions: this.options,
+      getDragCallbacks: () => this.getDragCallbacks(),
+      releasePaneIdentity: (numericPaneId) => this.identities.release(numericPaneId),
+      setActivePaneId: (id) => {
+        this.activePaneId = id
+      }
+    })
+  }
+
   getPanes(): ManagedPane[] {
     return Array.from(this.panes.values()).map(toPublicPane)
+  }
+
+  /** Why separate from getPanes: the census runs on the crash path, where
+   *  materializing every public pane view just to read `.length` is waste. */
+  getPaneCount(): number {
+    return this.panes.size
   }
 
   fitAllPanes(): void {

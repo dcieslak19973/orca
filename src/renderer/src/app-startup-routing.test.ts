@@ -123,11 +123,24 @@ describe('renderer startup runtime routing', () => {
 
   it('waits for first-window startup services before terminal reconnect', () => {
     const source = readFileSync(join(process.cwd(), 'src/renderer/src/App.tsx'), 'utf8')
-    const reconnectIndex = source.indexOf('await actions.reconnectPersistedTerminals')
     const servicesIndex = source.indexOf('await window.api.app.awaitFirstWindowStartupServices()')
+    const preReconnectRecoveryIndex = source.indexOf(
+      'window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()',
+      servicesIndex
+    )
+    const reconnectIndex = source.indexOf(
+      'actions.reconnectPersistedTerminals(abortController.signal)',
+      preReconnectRecoveryIndex
+    )
+    const postReconnectRecoveryIndex = source.indexOf(
+      'window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()',
+      reconnectIndex
+    )
 
     expect(servicesIndex).toBeGreaterThanOrEqual(0)
-    expect(servicesIndex).toBeLessThan(reconnectIndex)
+    expect(preReconnectRecoveryIndex).toBeGreaterThan(servicesIndex)
+    expect(reconnectIndex).toBeGreaterThan(preReconnectRecoveryIndex)
+    expect(postReconnectRecoveryIndex).toBeGreaterThan(reconnectIndex)
   })
 
   it('keeps the persisted Automations view from starting its own bootstrap worktree scan', () => {
@@ -363,6 +376,20 @@ describe('renderer startup runtime routing', () => {
     }
     expect(source).not.toContain('createActiveViewIdleFlush')
     expect(source).not.toContain("window.addEventListener('blur', handleBlur)")
+  })
+
+  it('arms the OSC 52 default-on notice behind a statically mounted Toaster (#10567)', () => {
+    const source = readFileSync(join(process.cwd(), 'src/renderer/src/App.tsx'), 'utf8')
+
+    // Why pin the call site: the hook is the only caller, so deleting this line silences
+    // the migration notice on desktop with every unit suite still green.
+    expect(source).toContain('useOsc52ClipboardDefaultOnNotice(persistedUIReady)')
+    // Why pin the static import and the unconditional mount: sonner drops a toast enqueued
+    // before any Toaster subscribes, and never replays it — a lazy Toaster would burn the
+    // profile's one notice with its callbacks never firing, so it could never re-arm.
+    expect(source).toContain("import { Toaster } from '@/components/ui/sonner'")
+    expect(source).not.toContain("import('@/components/ui/sonner')")
+    expect(source).toContain('<Toaster closeButton')
   })
 
   it('checkpoints activeView and all session snapshots through one beforeunload handler (#9002)', () => {

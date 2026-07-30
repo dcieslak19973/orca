@@ -1548,6 +1548,26 @@ describe('Store', () => {
     expect(updatedTarget).not.toHaveProperty('systemSshConnectionReuse')
   })
 
+  it('drops retired per-target SSH terminal source-credit selections', async () => {
+    const store = await createStore()
+    store.addSshTarget({
+      id: 'ssh-source-credit-on',
+      label: 'Noisy build host',
+      host: 'build.example.com',
+      port: 22,
+      username: 'dev',
+      experimentalPtySourceCreditV1: true
+    } as never)
+
+    expect(store.getSshTarget('ssh-source-credit-on')).not.toHaveProperty(
+      'experimentalPtySourceCreditV1'
+    )
+    store.flush()
+    const persisted = readDataFile() as { sshTargets?: Record<string, unknown>[] }
+    const target = persisted.sshTargets?.find((entry) => entry.id === 'ssh-source-credit-on')
+    expect(target).not.toHaveProperty('experimentalPtySourceCreditV1')
+  })
+
   it('upserts ~/.ssh/config through the real store: rotated port updates in place and persists', async () => {
     loadUserSshConfigMock.mockReturnValue([{ host: 'cluster' }])
     const candidate = (port: number, id: string) => [
@@ -1563,7 +1583,6 @@ describe('Store', () => {
     expect(inserted).toHaveLength(1)
     expect(inserted[0]?.source).toBe('ssh-config')
     expect(inserted[0]?.port).toBe(2200)
-
     // Rotated port: upsert updates the same target in place and normalizeSshTarget must keep `source` (no false re-derive into a permanently-dirty state).
     sshConfigHostsToTargetsMock.mockReturnValue(candidate(2222, 'ssh-cfg-2'))
     const changed = sshStore.importFromSshConfig()
@@ -2872,6 +2891,151 @@ describe('Store', () => {
     expect(store.getSettings().floatingTerminalDefaultedForAllUsers).toBe(true)
   })
 
+  it('migrates the legacy OSC 52 clipboard disabled default to enabled', async () => {
+    // Why this migration exists: the old off default was persisted for every
+    // profile, so without the one-shot flip #10567 would only fix new installs.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalAllowOsc52Clipboard: false },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    expect(store.getSettings().terminalAllowOsc52Clipboard).toBe(true)
+    expect(store.getSettings().terminalAllowOsc52ClipboardDefaultedOnForAllUsers).toBe(true)
+  })
+
+  it('persists the OSC 52 clipboard migration stamp back to disk', async () => {
+    // Why round-trip a store first: on a bare legacy profile ~30 other migrations also
+    // set loadNeedsSave, so the save happens regardless and this migration's own dirty
+    // flag goes untested. Re-loading a profile the new build already wrote leaves OSC 52
+    // as the only unmigrated key — which is exactly the upgrade case that matters.
+    // Why no flush(): flush() writes unconditionally, so only the debounced load-path
+    // save proves this migration marked the state dirty by itself.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const migrated = await createStore()
+    migrated.flush()
+
+    const settled = readDataFile() as { settings: Record<string, unknown> }
+    settled.settings.terminalAllowOsc52Clipboard = false
+    delete settled.settings.terminalAllowOsc52ClipboardDefaultedOnForAllUsers
+    writeDataFile(settled)
+
+    vi.useFakeTimers()
+    try {
+      const store = await createStore()
+      // Why over-advance: the debounce is exactly 1000ms, so an exact-fit advance turns a
+      // future debounce raise into a confusing no-write instead of a loud failure.
+      vi.advanceTimersByTime(5000)
+      await store.waitForPendingWrite()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const persisted = readDataFile() as {
+      settings?: {
+        terminalAllowOsc52Clipboard?: boolean
+        terminalAllowOsc52ClipboardDefaultedOnForAllUsers?: boolean
+      }
+    }
+
+    expect(persisted.settings?.terminalAllowOsc52Clipboard).toBe(true)
+    expect(persisted.settings?.terminalAllowOsc52ClipboardDefaultedOnForAllUsers).toBe(true)
+  })
+
+  it('preserves a post-migration OSC 52 clipboard opt-out', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {
+        terminalAllowOsc52Clipboard: false,
+        terminalAllowOsc52ClipboardDefaultedOnForAllUsers: true
+      },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    expect(store.getSettings().terminalAllowOsc52Clipboard).toBe(false)
+    expect(store.getSettings().terminalAllowOsc52ClipboardDefaultedOnForAllUsers).toBe(true)
+  })
+
+  it('arms the one-shot notice when the OSC 52 flip overrides a persisted off', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalAllowOsc52Clipboard: false },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    expect(store.getUI().osc52ClipboardDefaultOnNoticePending).toBe(true)
+  })
+
+  it('leaves the OSC 52 notice disarmed for a profile with no persisted value', async () => {
+    // Why: the notice explains an overridden choice; a fresh profile made no choice.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    expect(store.getUI().osc52ClipboardDefaultOnNoticePending).toBe(false)
+  })
+
+  it('keeps the OSC 52 notice armed on disk until the renderer clears it', async () => {
+    // Why the disk assertion: the flip happens during load, before any window exists, and
+    // once the settings stamp lands the arming predicate is false forever — so the on-disk
+    // ui flag is the only thing that survives a crash before the toast renders.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalAllowOsc52Clipboard: false },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const armed = await createStore()
+    armed.flush()
+    const armedOnDisk = readDataFile() as {
+      ui?: { osc52ClipboardDefaultOnNoticePending?: boolean }
+    }
+    expect(armedOnDisk.ui?.osc52ClipboardDefaultOnNoticePending).toBe(true)
+
+    const reloaded = await createStore()
+    expect(reloaded.getUI().osc52ClipboardDefaultOnNoticePending).toBe(true)
+
+    reloaded.updateUI({ osc52ClipboardDefaultOnNoticePending: false })
+    reloaded.flush()
+    const cleared = await createStore()
+    // Why re-check after the stamp: a cleared notice must not be resurrected by a later load.
+    expect(cleared.getUI().osc52ClipboardDefaultOnNoticePending).toBe(false)
+  })
+
   it('migrates the legacy Linux primary-selection default to enabled', async () => {
     await withPlatform('linux', async () => {
       writeDataFile({
@@ -3546,6 +3710,21 @@ describe('Store', () => {
     expect(hostSession.lastVisitedAtByWorktreeId?.['r1::/path/wt1']).toBeUndefined()
   })
 
+  it('lists only persisted workspace-session host partitions', async () => {
+    const store = await createStore()
+    expect(store.getWorkspaceSessionHostIds()).toEqual(['local'])
+
+    store.getWorkspaceSession('ssh:not-persisted')
+    store.setWorkspaceSession(getDefaultWorkspaceSession(), 'ssh:ssh-a')
+    store.setWorkspaceSession(getDefaultWorkspaceSession(), 'runtime:environment-a')
+
+    expect(store.getWorkspaceSessionHostIds()).toEqual([
+      'local',
+      'ssh:ssh-a',
+      'runtime:environment-a'
+    ])
+  })
+
   it('removeProject removes the derived project host setup compatibility record', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
@@ -4044,6 +4223,27 @@ describe('Store', () => {
     expect(updated).not.toBeNull()
     expect(updated!.displayName).toBe('renamed')
     expect(store.getRepo('r1')!.displayName).toBe('renamed')
+  })
+
+  it('updateRepo targets one host when repo ids collide', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'shared', path: '/local/repo' }))
+    store.addRepo(
+      makeRepo({
+        id: 'shared',
+        path: '/remote/repo',
+        connectionId: 'server',
+        executionHostId: 'ssh:server'
+      })
+    )
+
+    const updated = store.updateRepo('shared', { displayName: 'Remote renamed' }, 'ssh:server')
+
+    expect(updated?.path).toBe('/remote/repo')
+    expect(store.getRepos().filter((repo) => repo.id === 'shared')).toMatchObject([
+      { path: '/local/repo', displayName: 'test' },
+      { path: '/remote/repo', displayName: 'Remote renamed' }
+    ])
   })
 
   it('updateRepo keeps project host setup compatibility records in sync', async () => {
@@ -4643,6 +4843,93 @@ describe('Store', () => {
     expect(updated.comment).toBe('updated')
   })
 
+  it('persists paired Jira linked-item metadata and drops mismatched source context', async () => {
+    const store = await createStore()
+    const linkedWorkItem = {
+      provider: 'jira' as const,
+      type: 'issue' as const,
+      number: 0,
+      title: 'ORCA-123 Link Jira',
+      url: 'https://company.atlassian.net/browse/ORCA-123',
+      jiraIdentifier: 'ORCA-123'
+    }
+    const linkedTaskSourceContext = {
+      kind: 'task-source' as const,
+      provider: 'jira' as const,
+      projectId: 'project-1',
+      hostId: 'runtime:env-1' as const,
+      providerIdentity: {
+        provider: 'jira' as const,
+        siteId: 'site-1',
+        siteUrl: 'https://company.atlassian.net',
+        projectKey: 'ORCA'
+      },
+      accountLabel: 'ada@example.com'
+    }
+
+    store.setWorktreeMeta('wt-jira', { linkedWorkItem, linkedTaskSourceContext })
+    store.flush()
+    const restored = await createStore()
+
+    expect(restored.getWorktreeMeta('wt-jira')).toMatchObject({
+      linkedWorkItem,
+      linkedTaskSourceContext
+    })
+    expect(
+      restored.setWorktreeMeta('wt-jira', {
+        linkedTaskSourceContext: { ...linkedTaskSourceContext, provider: 'linear' }
+      }).linkedTaskSourceContext
+    ).toBeNull()
+    expect(
+      restored.setWorktreeMeta('wt-jira', {
+        linkedTaskSourceContext: {
+          ...linkedTaskSourceContext,
+          providerIdentity: {
+            ...linkedTaskSourceContext.providerIdentity,
+            projectKey: 'OTHER'
+          }
+        }
+      }).linkedTaskSourceContext
+    ).toBeNull()
+  })
+
+  it('discards malformed persisted task-source metadata without aborting store load', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {
+        'wt-malformed': {
+          linkedWorkItem: {
+            provider: 'jira',
+            type: 'issue',
+            number: 0,
+            title: 'ORCA-123 Link Jira',
+            url: 'https://company.atlassian.net/browse/ORCA-123',
+            jiraIdentifier: 'ORCA-123'
+          },
+          linkedTaskSourceContext: {
+            kind: 'task-source',
+            provider: 'jira',
+            projectId: 'project-1',
+            hostId: 'local',
+            accountLabel: 44,
+            providerIdentity: {
+              provider: 'jira',
+              siteId: 'site-1',
+              siteUrl: 'https://company.atlassian.net',
+              projectKey: 'ORCA'
+            }
+          }
+        }
+      }
+    })
+
+    const store = await createStore()
+
+    expect(store.getWorktreeMeta('wt-malformed')?.linkedWorkItem?.jiraIdentifier).toBe('ORCA-123')
+    expect(store.getWorktreeMeta('wt-malformed')?.linkedTaskSourceContext).toBeNull()
+  })
+
   it('creates and updates folder workspaces from folder-backed project groups', async () => {
     const store = await createStore()
     const group = store.createProjectGroup({
@@ -4682,6 +4969,53 @@ describe('Store', () => {
       lastActivityAt: 123
     })
     expect(store.getFolderWorkspaces()).toHaveLength(1)
+  })
+
+  it('round-trips Jira item and source context for repo-less folder workspaces', async () => {
+    const store = await createStore()
+    const group = store.createProjectGroup({
+      name: 'Platform',
+      parentPath: '/workspace/platform',
+      createdFrom: 'folder-scan'
+    })
+    const linkedTask = {
+      provider: 'jira' as const,
+      type: 'issue' as const,
+      number: 0,
+      title: 'ORCA-123 Link Jira',
+      url: 'https://company.atlassian.net/browse/ORCA-123',
+      jiraIdentifier: 'ORCA-123'
+    }
+    const linkedTaskSourceContext = {
+      kind: 'task-source' as const,
+      provider: 'jira' as const,
+      projectId: group.id,
+      hostId: 'runtime:folder-env' as const,
+      repoId: null,
+      providerIdentity: {
+        provider: 'jira' as const,
+        siteId: 'site-1',
+        siteUrl: 'https://company.atlassian.net',
+        projectKey: 'ORCA'
+      },
+      accountLabel: 'ada@example.com'
+    }
+
+    const workspace = store.createFolderWorkspace({
+      projectGroupId: group.id,
+      linkedTask,
+      linkedTaskSourceContext
+    })
+    store.flush()
+    const restored = await createStore()
+
+    expect(restored.getFolderWorkspaces()).toContainEqual(
+      expect.objectContaining({
+        id: workspace.id,
+        linkedTask,
+        linkedTaskSourceContext: expect.objectContaining(linkedTaskSourceContext)
+      })
+    )
   })
 
   it('rejects folder workspace creation for non-folder-backed project groups', async () => {
@@ -6925,8 +7259,10 @@ describe('Store', () => {
       'unread',
       'issue',
       'linear-issue',
+      'jira-issue',
       'pr',
       'automation',
+      'cli',
       'comment',
       'ports',
       'inline-agents'

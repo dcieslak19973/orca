@@ -41,11 +41,24 @@ export function useMobileNativeChatDrafts(args: {
   tabId: string | null
   sessionId: string | null
   messages: readonly NativeChatMessage[]
+  /** Host-provided launch context still parked as an unsent TUI-input draft. */
+  launchDraft?: string | null
+  /** Whether the tab is currently resolved to the chat view. Off-chat the
+   *  launch-draft effects hold their state instead of acting on it. */
+  chatActive?: boolean
+  /** `messages` is not yet this session's real history (read in flight, or the
+   *  transcript still belongs to the previously active tab), so it cannot be
+   *  trusted to decline or retire the seed. */
+  transcriptLoading?: boolean
 }): {
   composerText: string
   setComposerText: Dispatch<SetStateAction<string>>
   pending: MobileNativeChatPendingMessage[]
   captureSendOrigin: (text: string) => MobileNativeChatSendOrigin | null
+  /** Clear the composer at send time, before the RPC settles. */
+  clearDraftForSend: (origin: MobileNativeChatSendOrigin, text: string) => void
+  /** Put the text back after a definite rejection, unless newer edits exist. */
+  restoreRejectedDraft: (origin: MobileNativeChatSendOrigin, text: string) => void
   acceptSend: (origin: MobileNativeChatSendOrigin, text: string, images?: string[]) => void
   holdUnconfirmedSend: (
     origin: MobileNativeChatSendOrigin,
@@ -53,7 +66,16 @@ export function useMobileNativeChatDrafts(args: {
     onUnconfirmed: () => void
   ) => void
 } {
-  const { hostId, worktreeId, tabId, sessionId, messages } = args
+  const {
+    hostId,
+    worktreeId,
+    tabId,
+    sessionId,
+    messages,
+    launchDraft,
+    chatActive = true,
+    transcriptLoading
+  } = args
   const draftKey = mobileNativeChatScopeKey(hostId, worktreeId, tabId)
   const pendingKey = draftKey && sessionId ? `${draftKey}\0${sessionId}` : null
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -68,6 +90,63 @@ export function useMobileNativeChatDrafts(args: {
   const activePendingKeyRef = useRef(pendingKey)
   activePendingKeyRef.current = pendingKey
   const mountedRef = useRef(false)
+
+  // Seeded launch-context text per tab; '' marks a permanent decline so a
+  // cleared composer never resurrects the prefill.
+  const seededLaunchDraftByKeyRef = useRef(new Map<string, string>())
+
+  // Why: launch context delivered as a TUI-input prefill is invisible in chat;
+  // adopt it once as the composer draft so mobile shows the same context.
+  useEffect(() => {
+    if (
+      !draftKey ||
+      !chatActive ||
+      !launchDraft?.trim() ||
+      seededLaunchDraftByKeyRef.current.has(draftKey)
+    ) {
+      return
+    }
+    // Why: `session.tabs` carries launchDraft before the transcript read settles,
+    // and an empty (or previous tab's) list would let the decline below misjudge
+    // an already-submitted prefill — long enough for a send to duplicate it.
+    if (transcriptLoading) {
+      return
+    }
+    // A user turn already in the transcript means the one-line TUI prefill was
+    // submitted or deliberately cleared; decline instead of resurrecting it.
+    if (messages.some((message) => normalizedUserText(message) !== null)) {
+      seededLaunchDraftByKeyRef.current.set(draftKey, '')
+      return
+    }
+    seededLaunchDraftByKeyRef.current.set(draftKey, launchDraft)
+    setDrafts((previous) =>
+      (previous[draftKey] ?? '') === '' ? { ...previous, [draftKey]: launchDraft } : previous
+    )
+  }, [chatActive, draftKey, launchDraft, messages, transcriptLoading])
+
+  // Drop an untouched adopted copy once the prefill is resolved elsewhere — a
+  // user turn landed (sent or cleared TUI-side) or the host stopped publishing
+  // it (desktop sent or reconciled it). User edits are always kept.
+  useEffect(() => {
+    // Same gates as the seed: off-chat there is no retraction to read (the tab
+    // publishes no draft to us), and an untrusted transcript would wipe an
+    // untouched copy on the strength of another tab's user turns.
+    if (!draftKey || !chatActive || transcriptLoading) {
+      return
+    }
+    const seeded = seededLaunchDraftByKeyRef.current.get(draftKey)
+    if (!seeded) {
+      return
+    }
+    const hasUserTurn = messages.some((message) => normalizedUserText(message) !== null)
+    if (!hasUserTurn && launchDraft?.trim()) {
+      return
+    }
+    seededLaunchDraftByKeyRef.current.set(draftKey, '')
+    setDrafts((previous) =>
+      (previous[draftKey] ?? '') === seeded ? { ...previous, [draftKey]: '' } : previous
+    )
+  }, [chatActive, draftKey, launchDraft, messages, transcriptLoading])
 
   const setComposerText: Dispatch<SetStateAction<string>> = useCallback(
     (value) => {
@@ -101,17 +180,28 @@ export function useMobileNativeChatDrafts(args: {
     [draftKey, pendingKey]
   )
 
+  // Why: over relay the send RPC can take seconds (or lose only its ack), and a
+  // composer that waits for settlement to empty reads as "my prompt didn't
+  // send". Clear at send time; a definite rejection restores the text below.
+  const clearDraftForSend = useCallback((origin: MobileNativeChatSendOrigin, text: string) => {
+    setDrafts((previous) =>
+      (previous[origin.draftKey] ?? '').trim() === text.trim()
+        ? { ...previous, [origin.draftKey]: '' }
+        : previous
+    )
+  }, [])
+
+  const restoreRejectedDraft = useCallback((origin: MobileNativeChatSendOrigin, text: string) => {
+    // Why: never clobber text the user typed while the rejection was in flight.
+    setDrafts((previous) =>
+      (previous[origin.draftKey] ?? '') === '' ? { ...previous, [origin.draftKey]: text } : previous
+    )
+  }, [])
+
   const acceptSend = useCallback(
     (origin: MobileNativeChatSendOrigin, text: string, images?: string[]) => {
-      // Why: an RPC may settle after a tab switch; mutate only the tab that
-      // originated the send, without erasing edits typed after it began.
-      setDrafts((previous) =>
-        (previous[origin.draftKey] ?? '').trim() === text.trim()
-          ? { ...previous, [origin.draftKey]: '' }
-          : previous
-      )
       // Why: the first prompt can be sent before the provider reports a session
-      // id; clear its draft, but wait for an id before keying an optimistic echo.
+      // id; wait for an id before keying an optimistic echo.
       if (!origin.pendingKey) {
         return
       }
@@ -151,8 +241,9 @@ export function useMobileNativeChatDrafts(args: {
 
   // Why: a relay drop mid-send loses only the ack in the common case — the
   // desktop already delivered the message. Hold the send instead of claiming
-  // failure (which baits a duplicate): clear the draft when the transcript echo
+  // failure (which baits a duplicate): stay quiet when the transcript echo
   // lands, and surface the uncertainty if the deadline passes without one.
+  // The composer was already cleared at send time, so this never touches drafts.
   const unconfirmedRef = useRef<UnconfirmedSend[]>([])
   const holdUnconfirmedSend = useCallback(
     (origin: MobileNativeChatSendOrigin, text: string, onUnconfirmed: () => void) => {
@@ -175,11 +266,6 @@ export function useMobileNativeChatDrafts(args: {
         isActiveTranscript &&
         findLandedUnconfirmedSends(messagesRef.current, [entry]).length > 0
       ) {
-        setDrafts((previous) =>
-          (previous[origin.draftKey] ?? '').trim() === text.trim()
-            ? { ...previous, [origin.draftKey]: '' }
-            : previous
-        )
         return
       }
       entry.deadline = setTimeout(() => {
@@ -210,12 +296,6 @@ export function useMobileNativeChatDrafts(args: {
       if (entry.deadline !== null) {
         clearTimeout(entry.deadline)
       }
-      // Same guard as acceptSend: never erase edits typed after the send began.
-      setDrafts((previous) =>
-        (previous[entry.draftKey] ?? '').trim() === entry.text.trim()
-          ? { ...previous, [entry.draftKey]: '' }
-          : previous
-      )
     }
   }, [messages, draftKey, pendingKey])
 
@@ -278,6 +358,8 @@ export function useMobileNativeChatDrafts(args: {
     setComposerText,
     pending,
     captureSendOrigin,
+    clearDraftForSend,
+    restoreRejectedDraft,
     acceptSend,
     holdUnconfirmedSend
   }

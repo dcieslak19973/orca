@@ -44,6 +44,7 @@ import type { UsagePercentageDisplay } from './usage-percentage-display'
 import type { StatusBarUsageMode } from './status-bar-usage-mode'
 import type { PersistedNativeChatSessionOptions } from './native-chat-session-options'
 import type { CodexResetCreditAttemptLedger } from './codex-reset-credit-attempt-ledger'
+import type { TaskSourceContext } from './task-source-context'
 
 // Re-exported for backward compat with renderer call sites that import
 // `WorkspaceCreateTelemetrySource` from '../../../shared/types'.
@@ -163,6 +164,7 @@ export type ProjectHostSetup = {
 
 export type ProjectHostSetupExistingFolderArgs = {
   projectId: string
+  projectProviderIdentity?: ProjectProviderIdentity
   hostId: ExecutionHostId
   path: string
   kind?: RepoKind
@@ -185,6 +187,7 @@ export type ProjectHostSetupCreateArgs = {
 
 export type ProjectHostSetupCloneArgs = {
   projectId: string
+  projectProviderIdentity?: ProjectProviderIdentity
   hostId: ExecutionHostId
   url: string
   destination: string
@@ -324,7 +327,8 @@ export type FolderWorkspace = {
   folderPath: string
   /** SSH target ID for folder workspaces whose folder path lives remotely. */
   connectionId?: string | null
-  linkedTask: FolderWorkspaceLinkedTask | null
+  linkedTask: WorkspaceLinkedItem | null
+  linkedTaskSourceContext?: TaskSourceContext | null
   comment: string
   isArchived: boolean
   isUnread: boolean
@@ -341,7 +345,7 @@ export type FolderWorkspace = {
   updatedAt: number
 }
 
-export type FolderWorkspaceLinkedTask = {
+export type WorkspaceLinkedItem = {
   provider: 'github' | 'gitlab' | 'linear' | 'jira'
   type: 'issue' | 'pr' | 'mr'
   number: number
@@ -351,6 +355,8 @@ export type FolderWorkspaceLinkedTask = {
   jiraIdentifier?: string
   repoId?: string
 }
+
+export type FolderWorkspaceLinkedTask = WorkspaceLinkedItem
 
 export type NestedRepoScanOptions = {
   maxDepth?: number
@@ -497,6 +503,8 @@ export type Worktree = {
   linkedBitbucketPR?: number | null
   linkedAzureDevOpsPR?: number | null
   linkedGiteaPR?: number | null
+  linkedWorkItem?: WorkspaceLinkedItem | null
+  linkedTaskSourceContext?: TaskSourceContext | null
   isArchived: boolean
   isUnread: boolean
   isPinned: boolean
@@ -535,7 +543,21 @@ export type Worktree = {
   diffComments?: DiffComment[]
   mobileDiffReview?: MobileDiffReviewState
   automationProvenance?: AutomationWorkspaceProvenance
+  cliProvenance?: CliWorkspaceProvenance
 } & GitWorktreeInfo
+
+/** Provenance for workspaces created through `orca worktree create`. Absent on
+ *  workspaces created before this field existed and on every non-CLI create, so
+ *  consumers must read "missing" as "not CLI-created". */
+export type CliWorkspaceProvenance = {
+  kind: 'created-by-cli'
+  createdAt: number
+  /** Orca terminal the CLI ran inside, when the caller had one — distinguishes
+   *  an agent-issued create from one hand-typed in an external shell. */
+  callerTerminalHandle?: string
+  /** Agent requested via `--agent`, when one was passed. */
+  startupAgent?: TuiAgent
+}
 
 export type AutomationWorkspaceProvenance = {
   kind: 'created-by-automation'
@@ -606,6 +628,8 @@ export type WorktreeMeta = {
   linkedAzureDevOpsPR?: number | null
   /** Optional for backward compatibility — see Worktree.linkedGiteaPR. */
   linkedGiteaPR?: number | null
+  linkedWorkItem?: WorkspaceLinkedItem | null
+  linkedTaskSourceContext?: TaskSourceContext | null
   isArchived: boolean
   isUnread: boolean
   isPinned: boolean
@@ -646,6 +670,8 @@ export type WorktreeMeta = {
   mobileDiffReview?: MobileDiffReviewState
   /** System-owned provenance for workspaces created by automation new-per-run dispatches. */
   automationProvenance?: AutomationWorkspaceProvenance
+  /** System-owned provenance for workspaces created via `orca worktree create`. */
+  cliProvenance?: CliWorkspaceProvenance
 }
 
 export type WorktreeOwnership = 'orca-managed' | 'external' | 'unknown-legacy' | 'agent-scratch'
@@ -1019,6 +1045,11 @@ export type BrowserCookieImportSummary = {
   importedCookies: number
   skippedCookies: number
   domains: string[]
+  warning?: {
+    code: 'restart-fallback-unavailable'
+    loadedCookies: number
+    failedCookies: number
+  }
 }
 
 export type BrowserCookieImportResult =
@@ -2076,6 +2107,13 @@ export type OrcaHooks = {
   defaultTabs?: OrcaDefaultTabTemplate[] // Terminal tabs to create once for a new worktree
   environmentRecipes?: OrcaVmRecipe[] // Project-scoped per-workspace environment recipes
   environmentRecipeDiagnostics?: OrcaVmRecipeDiagnostic[] // Non-fatal validation issues from environmentRecipes
+  worktree?: OrcaWorktreeDefaults // Project-scoped defaults applied when a worktree is created
+}
+
+export type OrcaWorktreeDefaults = {
+  // Why: shared (symlinked) rather than copied — large rebuildable dirs like
+  // node_modules should be one install serving every worktree.
+  sharedDirectories?: string[]
 }
 
 export type OrcaDefaultTabTemplate = {
@@ -2127,6 +2165,7 @@ export type WorktreeStartupLaunch = {
   launchConfig?: SleepingAgentLaunchConfig
   launchToken?: string
   launchAgent?: TuiAgent
+  viewMode?: 'terminal' | 'chat'
   startupCommandDelivery?: StartupCommandDelivery
   telemetry?: { agent_kind: AgentKind; launch_source: LaunchSource; request_kind: RequestKind }
 }
@@ -2193,6 +2232,8 @@ export type CreateWorktreeArgs = {
   linkedBitbucketPR?: number | null
   linkedAzureDevOpsPR?: number | null
   linkedGiteaPR?: number | null
+  linkedWorkItem?: WorkspaceLinkedItem | null
+  linkedTaskSourceContext?: TaskSourceContext | null
   pushTarget?: GitPushTarget
   workspaceStatus?: WorkspaceStatus
   manualOrder?: number
@@ -2235,6 +2276,13 @@ export type CreateWorktreeResult = {
   workspaceLineage?: WorkspaceLineage | null
   warnings?: WorktreeLineageWarning[]
   setup?: WorktreeSetupLaunch
+  setupReceipt?: {
+    requested: 'run' | 'skip' | 'inherit'
+    hookFound: boolean
+    startupPolicy: 'start-immediately' | 'wait-for-setup'
+    state: 'running' | 'skipped' | 'not_configured' | 'spawn_failed'
+    terminalHandle?: string
+  }
   defaultTabs?: WorktreeDefaultTabsLaunch
   warning?: string
   initialBaseStatus?: WorktreeBaseStatusEvent
@@ -2317,9 +2365,12 @@ export type ChangelogData = {
 export type UpdateCheckOptions = {
   includePrerelease?: boolean
   includePerfPrerelease?: boolean
+  localBuild?: boolean
 }
 
-export type UpdateStatus =
+export type UpdateSource = 'local'
+
+export type UpdateStatus = (
   | { state: 'idle' }
   | { state: 'checking'; userInitiated?: boolean }
   | {
@@ -2342,6 +2393,7 @@ export type UpdateStatus =
   | { state: 'downloading'; percent: number; version: string; activeNudgeId?: string }
   | { state: 'downloaded'; version: string; releaseUrl?: string; activeNudgeId?: string }
   | { state: 'error'; message: string; userInitiated?: boolean; activeNudgeId?: string }
+) & { source?: UpdateSource }
 
 // ─── Settings ────────────────────────────────────────────────────────
 export type NotificationSettings = {
@@ -2498,6 +2550,7 @@ export type TuiAgent =
   | 'grok' // xAI Grok CLI
   | 'devin' // Devin CLI
   | 'ante' // Ante (Antigma Labs)
+  | 'trae' // Trae CLI
 
 export type TaskViewPresetId = 'all' | 'issues' | 'review' | 'my-issues' | 'my-prs' | 'prs'
 
@@ -2727,8 +2780,10 @@ export type GlobalSettings = {
   terminalFocusFollowsMouse: boolean
   /** X11/gnome-terminal "copy on select": selecting text auto-copies to the clipboard; default off. */
   terminalClipboardOnSelect: boolean
-  /** Enables OSC 52 clipboard writes for TUIs (SSH clipboard bridge); default off since OSC 52 is a clipboard-exfiltration vector. */
+  /** Enables OSC 52 clipboard writes for TUIs (tmux/Zellij/nvim, incl. over SSH); default on. Clipboard *queries* stay blocked and payload size is capped, so this is write-only exposure. */
   terminalAllowOsc52Clipboard: boolean
+  /** One-shot stamp: profiles saved under the old off default get flipped on once, after which an explicit opt-out sticks. */
+  terminalAllowOsc52ClipboardDefaultedOnForAllUsers?: boolean
   /** Experimental Claude Agent Teams; native panes use a tmux-compatible shim so teammate output stays on the normal PTY path. */
   claudeAgentTeamsMode?: ClaudeAgentTeamsMode
   /** Where the repo setup script runs on workspace create; defaults to a background "Setup" tab to keep the main terminal usable. */
@@ -2746,6 +2801,8 @@ export type GlobalSettings = {
   localhostWorktreeLabelsEnabled?: boolean
   /** Tracks the one-time first-use prompt for terminal link routing (avoid silently changing where links open). */
   openLinksInAppPreferencePrompted: boolean
+  /** Opt-in: Shift+modifier click inverts openLinksInApp instead of always forcing the system browser. Off keeps the historical one-way escape hatch. */
+  openLinksInAppModifierInverts?: boolean
   /** Opt-in: open new coding-agent tabs in native chat instead of the raw terminal; optional for legacy settings. */
   openAgentTabsInChatByDefault?: boolean
   /** Experimental native chat surface for Claude/Codex sessions; off by default. */
@@ -2813,6 +2870,10 @@ export type GlobalSettings = {
   terminalScopeHistoryByWorktree: boolean
   /** Kill switch for hidden terminal view parking: unmount long-hidden panes while a pane-less watcher keeps PTY side effects alive. */
   terminalHiddenViewParking?: boolean
+  /** Kill switch for SSH terminal parking (C1): SSH panes park like local ones; reveal restores from main's headless model, falling back to relay replay. */
+  terminalSshViewParking?: boolean
+  /** Kill switch for the hidden-worktree retention budget (C1): force-parks the least-recently-hidden un-parkable worktrees beyond a count budget or TTL. */
+  terminalHiddenWorktreeRetentionBudget?: boolean
   /** Kill switch for main-process PTY side-effect authority; on (default) = title/bell/agent facts via pty:sideEffect channel, not renderer byte parsing. */
   terminalMainSideEffectAuthority?: boolean
   /** Kill switch for main's hidden-delivery gate (Phase 4): drops PTY bytes to hidden views after model ingestion; requires terminalMainSideEffectAuthority. */
@@ -2826,6 +2887,19 @@ export type GlobalSettings = {
   defaultTuiAgent: TuiAgent | 'blank' | null
   /** Agents hidden from picker/auto-launch; detection stays a raw PATH snapshot. */
   disabledTuiAgents: TuiAgent[]
+  /** Master switch for the experimental plugin system. Off by default: no
+   *  discovery, no panels, no plugin code paths run at all. */
+  pluginSystemEnabled: boolean
+  /** Qualified plugin keys (`publisher.id`) the user disabled. Discovered
+   *  plugins stay listed but are not activated. */
+  disabledPlugins: string[]
+  /** Consent records: qualified plugin key → capability/worker-trust fingerprint.
+   *  A plugin whose current fingerprint differs is pending again, so an update
+   *  crossing either trust boundary re-prompts before code runs. Absent key =
+   *  never consented. */
+  pluginConsents: Record<string, string>
+  /** Local directories loaded as dev-mode plugins (manifest hot-reload). */
+  devPluginPaths: string[]
   /** One-shot guard: start Claude Agent Teams hidden for existing profiles without overriding later opt-ins. */
   claudeAgentTeamsDefaultDisabledMigrated?: boolean
   /** Why: worktree deletion is destructive (rm -rf of the working dir), so confirm by default. */
@@ -2921,6 +2995,8 @@ export type GlobalSettings = {
   experimentalAgentDashboardPopout?: boolean
   /** How the Agent Dashboard opens: an in-window companion board or a separate pop-out window. Defaults to in-window. */
   experimentalAgentDashboardMode?: AgentDashboardMode
+  /** Includes stale quiet agents as a fourth Agent Dashboard column. */
+  experimentalAgentDashboardShowIdle?: boolean
   /** One-shot migration guard for defaulting the Agents view off; later explicit opt-ins persist normally. */
   experimentalActivityDefaultedOffForAllUsers?: boolean
   /** Experimental: persistent terminal-pane attention ring for bell + agent-completion events. Opt-in while tuning signal/noise. */
@@ -3133,8 +3209,11 @@ export type WorktreeCardProperty =
   // Task metadata on workspace cards; provider-specific persisted values kept for older profiles.
   | 'issue'
   | 'linear-issue'
+  | 'jira-issue'
   | 'pr'
   | 'automation'
+  // Badge marking workspaces created through `orca worktree create`.
+  | 'cli'
   | 'comment'
   | 'ports'
   // Inline agent-activity list rendered in each workspace card; on by default (see DEFAULT_WORKTREE_CARD_PROPERTIES in shared/constants.ts).
@@ -3185,6 +3264,9 @@ export type RightSidebarTab =
   | 'source-control'
   | 'checks'
   | 'ports'
+  // Plugin-contributed panels are keyed `plugin:<pluginId>/<panelId>` so the
+  // static union stays closed while plugin tabs remain type-representable.
+  | `plugin:${string}`
 export type ActiveRightSidebarTab = Exclude<RightSidebarTab, 'search'>
 export type RightSidebarExplorerView = 'files' | 'search'
 
@@ -3219,6 +3301,7 @@ export type PersistedUIState = {
   rightSidebarExplorerView: RightSidebarExplorerView
   rightSidebarWidth: number
   markdownTocPanelWidth?: number
+  combinedDiffFileTreeWidth?: number
   groupBy: 'none' | 'workspace-status' | 'repo' | 'pr-status'
   sortBy: 'name' | 'smart' | 'recent' | 'repo' | 'manual'
   /** Project header ordering in `groupBy: 'repo'`, independent of `sortBy`: 'manual' uses persisted order + header drag, 'recent' by latest visible activity. */
@@ -3243,6 +3326,10 @@ export type PersistedUIState = {
   hideDefaultBranchWorkspace: boolean
   /** Hide workspaces created by automation new-per-run dispatches. */
   hideAutomationGeneratedWorkspaces?: boolean
+  /** Hide workspaces created through `orca worktree create`. */
+  hideCliCreatedWorkspaces?: boolean
+  /** Hide workspaces sitting on a detached HEAD; folder workspaces (no head at all) are unaffected. */
+  hideDetachedHeadWorkspaces?: boolean
   /** Per-worktree Explorer dotfile visibility. Missing entries inherit the default: show. */
   showDotfilesByWorktree?: Record<string, boolean>
   filterRepoIds: string[]
@@ -3301,6 +3388,8 @@ export type PersistedUIState = {
   browserImportHintHidden?: boolean
   /** Why: Windows-only. Set once on first hide to tray so the "Orca is still running" notice shows only once. */
   trayMinimizeNoticeShown?: boolean
+  /** Set by the OSC 52 default-on migration when it overrode a persisted `false`; the renderer shows one notice and clears it. */
+  osc52ClipboardDefaultOnNoticePending?: boolean
   /** User dismissed the first-run Mobile Emulator intro; reversible only by re-enabling the feature in Settings. */
   mobileEmulatorTabIntroDismissed?: boolean
   /** User deferred the in-pane Mobile Emulator CLI + skill setup guide. */
@@ -3494,6 +3583,8 @@ export type PersistedState = {
 }
 
 // ─── Filesystem ─────────────────────────────────────────────
+export type FilesystemPathFlavor = 'posix' | 'win32'
+
 export type DirEntry = {
   name: string
   isDirectory: boolean
@@ -3641,6 +3732,10 @@ export type UsageValues = {
   memory: number
 }
 
+export type ProcessMemoryMetric = 'rss' | 'working-set'
+
+export type HostAvailableMemorySource = 'memory-pressure' | 'proc-meminfo' | 'free-memory'
+
 /** The top-level cpu/memory are the sum of main + renderer + other. */
 export type AppMemory = UsageValues & {
   main: UsageValues
@@ -3669,7 +3764,12 @@ export type WorktreeMemory = UsageValues & {
 
 export type HostMemory = {
   totalMemory: number
+  /** Immediately free memory reported by Node's host API. */
   freeMemory: number
+  /** Memory available without material pressure, or freeMemory when unavailable. */
+  availableMemory: number
+  availableMemorySource: HostAvailableMemorySource
+  /** totalMemory - availableMemory. */
   usedMemory: number
   memoryUsagePercent: number
   cpuCoreCount: number
@@ -3680,9 +3780,11 @@ export type MemorySnapshot = {
   app: AppMemory
   worktrees: WorktreeMemory[]
   host: HostMemory
+  /** Per-process byte metric used by app, session, worktree, history, and totalMemory values. */
+  processMemoryMetric: ProcessMemoryMetric
   /** Sum of app + all tracked worktree sessions. Percent of a single core, so may exceed 100 on multi-core machines. */
   totalCpu: number
-  /** Sum of app + all tracked worktree sessions in bytes. NOT the same as host.totalMemory, which is physical RAM. */
+  /** Sum of per-process samples. Shared pages may repeat, so this can exceed host.totalMemory. */
   totalMemory: number
   collectedAt: number
 }

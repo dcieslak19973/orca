@@ -47,6 +47,17 @@ import {
 
 export type TabSplitDirection = 'left' | 'right' | 'up' | 'down'
 
+function replaceWorkspaceRecordKeys<T>(
+  current: Record<string, T>,
+  hydrated: Record<string, T>,
+  workspaceKeys: ReadonlySet<string>
+): Record<string, T> {
+  return {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => !workspaceKeys.has(key))),
+    ...Object.fromEntries(Object.entries(hydrated).filter(([key]) => workspaceKeys.has(key)))
+  }
+}
+
 export type TabsSlice = {
   unifiedTabsByWorktree: Record<string, Tab[]>
   // Why: id of the tab whose inline title editor should open; shortcut (tab.rename) sets it, the tab clears it on consume.
@@ -135,6 +146,7 @@ export type TabsSlice = {
   unpinTab: (tabId: string) => void
   closeOtherTabs: (tabId: string) => string[]
   closeTabsToRight: (tabId: string) => string[]
+  closeTabsToLeft: (tabId: string) => string[]
   ensureWorktreeRootGroup: (worktreeId: string) => string
   focusGroup: (worktreeId: string, groupId: string) => void
   closeEmptyGroup: (worktreeId: string, groupId: string) => boolean
@@ -1231,6 +1243,34 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
     return closableIds
   },
 
+  closeTabsToLeft: (tabId) => {
+    const state = get()
+    const found = findTabAndWorktree(state.unifiedTabsByWorktree, tabId)
+    if (!found) {
+      return []
+    }
+    const { tab, worktreeId } = found
+    const group = findGroupForTab(state.groupsByWorktree, worktreeId, tab.groupId)
+    if (!group) {
+      return []
+    }
+    const index = group.tabOrder.indexOf(tabId)
+    if (index === -1) {
+      return []
+    }
+    const closableIds = group.tabOrder
+      .slice(0, index)
+      .filter(
+        (id) =>
+          !(state.unifiedTabsByWorktree[worktreeId] ?? []).find((candidate) => candidate.id === id)
+            ?.isPinned
+      )
+    for (const id of closableIds) {
+      get().closeUnifiedTab(id)
+    }
+    return closableIds
+  },
+
   ensureWorktreeRootGroup: (worktreeId) => {
     const existingGroups = get().groupsByWorktree[worktreeId] ?? []
     if (existingGroups.length > 0) {
@@ -1982,6 +2022,33 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       validWorktreeIds.add(folderWorkspaceKey(workspace.id))
     }
     addAdditionalValidWorkspaceKeys(validWorktreeIds, options)
-    set(buildHydratedTabState(session, validWorktreeIds))
+    const hydrated = buildHydratedTabState(session, validWorktreeIds)
+    if (!options?.replaceWorkspaceKeys) {
+      set(hydrated)
+      return
+    }
+    const replaceWorkspaceKeys = new Set(options.replaceWorkspaceKeys)
+    set((current) => ({
+      unifiedTabsByWorktree: replaceWorkspaceRecordKeys(
+        current.unifiedTabsByWorktree,
+        hydrated.unifiedTabsByWorktree,
+        replaceWorkspaceKeys
+      ),
+      groupsByWorktree: replaceWorkspaceRecordKeys(
+        current.groupsByWorktree,
+        hydrated.groupsByWorktree,
+        replaceWorkspaceKeys
+      ),
+      activeGroupIdByWorktree: replaceWorkspaceRecordKeys(
+        current.activeGroupIdByWorktree,
+        hydrated.activeGroupIdByWorktree,
+        replaceWorkspaceKeys
+      ),
+      layoutByWorktree: replaceWorkspaceRecordKeys(
+        current.layoutByWorktree,
+        hydrated.layoutByWorktree,
+        replaceWorkspaceKeys
+      )
+    }))
   }
 })

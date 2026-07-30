@@ -11,7 +11,8 @@ import {
   statSync,
   realpathSync
 } from 'node:fs'
-import { writeFile, rename, mkdir, rm, copyFile } from 'node:fs/promises'
+import { rename, mkdir, rm, copyFile, open } from 'node:fs/promises'
+import { renameDurable, writeFileDurableSync } from './durable-file-write'
 import { join, dirname, isAbsolute, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
@@ -71,11 +72,19 @@ import {
   normalizeProjectRuntimePreference
 } from '../shared/project-execution-runtime'
 import { projectHostSetupProjectionFromRepos } from '../shared/project-host-setup-projection'
+import { isPluginPanelTabKey } from '../shared/plugins/plugin-manifest'
 import type { GitRemoteIdentity } from '../shared/git-remote-identity'
 import {
+  areTaskSourceContextsEqual,
   buildTaskSourceContextFromRepo,
-  buildWorkspaceRunContext
+  buildWorkspaceRunContext,
+  normalizeStoredTaskSourceContext
 } from '../shared/task-source-context'
+import {
+  areWorkspaceLinkedItemsEqual,
+  normalizeWorkspaceLinkedItem
+} from '../shared/workspace-linked-item'
+import { isWorkspaceLinkedItemSourceContextMatch } from '../shared/workspace-linked-item-source-context'
 import type { MigrationUnsupportedPtyEntry } from '../shared/agent-status-types'
 import { MOBILE_PAIRING_USERDATA_FILES } from './runtime/mobile-pairing-files'
 import { normalizePersistedMobileClientTabSelections } from './runtime/client-session-tab-selection-persistence'
@@ -92,7 +101,16 @@ import {
   type SshTarget
 } from '../shared/ssh-types'
 import { isFolderRepo } from '../shared/repo-kind'
-import { getRepoExecutionHostId, parseExecutionHostId } from '../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  parseExecutionHostId,
+  LOCAL_EXECUTION_HOST_ID,
+  normalizeExecutionHostOrder,
+  normalizeExecutionHostId,
+  normalizeVisibleExecutionHostIds,
+  toSshExecutionHostId,
+  type ExecutionHostId
+} from '../shared/execution-host'
 import {
   getDefaultPersistedState,
   getDefaultNotificationSettings,
@@ -114,14 +132,6 @@ import { normalizeStatusBarUsageMode } from '../shared/status-bar-usage-mode'
 import { isExistingPersistedProfile } from '../shared/project-order-manual-default-notice'
 import { resolveUsagePercentageDisplayChangeNoticeDismissed } from '../shared/usage-percentage-display-change-notice'
 import { normalizePRBotAuthorOverrides } from '../shared/pr-bot-author-overrides'
-import {
-  LOCAL_EXECUTION_HOST_ID,
-  normalizeExecutionHostOrder,
-  normalizeExecutionHostId,
-  normalizeVisibleExecutionHostIds,
-  toSshExecutionHostId,
-  type ExecutionHostId
-} from '../shared/execution-host'
 import { toRelaySshPtyId } from './providers/ssh-pty-id'
 import {
   migrateUiHostScopeSshTargetId,
@@ -191,6 +201,7 @@ import {
   normalizeWorkspaceStatuses
 } from '../shared/workspace-statuses'
 import { clampMarkdownTocPanelWidth } from '../shared/markdown-toc-panel-width'
+import { clampCombinedDiffFileTreeWidth } from '../shared/combined-diff-file-tree-width'
 import { isLegacyRepoForExternalWorktreeVisibility } from '../shared/worktree-ownership'
 import { sanitizeRepoIcon } from '../shared/repo-icon'
 import { normalizeRepoBadgeColor } from '../shared/repo-badge-color'
@@ -223,6 +234,10 @@ import {
   normalizeTuiAgentEnvRecord
 } from '../shared/tui-agent-launch-defaults'
 import { normalizeTerminalCursorStyleDefault } from '../shared/terminal-cursor-style-settings'
+import {
+  normalizeOsc52ClipboardDefaultOn,
+  osc52ClipboardDefaultOnOverridesPersistedOff
+} from '../shared/osc52-clipboard-settings'
 import { normalizeTerminalLineHeight } from '../shared/terminal-line-height-settings'
 import { normalizeUiLanguage } from '../shared/ui-language'
 import { normalizeBrowserPageZoomLevel } from '../shared/browser-page-zoom'
@@ -406,6 +421,29 @@ function gcStaleWorktreeMeta(state: PersistedState): number {
     removed++
   }
   return removed
+}
+
+function normalizeWorktreeLinkedItemMetadata(state: PersistedState): boolean {
+  let changed = false
+  for (const meta of Object.values(state.worktreeMeta ?? {})) {
+    const linkedWorkItem = normalizeWorkspaceLinkedItem(meta.linkedWorkItem)
+    const sourceContext = normalizeStoredTaskSourceContext(meta.linkedTaskSourceContext)
+    const linkedTaskSourceContext = isWorkspaceLinkedItemSourceContextMatch(
+      linkedWorkItem,
+      sourceContext
+    )
+      ? sourceContext
+      : null
+    if (!areWorkspaceLinkedItemsEqual(meta.linkedWorkItem, linkedWorkItem)) {
+      meta.linkedWorkItem = linkedWorkItem
+      changed = true
+    }
+    if (!areTaskSourceContextsEqual(meta.linkedTaskSourceContext, linkedTaskSourceContext)) {
+      meta.linkedTaskSourceContext = linkedTaskSourceContext
+      changed = true
+    }
+  }
+  return changed
 }
 
 function readGithubCacheSnapshot(dataFile: string): PersistedState['githubCache'] | null {
@@ -776,16 +814,22 @@ function normalizeProjectOrderBy(projectOrderBy: unknown): PersistedState['ui'][
   return getDefaultUIState().projectOrderBy
 }
 
-function normalizeRightSidebarTab(tab: unknown): PersistedState['ui']['rightSidebarTab'] {
+export function normalizeRightSidebarTab(tab: unknown): PersistedState['ui']['rightSidebarTab'] {
   if (
     tab === 'explorer' ||
     tab === 'search' ||
     tab === 'vault' ||
     tab === 'workspaces' ||
+    tab === 'pr-checks' ||
     tab === 'source-control' ||
     tab === 'checks' ||
     tab === 'ports'
   ) {
+    return tab
+  }
+  // Why: plugin tabs are open-ended `plugin:<publisher>.<id>/<panel>` keys; validate the
+  // shape so a persisted plugin tab doesn't reset to Explorer on restart.
+  if (typeof tab === 'string' && isPluginPanelTabKey(tab)) {
     return tab
   }
   return getDefaultUIState().rightSidebarTab
@@ -1099,6 +1143,7 @@ function backfillLegacyAutomationContexts(
 type LegacySshTarget = SshTarget & {
   remoteWorkspaceSyncEnabled?: unknown
   remoteWorkspaceSyncGracePeriodSeconds?: unknown
+  experimentalPtySourceCreditV1?: unknown
 }
 
 // Why: old targets predate configHost; default to label-based lookup so imported SSH aliases still resolve via ssh -G.
@@ -1115,6 +1160,7 @@ function normalizeSshTarget(t: SshTarget): SshTarget {
   delete target.relayGracePeriodSeconds
   delete target.systemSshConnectionReuse
   delete target.runGitLabCliOnHost
+  delete target.experimentalPtySourceCreditV1
   // Why: prefer the synced grace over stale relayGracePeriodSeconds so a user's "unlimited" (0) survives migration.
   const relayGracePeriodSeconds =
     legacySyncEnabled === true && typeof legacyGracePeriodSeconds === 'number'
@@ -2915,6 +2961,14 @@ export class Store {
         const migratedFloatingTerminalEnabled = floatingTerminalDefaultedForAllUsers
           ? (parsed.settings?.floatingTerminalEnabled ?? true)
           : true
+        // Why: the old off default persisted `false` for every profile, indistinguishable from a real opt-out — flip unmigrated profiles once (#10567).
+        const migratedOsc52Clipboard = normalizeOsc52ClipboardDefaultOn(parsed.settings)
+        const osc52ClipboardNoticePending =
+          osc52ClipboardDefaultOnOverridesPersistedOff(parsed.settings) ||
+          parsed.ui?.osc52ClipboardDefaultOnNoticePending === true
+        if (parsed.settings?.terminalAllowOsc52ClipboardDefaultedOnForAllUsers !== true) {
+          this.loadNeedsSave = true
+        }
         const floatingTerminalCwdMigrated =
           parsed.settings?.floatingTerminalCwdMigratedToAppWorkspace === true
         // Why: an earlier migration wrote '' for the notes dir; floating terminals still open at home, notes use a separate IPC.
@@ -3147,6 +3201,7 @@ export class Store {
             localWindowsRuntimeDefault: migratedWindowsRuntimeDefault,
             localAccountRuntime: migratedLocalAccountRuntime,
             localAccountRuntimeDefaultedToAutoForAllUsers: true,
+            ...migratedOsc52Clipboard,
             floatingTerminalEnabled: migratedFloatingTerminalEnabled,
             floatingTerminalDefaultedForAllUsers: true,
             floatingTerminalCwd: migratedFloatingTerminalCwd,
@@ -3331,6 +3386,9 @@ export class Store {
                   : false,
               setupGuideBrowserMilestoneLegacyComplete:
                 parsed.ui?.setupGuideBrowserMilestoneLegacyComplete === true,
+              // Why persist rather than notify inline: the flip lands during load, before any
+              // window exists, and it must survive a crash before the user ever sees the notice.
+              osc52ClipboardDefaultOnNoticePending: osc52ClipboardNoticePending,
               sortBy: migrate ? ('smart' as const) : sort,
               showDotfilesByWorktree: normalizeShowDotfilesByWorktree(
                 parsed.ui?.showDotfilesByWorktree
@@ -3467,6 +3525,10 @@ export class Store {
       this.loadNeedsSave = true
     }
     result = folderScopeConnectionMigration.state
+
+    if (normalizeWorktreeLinkedItemMetadata(result)) {
+      this.loadNeedsSave = true
+    }
 
     if (gcStaleWorktreeMeta(result) > 0) {
       this.loadNeedsSave = true
@@ -3676,12 +3738,19 @@ export class Store {
     // Why: on any write/rename failure, remove the tmp file so it doesn't leave a multi-MB orphan.
     let renamed = false
     try {
-      await writeFile(tmpFile, payload, 'utf-8')
+      // Why: fsync before rename, then fsync the directory; see writeFileDurable.
+      const handle = await open(tmpFile, 'w')
+      try {
+        await handle.writeFile(payload, 'utf-8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
       // Why: if flush() bumped writeGeneration mid-write, it already wrote fresher state; don't overwrite it.
       if (this.writeGeneration !== gen) {
         return
       }
-      await rename(tmpFile, dataFile)
+      await renameDurable(tmpFile, dataFile)
       renamed = true
       // Why re-check gen: a sync flush during the rename await may have written fresher state; don't record a stale hash over it.
       if (this.writeGeneration === gen) {
@@ -3722,8 +3791,9 @@ export class Store {
     // Why: on any write/rename failure, remove the tmp file so shutdown crashes don't leak orphans.
     let renamed = false
     try {
-      writeFileSync(tmpFile, payload, 'utf-8')
-      renameSync(tmpFile, dataFile)
+      // Why: fsync the temp file and the directory; a bare rename can survive as stale or empty
+      // content after power loss, losing projects/tabs back to the newest usable .bak slot.
+      writeFileDurableSync(tmpFile, dataFile, payload)
       renamed = true
       this.lastWrittenStateHash = stateHash
     } finally {
@@ -4035,6 +4105,7 @@ export class Store {
     name?: string
     folderPath?: string | null
     linkedTask?: FolderWorkspace['linkedTask']
+    linkedTaskSourceContext?: FolderWorkspace['linkedTaskSourceContext']
     connectionId?: string | null
     createdWithAgent?: FolderWorkspace['createdWithAgent']
     pendingFirstAgentMessageRename?: boolean
@@ -4050,13 +4121,18 @@ export class Store {
       throw new Error('Folder-backed project group not found.')
     }
     const now = Date.now()
+    const linkedTask = normalizeWorkspaceLinkedItem(input.linkedTask)
+    const sourceContext = normalizeStoredTaskSourceContext(input.linkedTaskSourceContext)
     const workspace: FolderWorkspace = {
       id: randomUUID(),
       projectGroupId: group.id,
       name: normalizeFolderWorkspaceName(input.name, `${group.name} workspace`),
       folderPath,
       connectionId: input.connectionId ?? group.connectionId ?? null,
-      linkedTask: input.linkedTask ?? null,
+      linkedTask,
+      linkedTaskSourceContext: isWorkspaceLinkedItemSourceContextMatch(linkedTask, sourceContext)
+        ? sourceContext
+        : null,
       comment: '',
       isArchived: false,
       isUnread: false,
@@ -4083,6 +4159,7 @@ export class Store {
         | 'name'
         | 'folderPath'
         | 'linkedTask'
+        | 'linkedTaskSourceContext'
         | 'comment'
         | 'isArchived'
         | 'isUnread'
@@ -4108,7 +4185,27 @@ export class Store {
       workspace.folderPath = updates.folderPath
     }
     if (updates.linkedTask !== undefined) {
-      workspace.linkedTask = updates.linkedTask
+      workspace.linkedTask = normalizeWorkspaceLinkedItem(updates.linkedTask)
+      if (
+        workspace.linkedTaskSourceContext &&
+        !isWorkspaceLinkedItemSourceContextMatch(
+          workspace.linkedTask,
+          workspace.linkedTaskSourceContext
+        )
+      ) {
+        workspace.linkedTaskSourceContext = null
+      }
+    }
+    if (updates.linkedTaskSourceContext !== undefined) {
+      const linkedTaskSourceContext = normalizeStoredTaskSourceContext(
+        updates.linkedTaskSourceContext
+      )
+      workspace.linkedTaskSourceContext = isWorkspaceLinkedItemSourceContextMatch(
+        workspace.linkedTask,
+        linkedTaskSourceContext
+      )
+        ? linkedTaskSourceContext
+        : null
     }
     if (updates.comment !== undefined) {
       workspace.comment = updates.comment
@@ -4445,9 +4542,13 @@ export class Store {
     > & {
       sourceControlAi?: Repo['sourceControlAi'] | null
       externalWorktreeDiscoverySuppressedAt?: Repo['externalWorktreeDiscoverySuppressedAt'] | null
-    }
+    },
+    hostId?: ExecutionHostId
   ): Repo | null {
-    const repo = this.state.repos.find((r) => r.id === id)
+    const repo = this.state.repos.find(
+      (candidate) =>
+        candidate.id === id && (!hostId || getRepoExecutionHostId(candidate) === hostId)
+    )
     if (!repo) {
       return null
     }
@@ -4986,6 +5087,16 @@ export class Store {
   setWorktreeMeta(worktreeId: string, meta: Partial<WorktreeMeta>): WorktreeMeta {
     const existing = this.state.worktreeMeta[worktreeId] || getDefaultWorktreeMeta()
     const updated = { ...existing, ...meta }
+    updated.linkedWorkItem = normalizeWorkspaceLinkedItem(updated.linkedWorkItem)
+    const linkedTaskSourceContext = normalizeStoredTaskSourceContext(
+      updated.linkedTaskSourceContext
+    )
+    updated.linkedTaskSourceContext = isWorkspaceLinkedItemSourceContextMatch(
+      updated.linkedWorkItem,
+      linkedTaskSourceContext
+    )
+      ? linkedTaskSourceContext
+      : null
     if (!updated.instanceId) {
       updated.instanceId = randomUUID()
     }
@@ -5477,7 +5588,12 @@ export class Store {
       statusBarUsageMode: normalizeStatusBarUsageMode(this.state.ui?.statusBarUsageMode),
       // Why: strict boolean coercion so a missing/legacy value reads as false (first-run notice still fires).
       trayMinimizeNoticeShown: this.state.ui?.trayMinimizeNoticeShown === true,
+      osc52ClipboardDefaultOnNoticePending:
+        this.state.ui?.osc52ClipboardDefaultOnNoticePending === true,
       markdownTocPanelWidth: clampMarkdownTocPanelWidth(this.state.ui?.markdownTocPanelWidth),
+      combinedDiffFileTreeWidth: clampCombinedDiffFileTreeWidth(
+        this.state.ui?.combinedDiffFileTreeWidth
+      ),
       visibleWorkspaceHostIds: normalizeVisibleExecutionHostIds(
         this.state.ui?.visibleWorkspaceHostIds
       ),
@@ -5577,6 +5693,9 @@ export class Store {
       ),
       markdownTocPanelWidth: clampMarkdownTocPanelWidth(
         sanitizedUpdates.markdownTocPanelWidth ?? this.state.ui?.markdownTocPanelWidth
+      ),
+      combinedDiffFileTreeWidth: clampCombinedDiffFileTreeWidth(
+        sanitizedUpdates.combinedDiffFileTreeWidth ?? this.state.ui?.combinedDiffFileTreeWidth
       ),
       visibleWorkspaceHostIds:
         updates.visibleWorkspaceHostIds !== undefined
@@ -5731,6 +5850,17 @@ export class Store {
       return this.state.workspaceSession ?? getDefaultWorkspaceSession()
     }
     return this.state.workspaceSessionsByHostId?.[resolved] ?? getDefaultWorkspaceSession()
+  }
+
+  getWorkspaceSessionHostIds(): ExecutionHostId[] {
+    const hostIds = new Set<ExecutionHostId>([LOCAL_EXECUTION_HOST_ID])
+    for (const key of Object.keys(this.state.workspaceSessionsByHostId ?? {})) {
+      const hostId = normalizeExecutionHostId(key)
+      if (hostId) {
+        hostIds.add(hostId)
+      }
+    }
+    return [...hostIds]
   }
 
   readTerminalScrollbackSnapshot(ref: string): string | null {
@@ -6676,6 +6806,8 @@ function getDefaultWorktreeMeta(): WorktreeMeta {
     linkedBitbucketPR: null,
     linkedAzureDevOpsPR: null,
     linkedGiteaPR: null,
+    linkedWorkItem: null,
+    linkedTaskSourceContext: null,
     isArchived: false,
     isUnread: false,
     isPinned: false,
