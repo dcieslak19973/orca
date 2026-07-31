@@ -164,9 +164,21 @@ describe('HostWorktreeRequestGate', () => {
     expect(gate.begin(client, { queueIfInFlight: true })).toBe(false)
     expect(gate.begin(client, { allowDuringModal: true, queueIfInFlight: true })).toBe(false)
 
+    expect(gate.isSuperseded(client)).toBe(true)
     expect(gate.finish(client)).toEqual({
       allowDuringModal: true,
       queueIfInFlight: true
     })
+  })
+
+  it('keeps an urgent response when only an ordinary refresh is queued behind it', () => {
+    const gate = new HostWorktreeRequestGate()
+    const client = {} as RpcClient
+
+    expect(gate.begin(client, { allowDuringModal: true })).toBe(true)
+    expect(gate.begin(client, { queueIfInFlight: true })).toBe(false)
+
+    expect(gate.isSuperseded(client)).toBe(false)
+    expect(gate.finish(client)).toEqual({ queueIfInFlight: true })
   })
 })
