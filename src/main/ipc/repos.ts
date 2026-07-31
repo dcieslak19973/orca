@@ -1250,7 +1250,15 @@ async function runNestedRepoScanForIpc(
   }
 }
 
-export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): void {
+type FolderWorkspaceChangeNotifier = {
+  notifyFolderWorkspaceChanged(): void
+}
+
+export function registerRepoHandlers(
+  mainWindow: BrowserWindow,
+  store: Store,
+  folderWorkspaceChangeNotifier?: FolderWorkspaceChangeNotifier
+): void {
   // Remove previously registered handlers so we can re-register on macOS app re-activation (new window).
   ipcMain.removeHandler('repos:list')
   ipcMain.removeHandler('repos:listForExecutionHost')
@@ -1498,7 +1506,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       )
       assertFolderWorkspacePathUsable(status)
       const workspace = store.createFolderWorkspace(args)
-      notifyReposChanged(mainWindow)
+      notifyFolderWorkspaceCatalogChanged(mainWindow, folderWorkspaceChangeNotifier)
       return workspace
     }
   )
@@ -1537,7 +1545,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       }
       const updated = store.updateFolderWorkspace(args.folderWorkspaceId, args.updates)
       if (updated) {
-        notifyReposChanged(mainWindow)
+        notifyFolderWorkspaceCatalogChanged(mainWindow, folderWorkspaceChangeNotifier)
       }
       return updated
     }
@@ -1551,7 +1559,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
     )
     const deleted = store.removeFolderWorkspace(args.folderWorkspaceId)
     if (deleted) {
-      notifyReposChanged(mainWindow)
+      notifyFolderWorkspaceCatalogChanged(mainWindow, folderWorkspaceChangeNotifier)
     }
     return deleted
   })
@@ -2701,6 +2709,18 @@ function notifyReposChanged(mainWindow: BrowserWindow): void {
   if (!mainWindow.isDestroyed()) {
     mainWindow.webContents.send('repos:changed')
   }
+  scheduleCurrentWorktreeBaseDirectoryWatcherSync()
+}
+
+function notifyFolderWorkspaceCatalogChanged(
+  mainWindow: BrowserWindow,
+  notifier?: FolderWorkspaceChangeNotifier
+): void {
+  if (!notifier) {
+    notifyReposChanged(mainWindow)
+    return
+  }
+  notifier.notifyFolderWorkspaceChanged()
   scheduleCurrentWorktreeBaseDirectoryWatcherSync()
 }
 
