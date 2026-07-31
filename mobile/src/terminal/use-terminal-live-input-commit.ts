@@ -74,6 +74,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   })
 
   useEffect(() => {
+    // Why: unsent kana is safe to retain; sent prefixes and timer-held text are ambiguous after an outage.
     if (!connected) {
       reconcileLiveInputAfterDisconnect()
     }

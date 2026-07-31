@@ -110,6 +110,7 @@ import {
 } from './runtime/sync-runtime-graph'
 import { useWebSessionTabsSync } from './runtime/web-session-tabs-sync'
 import { useGlobalFileDrop } from './hooks/useGlobalFileDrop'
+import { MacosTccPromptNoticeHost } from './hooks/MacosTccPromptNoticeHost'
 import { useRadixBodyPointerEventsRecovery } from './hooks/useRadixBodyPointerEventsRecovery'
 import { registerUpdaterBeforeUnloadBypass } from './lib/updater-beforeunload'
 import {
@@ -204,6 +205,7 @@ import { showTerminalShortcutCaptureNotification } from '@/lib/terminal-shortcut
 import { resolveMountedLazyModalIds, type LazyModalId } from './lazy-modal-mount-state'
 import { translate } from '@/i18n/i18n'
 import PinnedTabCloseDialog from './components/terminal-pane/PinnedTabCloseDialog'
+import WorktreeBaseFallbackDialog from './components/WorktreeBaseFallbackDialog'
 import { useOsc52ClipboardDefaultOnNotice } from './components/terminal-pane/osc52-clipboard-default-on-notice'
 import {
   hasRequestedBackgroundTerminalWorktreeMount,
@@ -443,6 +445,7 @@ function App(): React.JSX.Element {
       toggleSidebar: s.toggleSidebar,
       fetchRepos: s.fetchRepos,
       fetchReposForAllHosts: s.fetchReposForAllHosts,
+      awaitLocalRepoCatalogSettlement: s.awaitLocalRepoCatalogSettlement,
       fetchProjectGroups: s.fetchProjectGroups,
       fetchProjectGroupsForAllHosts: s.fetchProjectGroupsForAllHosts,
       fetchFolderWorkspaces: s.fetchFolderWorkspaces,
@@ -897,6 +900,9 @@ function App(): React.JSX.Element {
         await timeRendererStartupStep('fetch-repos-local', () =>
           actions.fetchReposForAllHosts({ remoteHosts: 'skip' })
         )
+        await timeRendererStartupStep('repo-catalog-settlement', () =>
+          actions.awaitLocalRepoCatalogSettlement()
+        )
         // Why: folder workspaces merge against projectGroups (repos.ts fetchFolderWorkspacesForAllHosts),
         // so keep this chain ordered while overlapping it with session-scoped hydration.
         const localCatalogChain = (async () => {
@@ -949,6 +955,9 @@ function App(): React.JSX.Element {
         }
         const sessionRead = sessionOutcome.value
         await keybindingsPromise
+        await timeRendererStartupStep('repo-catalog-final-settlement', () =>
+          actions.awaitLocalRepoCatalogSettlement()
+        )
         if (!cancelled) {
           const sessionHydrationOptions = {
             additionalValidWorkspaceKeys: collectFolderWorkspaceKeysFromSession(sessionRead.session)
@@ -1062,9 +1071,15 @@ function App(): React.JSX.Element {
           await timeRendererStartupStep('first-window-services-await', () =>
             window.api.app.awaitFirstWindowStartupServices()
           )
+          await timeRendererStartupStep('recover-legacy-worker-terminals-pre-reconnect', () =>
+            window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()
+          )
           reconnectStarted = true
           await timeRendererStartupStep('reconnect-terminals', () =>
             actions.reconnectPersistedTerminals(abortController.signal)
+          )
+          await timeRendererStartupStep('recover-legacy-worker-terminals-post-reconnect', () =>
+            window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()
           )
           syncZoomCSSVar()
           // Why (issue #1158): unlock the session writer only after hydration and all dependent steps succeeded, so a mid-startup throw can't serialize partially-mutated state to disk.
@@ -1140,7 +1155,9 @@ function App(): React.JSX.Element {
           if (!reconnectStarted) {
             try {
               await window.api.app.awaitFirstWindowStartupServices()
+              await window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()
               await actions.reconnectPersistedTerminals(abortController.signal)
+              await window.api.app.recoverLegacyWorkerTerminalsForRendererStartup()
             } catch (reconnectErr) {
               console.error(
                 '[startup] reconnectPersistedTerminals failed in error path:',
@@ -2192,7 +2209,7 @@ function App(): React.JSX.Element {
   return (
     <div
       ref={setAppRootNode}
-      className="flex flex-col h-dvh w-screen overflow-hidden"
+      className="app-layout"
       style={
         {
           '--collapsed-sidebar-header-width': `${collapsedSidebarHeaderWidth}px`,
@@ -2207,6 +2224,8 @@ function App(): React.JSX.Element {
         <ConfirmationDialogProvider>
           <LinkRoutingPreferenceDialogProvider>
             <WorkspacePortScanner enabled={workspaceSessionReady} />
+            {/* Why: plugin language-pack discovery must not re-render the App shell. */}
+            <MacosTccPromptNoticeHost />
             {/* Why: leaf-mounted retention sync keeps agent-status subscriptions out of the App render tree. */}
             <RetainedAgentsSyncGate />
             <AgentHibernationGate />
@@ -2751,6 +2770,7 @@ function App(): React.JSX.Element {
       </TooltipProvider>
       <Toaster closeButton toastOptions={{ className: 'font-sans text-sm' }} />
       <SkillFreshnessNudge />
+      <WorktreeBaseFallbackDialog />
       <PinnedTabCloseDialog />
       {/* Why: Electron's drag-region hit-test is DOM-order-based (ignores z-index); render last so WindowControls stay clickable. */}
       {hasCustomTitleBar && <WindowControls />}

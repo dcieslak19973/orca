@@ -9,6 +9,7 @@ import type {
   HostedReviewProvider
 } from '../shared/hosted-review'
 import type { NativeFileDropPayload } from '../shared/native-file-drop'
+import type { BrowserFindSource } from '../shared/browser-find-source'
 import type { DashboardSnapshot, DashboardRevealAgentArgs } from '../shared/dashboard-snapshot'
 import type {
   TerminalPreviewConnectResult,
@@ -18,6 +19,7 @@ import type {
   TerminalTabCloseRequest,
   TerminalTabCloseResponse
 } from '../shared/terminal-tab-close'
+import type { TerminalTabCreateReply } from '../shared/terminal-reveal-identity'
 import type {
   LocalLogTailChangedPayload,
   LocalLogTailReadArgs,
@@ -26,6 +28,7 @@ import type {
 } from '../shared/local-log-tail-types'
 import type { ReadClipboardTextOptions } from '../shared/clipboard-text'
 import type { AppIdentity } from '../shared/app-identity'
+import type { ReleaseChannel } from '../shared/release-channel'
 import type {
   HostQualifiedDetectedWorktreeResult,
   LegacyDetectedWorktreeRequest,
@@ -46,6 +49,8 @@ import type {
 } from '../shared/terminal-render-desync-evidence'
 import type { MobileRelayStatus } from '../shared/mobile-relay-status'
 import type { MobilePairingConnectionMode } from '../shared/mobile-pairing-connection-mode'
+import type { MobileRelayMintFailure } from '../shared/mobile-relay-mint-failure'
+import type { VerifyAndAddRuntimeEnvironmentResult } from '../shared/remote-pairing-verification'
 import type {
   SshMutationExpectation,
   SshConnectionState,
@@ -126,6 +131,7 @@ import type {
   CustomPet,
   DetectedWorktreeListResult,
   DirEntry,
+  FilesystemPathFlavor,
   ForceDeleteWorktreeBranchResult,
   FsChangedPayload,
   GhosttyImportPreview,
@@ -250,6 +256,7 @@ import type {
   StatsSummary,
   MemorySnapshot,
   TuiAgent,
+  ReleaseBuildListResult,
   UpdateCheckOptions,
   UpdateStatus,
   Worktree,
@@ -970,6 +977,8 @@ export type AppApi = {
   /** Resolves when the daemon PTY provider and hook receiver have either
    *  started or failed open for the first BrowserWindow. */
   awaitFirstWindowStartupServices: () => Promise<void>
+  /** Reconciles legacy worker authority around persisted terminal reconnect. */
+  recoverLegacyWorkerTerminalsForRendererStartup: () => Promise<void>
   /** Emits a startup benchmark marker when ORCA_STARTUP_DIAGNOSTICS is enabled. */
   startupDiagnostic: (event: string, details?: Record<string, unknown>) => Promise<void>
   /** macOS active input mode, or layout ID when no IME is selected (e.g. `com.apple.keylayout.PolishPro`).
@@ -1187,6 +1196,7 @@ export type PreloadApi = {
     }) => Promise<{ status: 'applied' | 'rejected' }>
     update: (args: {
       repoId: string
+      hostId?: ExecutionHostId
       updates: Partial<
         Pick<
           Repo,
@@ -1656,7 +1666,10 @@ export type PreloadApi = {
       submitAnonymously?: boolean
       githubLogin: string | null
       githubEmail: string | null
-    }) => Promise<{ ok: true } | { ok: false; status: number | null; error: string }>
+      images?: { contentType: string; data: Uint8Array }[]
+    }) => Promise<
+      { ok: true; imagesDelivered?: boolean } | { ok: false; status: number | null; error: string }
+    >
   }
   crashReports: {
     getLatestPending: () => Promise<CrashReportRecord | null>
@@ -2229,6 +2242,7 @@ export type PreloadApi = {
     disconnect: (args?: { siteId?: string }) => Promise<void>
     selectSite: (args: { siteId: JiraSiteSelection }) => Promise<JiraConnectionStatus>
     status: () => Promise<JiraConnectionStatus>
+    readStatus: () => Promise<JiraConnectionStatus>
     testConnection: (args?: {
       siteId?: string
     }) => Promise<{ ok: true; viewer: JiraViewer } | { ok: false; error: string }>
@@ -2236,13 +2250,21 @@ export type PreloadApi = {
       jql: string
       limit?: number
       siteId?: JiraSiteSelection
+      requestId?: string
     }) => Promise<JiraIssue[]>
+    cancelSearchIssues: (args: { requestId: string }) => Promise<void>
     listIssues: (args?: {
       filter?: JiraIssueFilter
       limit?: number
       siteId?: JiraSiteSelection
     }) => Promise<JiraIssue[]>
     getIssue: (args: { key: string; siteId?: string }) => Promise<JiraIssue | null>
+    lookupIssueSummary: (args: {
+      key: string
+      siteId: string
+      requestId?: string
+    }) => Promise<JiraIssue | null>
+    cancelIssueSummary: (args: { requestId: string }) => Promise<void>
     createIssue: (
       args: JiraCreateIssueArgs
     ) => Promise<{ ok: true; id: string; key: string; url: string } | { ok: false; error: string }>
@@ -2462,6 +2484,14 @@ export type PreloadApi = {
     unsubscribe: (ptyId: string) => Promise<void>
     onData: (callback: (payload: TerminalPreviewDataPayload) => void) => () => void
   }
+  macosTccPrompts: {
+    /** Fires once macOS has raised its Nth consent dialog naming Orca (#9756). */
+    onThreshold: (callback: (payload: { promptCount: number }) => void) => () => void
+    consumePending: () => Promise<{ claimId: number; promptCount: number } | null>
+    acknowledgePending: (claimId: number) => Promise<void>
+    releasePending: (claimId: number) => Promise<void>
+    dismiss: () => Promise<void>
+  }
   developerPermissions: {
     getStatus: () => Promise<DeveloperPermissionState[]>
     request: (args: { id: DeveloperPermissionId }) => Promise<DeveloperPermissionRequestResult>
@@ -2515,7 +2545,10 @@ export type PreloadApi = {
       hooks: OrcaHooks | null
       mayNeedUpdate: boolean
     }>
-    inspectSetupScriptImports: (args: { repoId: string }) => Promise<SetupScriptImportCandidate[]>
+    inspectSetupScriptImports: (args: {
+      repoId: string
+      hostId?: ExecutionHostId
+    }) => Promise<SetupScriptImportCandidate[]>
     createIssueCommandRunner: (args: {
       repoId: string
       worktreePath: string
@@ -2640,6 +2673,8 @@ export type PreloadApi = {
     download: () => Promise<void>
     quitAndInstall: () => Promise<void>
     dismissNudge: () => Promise<void>
+    dismissAvailableUpdate: () => Promise<void>
+    listBuilds: (channel: ReleaseChannel) => Promise<ReleaseBuildListResult>
     onStatus: (callback: (status: UpdateStatus) => void) => () => void
     onClearDismissal: (callback: () => void) => () => void
   }
@@ -3082,7 +3117,7 @@ export type PreloadApi = {
     replyTabClose: (reply: { requestId: string; error?: string }) => void
     onNewTerminalTab: (callback: () => void) => () => void
     onFocusBrowserAddressBar: (callback: () => void) => () => void
-    onFindInBrowserPage: (callback: () => void) => () => void
+    onFindInBrowserPage: (source: BrowserFindSource, callback: () => void) => () => void
     onReloadBrowserPage: (callback: () => void) => () => void
     onBrowserHistoryNavigate: (callback: (direction: 'back' | 'forward') => void) => () => void
     onZoomBrowserPage: (callback: (direction: 'in' | 'out' | 'reset') => void) => () => void
@@ -3125,7 +3160,9 @@ export type PreloadApi = {
         title?: string
         ptyId?: string
         activate?: boolean
+        focus?: boolean
         presentation?: RuntimeTerminalPresentation
+        surfaceOwner?: false
         tabId?: string
         leafId?: string
         splitFromLeafId?: string
@@ -3139,12 +3176,7 @@ export type PreloadApi = {
     onRequestTerminalTabMount: (
       callback: (data: { worktreeId: string; tabId?: string; ptyId?: string }) => void
     ) => () => void
-    replyTerminalCreate: (reply: {
-      requestId: string
-      tabId?: string
-      title?: string
-      error?: string
-    }) => void
+    replyTerminalCreate: (reply: TerminalTabCreateReply) => void
     onSplitTerminal: (
       callback: (data: {
         tabId: string
@@ -3213,6 +3245,7 @@ export type PreloadApi = {
       runtimeEnvironmentId?: string | null
     }) => Promise<string | null>
     writeClipboardText: (text: string) => Promise<void>
+    writeTerminalClipboardText: (text: string) => Promise<void>
     writeSelectionClipboardText: (text: string) => Promise<void>
     writeClipboardImage: (dataUrl: string) => Promise<void>
     performNativePaste: (options?: { mode?: 'paste' | 'paste-and-match-style' }) => void
@@ -3278,6 +3311,9 @@ export type PreloadApi = {
     onTerminalDriverChanged: (
       callback: (event: { ptyId: string; driver: RuntimeTerminalDriverState }) => void
     ) => () => void
+    onNativeChatLaunchDraftResolved?: (
+      callback: (event: { tabId: string; text: string; createdAt: number }) => void
+    ) => () => void
     onBrowserDriverChanged: (
       callback: (event: { browserPageId: string; driver: RuntimeBrowserDriverState }) => void
     ) => () => void
@@ -3288,11 +3324,20 @@ export type PreloadApi = {
       name: string
       pairingCode: string
     }) => Promise<{ environment: PublicKnownRuntimeEnvironment }>
+    verifyAndAddFromPairingCode: (args: {
+      name: string
+      pairingCode: string
+      allowLoopback?: boolean
+    }) => Promise<VerifyAndAddRuntimeEnvironmentResult>
     resolve: (args: { selector: string }) => Promise<PublicKnownRuntimeEnvironment>
     remove: (args: { selector: string }) => Promise<{ removed: PublicKnownRuntimeEnvironment }>
     disconnect: (args: {
       selector: string
     }) => Promise<{ disconnected: PublicKnownRuntimeEnvironment }>
+    connect: (args: {
+      selector: string
+      timeoutMs?: number
+    }) => Promise<RuntimeRpcResponse<RuntimeStatus>>
     getStatus: (args: {
       selector: string
       timeoutMs?: number
@@ -3393,6 +3438,7 @@ export type PreloadApi = {
     browseDir: (args: { targetId: string; dirPath: string }) => Promise<{
       entries: { name: string; isDirectory: boolean }[]
       resolvedPath: string
+      pathFlavor: FilesystemPathFlavor
     }>
     onCredentialRequest: (
       callback: (data: {
@@ -3505,6 +3551,13 @@ export type PreloadApi = {
     /** Listen for PTYs on a legacy numeric pane key that have registry-backed UUID pane proof. */
     onMigrationUnsupported: (callback: (entry: MigrationUnsupportedPtyEntry) => void) => () => void
     onMigrationUnsupportedClear: (callback: (data: { ptyId: string }) => void) => () => void
+    onLegacyWorkerTerminalRecovery: (
+      callback: (data: {
+        paneKey: string
+        resolution: 'adopted' | 'exited' | 'rolled_back'
+        ptyId?: string
+      }) => void
+    ) => () => void
     getMigrationUnsupportedSnapshot: () => Promise<MigrationUnsupportedPtyEntry[]>
     /** Drop a paneKey from the main-process hook cache and on-disk last-status file. Fire-and-forget. */
     drop: (paneKey: string) => void
@@ -3528,14 +3581,20 @@ export type PreloadApi = {
       connectionMode?: MobilePairingConnectionMode
       rotate?: boolean
     }) => Promise<
-      | { available: false }
+      | {
+          available: false
+          reason?: string
+          guidance?: string
+          relayFailure?: MobileRelayMintFailure
+        }
       | {
           available: true
-          qrDataUrl: string
+          qrDataUrl: string | null
+          qrError?: 'encoding_failed'
           pairingUrl: string
           endpoint: string
           deviceId: string
-          /** Mode the QR actually encodes; 'local-only' when Relay could not be attached. */
+          /** Mode the QR actually encodes. */
           connectionMode: MobilePairingConnectionMode
         }
     >

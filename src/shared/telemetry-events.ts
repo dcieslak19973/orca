@@ -27,6 +27,13 @@ import {
   DAEMON_REPLACE_REASONS,
   DAEMON_RETIRE_REASONS
 } from './daemon-lifecycle-telemetry'
+import {
+  DAEMON_AUDIT_PROCESS_REASON_VALUES,
+  DAEMON_AUDIT_REASON_VALUES,
+  DAEMON_AUDIT_STATE_VALUES,
+  DAEMON_AUDIT_TRIGGER_VALUES,
+  DAEMON_EVIDENCE_SOURCE_VALUES
+} from './daemon-audit-eligibility'
 import { SETUP_SCRIPT_IMPORT_PROVIDERS } from './setup-script-import-providers'
 import { WORKSPACE_SOURCE_VALUES, type WorkspaceSource } from './workspace-source'
 import { appStarSourceSchema } from './gh-star-source'
@@ -242,6 +249,7 @@ type BooleanGlobalSettingsKey = {
 export const SETTINGS_CHANGED_WHITELIST = [
   'editorAutoSave',
   'openLinksInApp',
+  'openLinksInAppModifierInverts',
   'experimentalMobile',
   'experimentalPet',
   'experimentalNativeChat',
@@ -371,6 +379,32 @@ const agentErrorSchema = z
 // Why: daemon start-failure signal (fleet-wide outage like v1.4.129-rc.1); enum-only so raw stderr never reaches the wire.
 const daemonStartFailedSchema = z.object({ error_class: errorClassSchema }).strict()
 
+export const runtimeRpcStartErrorClassSchema = z.enum([
+  'permission_denied',
+  'address_in_use',
+  'storage_unavailable',
+  'invalid_path',
+  'unknown'
+])
+export type RuntimeRpcStartErrorClass = z.infer<typeof runtimeRpcStartErrorClassSchema>
+
+// Why: runtime discovery failures can contain user paths; keep telemetry to closed filesystem/socket categories.
+const runtimeRpcStartFailedSchema = z
+  .object({ error_class: runtimeRpcStartErrorClassSchema })
+  .strict()
+
+// Why: a deadlocked main thread never crashes, so it produces no crash report and no user report
+// beyond "it froze" — incidence has been unmeasurable. `self_recovered` splits stalls that cleared
+// from ones that never did, which is the number that decides whether auto-recovery is ever safe to
+// build: every self-recovered stall is a kill that design would have gotten wrong. `unresponsive_ms`
+// is the observed silence, kept raw so the 45s threshold can be calibrated against real tails.
+const mainThreadHangDetectedSchema = z
+  .object({
+    unresponsive_ms: z.number().int().nonnegative(),
+    self_recovered: z.boolean()
+  })
+  .strict()
+
 // Why: daemon replace/retire lifecycle signal — issue #7936 was undiagnosable without asking a user for daemon.log.
 // Enum-only + bucketed session count so no paths, raw versions, or exact counts reach the wire.
 // The union keeps each reason pinned to its transition, so a death can't be reported as a replace.
@@ -390,6 +424,29 @@ const daemonLifecycleSchema = z.discriminatedUnion('transition', [
     })
     .strict()
 ])
+
+const daemonAuditEligibilitySchema = z
+  .object({
+    state: z.enum(DAEMON_AUDIT_STATE_VALUES),
+    reason: z.enum(DAEMON_AUDIT_REASON_VALUES),
+    trigger: z.enum(DAEMON_AUDIT_TRIGGER_VALUES),
+    evidence_sources: z.array(z.enum(DAEMON_EVIDENCE_SOURCE_VALUES)).min(1).max(12),
+    protocol_generation: z.number().int().positive().max(1_000),
+    provider: z.literal('local-daemon'),
+    endpoint_kind: z.enum(['unix-socket', 'windows-named-pipe']),
+    profile_scope: z.enum(['configured', 'unspecified']),
+    exact_incarnation: z.enum([
+      'endpoint-identity',
+      'endpoint-identity-linux-ticks',
+      'unavailable'
+    ]),
+    reachability: z.enum(['authenticated', 'disconnected', 'unknown']),
+    inventory_authority: z.enum(['authoritative', 'unavailable']),
+    process_liveness: z.enum(['present', 'gone', 'unknown']),
+    process_reason: z.enum(DAEMON_AUDIT_PROCESS_REASON_VALUES).nullable(),
+    endpoint_state: z.enum(['missing', 'named-pipe', 'non-socket', 'socket', 'unknown'])
+  })
+  .strict()
 
 // Rollout signal for granting Codex hook trust via codex app-server RPCs
 // instead of Orca's self-computed trusted_hash. `fallback`/`verify_failed`
@@ -1383,7 +1440,10 @@ export const eventSchemas = {
   agent_hook_unattributed: agentHookUnattributedSchema,
 
   daemon_start_failed: daemonStartFailedSchema,
+  main_thread_hang_detected: mainThreadHangDetectedSchema,
   daemon_lifecycle: daemonLifecycleSchema,
+  daemon_audit_eligibility: daemonAuditEligibilitySchema,
+  runtime_rpc_start_failed: runtimeRpcStartFailedSchema,
 
   codex_trust_grant: codexTrustGrantSchema,
 
