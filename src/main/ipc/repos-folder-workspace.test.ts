@@ -14,7 +14,9 @@ const {
   mockStore: {
     getProjectGroups: vi.fn(),
     getRepos: vi.fn(),
-    createFolderWorkspace: vi.fn()
+    createFolderWorkspace: vi.fn(),
+    updateFolderWorkspace: vi.fn(),
+    removeFolderWorkspace: vi.fn()
   }
 }))
 
@@ -93,6 +95,13 @@ describe('folder workspace repo IPC', () => {
       projectGroupId: 'group-1',
       folderPath: '/tmp/runtime-folder'
     })
+    mockStore.updateFolderWorkspace.mockReset().mockReturnValue({
+      id: 'folder-1',
+      projectGroupId: 'group-1',
+      folderPath: '/tmp/runtime-folder',
+      name: 'Renamed folder'
+    })
+    mockStore.removeFolderWorkspace.mockReset().mockReturnValue(true)
 
     registerRepoHandlers(mainWindow as never, mockStore as never, folderWorkspaceChangeNotifier)
   })
@@ -110,6 +119,50 @@ describe('folder workspace repo IPC', () => {
     expect(mockStore.createFolderWorkspace).toHaveBeenCalledOnce()
     expect(folderWorkspaceChangeNotifier.notifyFolderWorkspaceChanged).toHaveBeenCalledOnce()
     expect(scheduleWatcherSyncMock).toHaveBeenCalledOnce()
+    expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('repos:changed')
+  })
+
+  it('publishes one runtime catalog notification after desktop folder update', async () => {
+    const update = handlers.get('folderWorkspaces:update')
+    expect(update).toBeDefined()
+
+    await update?.(null, {
+      folderWorkspaceId: 'folder-1',
+      updates: { name: 'Renamed folder' }
+    })
+
+    expect(mockStore.updateFolderWorkspace).toHaveBeenCalledOnce()
+    expect(folderWorkspaceChangeNotifier.notifyFolderWorkspaceChanged).toHaveBeenCalledOnce()
+    expect(scheduleWatcherSyncMock).toHaveBeenCalledOnce()
+    expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('repos:changed')
+  })
+
+  it('publishes one runtime catalog notification after desktop folder deletion', async () => {
+    const remove = handlers.get('folderWorkspaces:delete')
+    expect(remove).toBeDefined()
+
+    await remove?.(null, { folderWorkspaceId: 'folder-1' })
+
+    expect(mockStore.removeFolderWorkspace).toHaveBeenCalledOnce()
+    expect(folderWorkspaceChangeNotifier.notifyFolderWorkspaceChanged).toHaveBeenCalledOnce()
+    expect(scheduleWatcherSyncMock).toHaveBeenCalledOnce()
+    expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('repos:changed')
+  })
+
+  it('does not publish catalog notifications for missing update or delete targets', async () => {
+    mockStore.updateFolderWorkspace.mockReturnValue(null)
+    mockStore.removeFolderWorkspace.mockReturnValue(false)
+
+    await handlers.get('folderWorkspaces:update')?.(null, {
+      folderWorkspaceId: 'missing-folder',
+      updates: { name: 'Missing folder' }
+    })
+    await handlers.get('folderWorkspaces:delete')?.(null, {
+      folderWorkspaceId: 'missing-folder'
+    })
+
+    expect(folderWorkspaceChangeNotifier.notifyFolderWorkspaceChanged).not.toHaveBeenCalled()
+    expect(scheduleWatcherSyncMock).not.toHaveBeenCalled()
     expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('repos:changed')
   })
 })

@@ -135,6 +135,7 @@ type RuntimeStub = {
   setNotifier: MockFn
   markRendererReloading: MockFn
   markGraphUnavailable: MockFn
+  notifyFolderWorkspaceChanged: MockFn
 }
 
 function createMainWindow(
@@ -169,7 +170,8 @@ function createRuntime(): RuntimeStub {
     attachWindow: vi.fn(),
     setNotifier: vi.fn(),
     markRendererReloading: vi.fn(),
-    markGraphUnavailable: vi.fn()
+    markGraphUnavailable: vi.fn(),
+    notifyFolderWorkspaceChanged: vi.fn()
   }
 }
 
@@ -222,6 +224,16 @@ describe('attachMainWindowServices', () => {
     releasePendingTccPromptNoticeMock.mockReset()
     systemPreferencesAskForMediaAccessMock.mockResolvedValue(true)
     systemPreferencesGetMediaAccessStatusMock.mockReturnValue('granted')
+  })
+
+  it('wires folder workspace catalog notifications through the runtime', () => {
+    const mainWindow = createMainWindow()
+    const store = createStore()
+    const runtime = createRuntime()
+
+    attachMainWindowServices(mainWindow as never, store, runtime as never)
+
+    expect(registerRepoHandlersMock).toHaveBeenCalledWith(mainWindow, store, runtime)
   })
 
   it('reloads the app renderer through main and marks expected renderer teardown', async () => {
