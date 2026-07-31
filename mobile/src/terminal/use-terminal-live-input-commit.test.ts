@@ -64,6 +64,7 @@ function createTerminalLiveInputCommitHarness({
       activeHandleRef,
       activeSessionTabType: currentActiveSessionTabType,
       activeSessionTabTypeRef,
+      connected: true,
       liveInputRef,
       liveInputTerminalHandles,
       liveInputTerminalHandlesRef,

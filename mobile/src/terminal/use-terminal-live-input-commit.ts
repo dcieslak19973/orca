@@ -24,6 +24,7 @@ type TerminalLiveInputCommitOptions<TTabType extends string> = {
   readonly activeHandleRef: RefObject<string | null>
   readonly activeSessionTabType: TTabType | null | undefined
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
+  readonly connected: boolean
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputTerminalHandles: ReadonlySet<string>
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
@@ -47,6 +48,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   activeHandleRef,
   activeSessionTabType,
   activeSessionTabTypeRef,
+  connected,
   liveInputRef,
   liveInputTerminalHandles,
   liveInputTerminalHandlesRef,
@@ -58,6 +60,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     clearPendingLiveInputCommit,
     heldLiveInputTextRef,
     pendingLiveInputHandleRef,
+    reconcileLiveInputAfterDisconnect,
     runLiveInputBoundary,
     sentLiveInputTextRef,
     waitForPendingLiveInputFlush
@@ -69,6 +72,12 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     sendLiveTerminalInputRef,
     setLiveInputCapture
   })
+
+  useEffect(() => {
+    if (!connected) {
+      reconcileLiveInputAfterDisconnect()
+    }
+  }, [connected, reconcileLiveInputAfterDisconnect])
 
   useEffect(() => {
     const pendingHandle = pendingLiveInputHandleRef.current

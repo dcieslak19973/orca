@@ -1058,6 +1058,7 @@ export default function SessionScreen() {
     activeHandleRef,
     activeSessionTabType: activeSessionTab?.type,
     activeSessionTabTypeRef,
+    connected: connState === 'connected',
     liveInputRef,
     liveInputTerminalHandles,
     liveInputTerminalHandlesRef,

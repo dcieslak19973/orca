@@ -4,6 +4,7 @@ import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import {
   buildTerminalLiveMirrorPayload,
   computeTerminalLiveMirrorStep,
+  getTerminalLiveHeldCommitPolicy,
   TERMINAL_LIVE_HELD_SYLLABLE_COMMIT_DELAY_MS
 } from './terminal-live-composition-mirror'
 import {
@@ -26,6 +27,7 @@ type TerminalLivePendingInputFlush = {
   readonly clearPendingLiveInputCommit: () => void
   readonly heldLiveInputTextRef: RefObject<string>
   readonly pendingLiveInputHandleRef: RefObject<string | null>
+  readonly reconcileLiveInputAfterDisconnect: () => void
   readonly runLiveInputBoundary: (
     expectedHandle: string | null,
     sendBoundary: () => Promise<boolean>
@@ -44,6 +46,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 }: TerminalLivePendingInputFlushOptions<TTabType>): TerminalLivePendingInputFlush {
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
+  const lifecycleEpochRef = useRef(0)
   const heldLiveInputTextRef = useRef('')
   const sentLiveInputTextRef = useRef('')
   const pendingLiveInputHandleRef = useRef<string | null>(null)
@@ -74,6 +77,32 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const waitForPendingLiveInputFlush = useCallback(async (): Promise<boolean> => {
     return waitForTerminalLivePendingFlush(pendingLiveInputFlushRef)
   }, [])
+
+  const reconcileLiveInputAfterDisconnect = useCallback(() => {
+    const pendingHandle = pendingLiveInputHandleRef.current
+    const heldCodePoint = Array.from(heldLiveInputTextRef.current).at(-1)?.codePointAt(0)
+    const canPreserveUnsentKana =
+      pendingHandle !== null &&
+      pendingHandle === activeHandleRef.current &&
+      (activeSessionTabTypeRef.current === null ||
+        activeSessionTabTypeRef.current === 'terminal') &&
+      liveInputTerminalHandlesRef.current.has(pendingHandle) &&
+      sentLiveInputTextRef.current.length === 0 &&
+      pendingLiveInputFlushRef.current === null &&
+      heldCodePoint !== undefined &&
+      getTerminalLiveHeldCommitPolicy(heldCodePoint) === 'boundary'
+    if (canPreserveUnsentKana) {
+      clearHeldCommitTimer()
+      return
+    }
+    clearPendingLiveInputCommit()
+  }, [
+    activeHandleRef,
+    activeSessionTabTypeRef,
+    clearHeldCommitTimer,
+    clearPendingLiveInputCommit,
+    liveInputTerminalHandlesRef
+  ])
 
   const runMirrorStep = useCallback(
     async (handle: string, fieldText: string, commitHeld: boolean): Promise<boolean> => {
@@ -114,9 +143,13 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       if (payload.length === 0) {
         return waitForPendingLiveInputFlush()
       }
-      return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () =>
-        sendLiveTerminalInputRef.current(handle, payload)
-      )
+      const lifecycleEpoch = lifecycleEpochRef.current
+      return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () => {
+        if (lifecycleEpoch !== lifecycleEpochRef.current) {
+          return Promise.resolve(false)
+        }
+        return sendLiveTerminalInputRef.current(handle, payload)
+      })
     },
     [
       activeHandleRef,
@@ -142,13 +175,19 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       if (expectedHandle !== null && expectedHandle !== activeHandleRef.current) {
         return Promise.resolve(false)
       }
+      const lifecycleEpoch = lifecycleEpochRef.current
+      const sendCurrentBoundary = (): Promise<boolean> => {
+        return lifecycleEpoch === lifecycleEpochRef.current
+          ? sendBoundary()
+          : Promise.resolve(false)
+      }
       const handle = pendingLiveInputHandleRef.current
       if (!handle) {
-        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
+        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendCurrentBoundary)
       }
       if (expectedHandle !== null && handle !== expectedHandle) {
         clearPendingLiveInputCommit()
-        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
+        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendCurrentBoundary)
       }
       if (
         handle !== activeHandleRef.current ||
@@ -164,7 +203,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       if (heldLiveInputTextRef.current.length > 0) {
         void runMirrorStep(handle, heldField, true)
       }
-      const boundaryPromise = queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
+      const boundaryPromise = queueTerminalLiveBoundarySend(
+        pendingLiveInputFlushRef,
+        sendCurrentBoundary
+      )
       // Why: reserve the old field's boundary before a new generation can queue.
       clearPendingLiveInputCommit()
       return boundaryPromise
@@ -180,6 +222,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   useEffect(() => {
     return () => {
+      lifecycleEpochRef.current += 1
       if (heldCommitTimerRef.current) {
         clearTimeout(heldCommitTimerRef.current)
         heldCommitTimerRef.current = null
@@ -196,6 +239,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
     clearPendingLiveInputCommit,
     heldLiveInputTextRef,
     pendingLiveInputHandleRef,
+    reconcileLiveInputAfterDisconnect,
     runLiveInputBoundary,
     sentLiveInputTextRef,
     waitForPendingLiveInputFlush
