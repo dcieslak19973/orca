@@ -7,10 +7,6 @@ const sessionRouteSource = readFileSync(
   new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
   'utf8'
 )
-const terminalPasteSource = readFileSync(
-  new URL('../session/use-mobile-terminal-paste.ts', import.meta.url),
-  'utf8'
-)
 
 function routeSlice(anchorStart: string, anchorEnd: string): string {
   const start = sessionRouteSource.indexOf(anchorStart)
@@ -121,18 +117,11 @@ describe('session route offline-compose wiring', () => {
   })
 
   it('keeps every keystroke-grade terminal send now-or-never so nothing replays after reconnect', () => {
-    // Live mirror, buffered send, and gesture arrows must all opt out of the
-    // connect wait — a parked send replays stale bytes into the PTY. Accessory
-    // keys get the same option inside terminal-live-accessory-raw-send.ts.
+    // Direct buffered and gesture sends opt out here; live mirror and accessory
+    // paths enforce the same option in their dedicated send modules.
     const optOuts = sessionRouteSource.match(/TERMINAL_INPUT_SEND_OPTIONS/g)?.length ?? 0
-    expect(optOuts).toBe(4)
+    expect(optOuts).toBe(3)
     expect(TERMINAL_INPUT_SEND_OPTIONS).toEqual({ failWhenDisconnected: true })
-  })
-
-  it('keeps queued paste boundaries out of the reconnect wait', () => {
-    expect(terminalPasteSource).toMatch(
-      /sendRequest\([\s\S]*?'terminal\.send'[\s\S]*?TERMINAL_INPUT_SEND_OPTIONS[\s\S]*?\)/
-    )
   })
 
   it('tags terminal sends with the device presence lock only when a token exists', () => {

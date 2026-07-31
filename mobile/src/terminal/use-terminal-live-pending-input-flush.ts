@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import type { TextInput } from 'react-native'
 import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import {
@@ -17,6 +17,7 @@ type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly activeHandleRef: RefObject<string | null>
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
   readonly liveInputRef: RefObject<TextInput | null>
+  readonly liveInputOwner: string | null
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
   readonly setLiveInputCapture: (text: string) => void
@@ -40,6 +41,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   activeHandleRef,
   activeSessionTabTypeRef,
   liveInputRef,
+  liveInputOwner,
   liveInputTerminalHandlesRef,
   sendLiveTerminalInputRef,
   setLiveInputCapture
@@ -47,6 +49,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
   const lifecycleEpochRef = useRef(0)
+  const liveInputOwnerRef = useRef(liveInputOwner)
   const heldLiveInputTextRef = useRef('')
   const sentLiveInputTextRef = useRef('')
   const pendingLiveInputHandleRef = useRef<string | null>(null)
@@ -73,6 +76,15 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
     setLiveInputCapture('')
     liveInputRef.current?.setNativeProps({ text: '' })
   }, [liveInputRef, resetMirrorState, setLiveInputCapture])
+
+  useLayoutEffect(() => {
+    if (liveInputOwnerRef.current === liveInputOwner) {
+      return
+    }
+    liveInputOwnerRef.current = liveInputOwner
+    lifecycleEpochRef.current += 1
+    clearPendingLiveInputCommit()
+  }, [clearPendingLiveInputCommit, liveInputOwner])
 
   const waitForPendingLiveInputFlush = useCallback(async (): Promise<boolean> => {
     return waitForTerminalLivePendingFlush(pendingLiveInputFlushRef)

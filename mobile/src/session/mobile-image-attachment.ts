@@ -6,7 +6,7 @@ import {
 import type { MobileImageSource, PickedMobileImage } from './mobile-image-source-picker'
 import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
 import { isTerminalSendRpcAccepted } from '../terminal/terminal-send-rpc-response'
-import { TERMINAL_INPUT_SEND_OPTIONS } from '../terminal/terminal-send-request'
+import { sendMobileTerminalPasteRequest } from './mobile-terminal-paste-request'
 
 export type AttachMobileImageDeps = {
   readonly client: Pick<RpcClient, 'sendRequest'>
@@ -51,16 +51,11 @@ export async function attachMobileImageToTerminal(
   // bracketed (matching desktop paste) regardless of terminal mode.
   const payload = buildMobileImagePastePayload(imagePath)
   const send = async (): Promise<boolean> => {
-    const response = await client.sendRequest(
-      'terminal.send',
-      {
-        terminal,
-        text: payload,
-        enter: false,
-        ...(deviceToken ? { client: { id: deviceToken, type: 'mobile' as const } } : {})
-      },
-      TERMINAL_INPUT_SEND_OPTIONS
-    )
+    const response = await sendMobileTerminalPasteRequest(client, {
+      terminal,
+      text: payload,
+      deviceToken
+    })
     return isTerminalSendRpcAccepted(response)
   }
   return sendTerminalBoundary ? sendTerminalBoundary(terminal, send) : send()

@@ -55,6 +55,12 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   sendLiveTerminalInputRef,
   setLiveInputCapture
 }: TerminalLiveInputCommitOptions<TTabType>): TerminalLiveInputCommitHandlers {
+  const liveInputOwner =
+    activeHandle &&
+    liveInputTerminalHandles.has(activeHandle) &&
+    (activeSessionTabType == null || activeSessionTabType === 'terminal')
+      ? activeHandle
+      : null
   const {
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
@@ -68,6 +74,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     activeHandleRef,
     activeSessionTabTypeRef,
     liveInputRef,
+    liveInputOwner,
     liveInputTerminalHandlesRef,
     sendLiveTerminalInputRef,
     setLiveInputCapture
