@@ -87,7 +87,7 @@ type EnrichedAgentHookEventPayload = AgentHookEventPayload & {
 
 type PersistedAgentHookEventPayload = Omit<
   EnrichedAgentHookEventPayload,
-  'launchToken' | 'promptInteractionKey'
+  'claudeRunningShellOrMonitor' | 'launchToken' | 'promptInteractionKey'
 > & {
   launchTokenHash?: string
 }
@@ -750,6 +750,13 @@ export class AgentHookServer {
     }
     // Why: a 'working' pane can be child-driven; Ctrl+C doesn't stop background children, so inferring done would retire live child rows.
     if (payload.subagents?.some((subagent) => subagent.state !== 'idle')) {
+      return false
+    }
+    // Why: Escape/Ctrl+C at Claude's idle prompt does not stop provider-owned background shells.
+    if (
+      agentType === 'claude' &&
+      this.state.claudeRunningShellOrMonitorPaneKeys.has(existing.paneKey)
+    ) {
       return false
     }
 
@@ -1718,6 +1725,7 @@ export class AgentHookServer {
       providerSession?: unknown
       providerSessionOnly?: unknown
       isReplay?: boolean
+      claudeRunningShellOrMonitor?: unknown
       payload: unknown
     },
     connectionId: string
@@ -1806,6 +1814,16 @@ export class AgentHookServer {
     ) {
       return
     }
+    if (
+      normalizedPayload.agentType === 'claude' &&
+      typeof envelope.claudeRunningShellOrMonitor === 'boolean'
+    ) {
+      if (envelope.claudeRunningShellOrMonitor) {
+        this.state.claudeRunningShellOrMonitorPaneKeys.add(paneKey)
+      } else {
+        this.state.claudeRunningShellOrMonitorPaneKeys.delete(paneKey)
+      }
+    }
     // Why: run the HTTP path's warn-once version/env-mismatch diagnostics with this.env as expected.
     warnOnHookEnvOrVersionMismatch(this.state, {
       version: envelope.version,
@@ -1827,6 +1845,10 @@ export class AgentHookServer {
       providerSession,
       providerSessionOnly: envelope.providerSessionOnly === true ? true : undefined,
       isReplay: envelope.isReplay === true ? true : undefined,
+      claudeRunningShellOrMonitor:
+        typeof envelope.claudeRunningShellOrMonitor === 'boolean'
+          ? envelope.claudeRunningShellOrMonitor
+          : undefined,
       payload: normalizedPayload
     }
     this.recordCurrentAuthorityObservation(event)
@@ -2495,6 +2517,7 @@ export class AgentHookServer {
         continue
       }
       const {
+        claudeRunningShellOrMonitor: _claudeRunningShellOrMonitor,
         promptInteractionKey: _promptInteractionKey,
         launchToken,
         ...persistedPayload

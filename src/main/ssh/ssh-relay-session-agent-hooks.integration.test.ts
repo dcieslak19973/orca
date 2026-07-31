@@ -478,6 +478,7 @@ describe('SshRelaySession agent hooks over a fake relay transport', () => {
         toolUseId: 'toolu-1',
         toolAgentId: 'agent-subagent-a',
         toolAgentType: 'Review',
+        claudeRunningShellOrMonitor: true,
         providerSessionOnly: true,
         providerSession: {
           key: 'session_id',
@@ -500,6 +501,7 @@ describe('SshRelaySession agent hooks over a fake relay transport', () => {
           toolUseId: 'toolu-1',
           toolAgentId: 'agent-subagent-a',
           toolAgentType: 'Review',
+          claudeRunningShellOrMonitor: true,
           providerSessionOnly: true,
           providerSession: {
             key: 'session_id',
