@@ -1034,6 +1034,9 @@ export default function SessionScreen() {
   const webReadyHandlesRef = useRef<Set<string>>(new Set())
   const activeHandleRef = useRef<string | null>(null)
   const activeSessionTabTypeRef = useRef<MobileSessionTabType | null>(null)
+  const terminalInputScope = `${hostId}\0${worktreeId}`
+  const terminalInputScopeRef = useRef(terminalInputScope)
+  terminalInputScopeRef.current = terminalInputScope
   const pendingActiveSessionTabIdRef = useRef<string | null>(null)
   const pendingActiveTerminalHandleRef = useRef<string | null>(null)
   // Why: remember the page id to activate its session tab once it syncs (bridge auto-activate flags only webContents, not the app-level active tab).
@@ -1071,6 +1074,7 @@ export default function SessionScreen() {
     activeSessionTabTypeRef,
     connected: connState === 'connected',
     liveInputRef,
+    liveInputScope: terminalInputScope,
     liveInputTerminalHandles,
     liveInputTerminalHandlesRef,
     sendLiveTerminalInputRef,
@@ -3638,6 +3642,8 @@ export default function SessionScreen() {
     connStateRef,
     clientRef,
     deviceTokenRef,
+    inputScope: terminalInputScope,
+    inputScopeRef: terminalInputScopeRef,
     sendLiveInputExternalBoundary,
     getActiveWorktreeConnectionId,
     onError: triggerError,
@@ -3649,6 +3655,8 @@ export default function SessionScreen() {
 
   const sendLiveInputAttachmentBoundary = useMobileAttachmentInputLeaseGate({
     sendLiveInputExternalBoundary,
+    inputScope: terminalInputScope,
+    inputScopeRef: terminalInputScopeRef,
     connStateRef,
     activeHandleRef,
     activeSessionTabTypeRef,

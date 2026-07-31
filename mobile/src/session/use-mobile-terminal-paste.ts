@@ -81,6 +81,8 @@ type UseMobileTerminalPasteOptions = {
   readonly connState: ConnectionState
   readonly connStateRef: RefObject<ConnectionState>
   readonly deviceTokenRef: RefObject<string | null>
+  readonly inputScope: string
+  readonly inputScopeRef: RefObject<string>
   readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
   readonly getActiveWorktreeConnectionId: () => Promise<string | null>
   readonly onError: () => void
@@ -100,6 +102,8 @@ export function useMobileTerminalPaste({
   connState,
   connStateRef,
   deviceTokenRef,
+  inputScope,
+  inputScopeRef,
   sendLiveInputExternalBoundary,
   getActiveWorktreeConnectionId,
   onError,
@@ -109,7 +113,7 @@ export function useMobileTerminalPaste({
   showToast
 }: UseMobileTerminalPasteOptions): () => Promise<void> {
   return useCallback(async () => {
-    if (!client || !activeHandle || !canSend) {
+    if (inputScope !== inputScopeRef.current || !client || !activeHandle || !canSend) {
       return
     }
     const targetHandle = activeHandle
@@ -148,6 +152,7 @@ export function useMobileTerminalPaste({
         const currentClient = clientRef.current
         if (
           !currentClient ||
+          inputScope !== inputScopeRef.current ||
           connStateRef.current !== 'connected' ||
           targetHandle !== activeHandleRef.current ||
           activeSessionTabTypeRef.current !== 'terminal'
@@ -191,6 +196,8 @@ export function useMobileTerminalPaste({
     connStateRef,
     deviceTokenRef,
     getActiveWorktreeConnectionId,
+    inputScope,
+    inputScopeRef,
     onError,
     onSuccess,
     ptyModesRef,

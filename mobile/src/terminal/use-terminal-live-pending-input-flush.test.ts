@@ -59,6 +59,7 @@ it('reserves a slow kana boundary before a newer live-input generation', async (
       activeSessionTabTypeRef,
       liveInputRef,
       liveInputOwner: activeHandle,
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -119,6 +120,7 @@ it('preserves new kana when an old terminal boundary arrives late', async () => 
       activeSessionTabTypeRef,
       liveInputRef,
       liveInputOwner: 'terminal-b',
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -178,6 +180,7 @@ it('cancels queued terminal sends when the hook unmounts', async () => {
       activeSessionTabTypeRef,
       liveInputRef,
       liveInputOwner: activeHandle,
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined
@@ -238,6 +241,7 @@ it('cancels queued terminal boundaries when the connection drops', async () => {
       activeSessionTabTypeRef,
       liveInputRef,
       liveInputOwner: activeHandle,
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined

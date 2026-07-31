@@ -34,6 +34,7 @@ it('preserves fully unsent kana across a disconnect', async () => {
       activeSessionTabTypeRef,
       connected,
       liveInputRef,
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandles,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,

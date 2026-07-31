@@ -35,6 +35,8 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     activeHandle: { current: string | null }
     tabType: { current: string | null }
     leaseReady: { current: boolean }
+    inputScope?: string
+    inputScopeRef?: { current: string }
     showToast: (message: string, durationMs?: number) => void
     sendLiveInputExternalBoundary?: TerminalLiveInputBoundarySender
   }): { gate: () => Gate } {
@@ -43,6 +45,8 @@ describe('useMobileAttachmentInputLeaseGate', () => {
       gate = useMobileAttachmentInputLeaseGate({
         sendLiveInputExternalBoundary:
           args.sendLiveInputExternalBoundary ?? ((_handle, send) => send()),
+        inputScope: args.inputScope ?? 'host-a\0worktree-a',
+        inputScopeRef: args.inputScopeRef ?? { current: 'host-a\0worktree-a' },
         connStateRef: args.connState,
         activeHandleRef: args.activeHandle,
         activeSessionTabTypeRef: args.tabType,
@@ -134,6 +138,25 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     refs.connState.current = 'reconnecting'
     await vi.advanceTimersByTimeAsync(3200)
     await expect(result).resolves.toBe(false)
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('drops silently when the route scope changes while waiting', async () => {
+    const refs = baseRefs()
+    refs.leaseReady.current = false
+    const inputScopeRef = { current: 'host-a\0worktree-a' }
+    const showToast = vi.fn()
+    const sendBoundary = vi.fn(async () => true)
+    const { gate } = renderGate({ ...refs, inputScopeRef, showToast })
+
+    const result = gate()('terminal-1', sendBoundary)
+    await vi.advanceTimersByTimeAsync(200)
+    inputScopeRef.current = 'host-a\0worktree-b'
+    refs.leaseReady.current = true
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(result).resolves.toBe(false)
+    expect(sendBoundary).not.toHaveBeenCalled()
     expect(showToast).not.toHaveBeenCalled()
   })
 

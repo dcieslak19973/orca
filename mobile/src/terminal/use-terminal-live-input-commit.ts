@@ -26,6 +26,7 @@ type TerminalLiveInputCommitOptions<TTabType extends string> = {
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
   readonly connected: boolean
   readonly liveInputRef: RefObject<TextInput | null>
+  readonly liveInputScope: string
   readonly liveInputTerminalHandles: ReadonlySet<string>
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
@@ -50,6 +51,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   activeSessionTabTypeRef,
   connected,
   liveInputRef,
+  liveInputScope,
   liveInputTerminalHandles,
   liveInputTerminalHandlesRef,
   sendLiveTerminalInputRef,
@@ -75,6 +77,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     activeSessionTabTypeRef,
     liveInputRef,
     liveInputOwner,
+    liveInputScope,
     liveInputTerminalHandlesRef,
     sendLiveTerminalInputRef,
     setLiveInputCapture

@@ -69,6 +69,7 @@ function createTerminalLiveInputCommitHarness({
       activeSessionTabTypeRef,
       connected: currentConnected,
       liveInputRef,
+      liveInputScope: 'host-a\0worktree-a',
       liveInputTerminalHandles,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,

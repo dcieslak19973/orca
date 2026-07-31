@@ -5,6 +5,8 @@ type CurrentRef<T> = { readonly current: T }
 
 type AttachmentInputLeaseGateArgs = {
   readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
+  readonly inputScope: string
+  readonly inputScopeRef: CurrentRef<string>
   readonly connStateRef: CurrentRef<string>
   readonly activeHandleRef: CurrentRef<string | null>
   readonly activeSessionTabTypeRef: CurrentRef<string | null>
@@ -20,6 +22,8 @@ const LEASE_READY_TIMEOUT_MS = 3000
 /** Waits for the terminal lease, then reserves the attachment behind live input. */
 export function useMobileAttachmentInputLeaseGate({
   sendLiveInputExternalBoundary,
+  inputScope,
+  inputScopeRef,
   connStateRef,
   activeHandleRef,
   activeSessionTabTypeRef,
@@ -30,6 +34,7 @@ export function useMobileAttachmentInputLeaseGate({
     async (targetHandle, sendBoundary): Promise<boolean> => {
       // Why: image picking/upload can outlive the original tab.
       if (
+        inputScope !== inputScopeRef.current ||
         connStateRef.current !== 'connected' ||
         targetHandle !== activeHandleRef.current ||
         activeSessionTabTypeRef.current !== 'terminal'
@@ -45,6 +50,7 @@ export function useMobileAttachmentInputLeaseGate({
       // A moved-away target drops silently like the pre-wait guard; only a lease
       // that never recovered warrants the toast.
       if (
+        inputScope !== inputScopeRef.current ||
         connStateRef.current !== 'connected' ||
         targetHandle !== activeHandleRef.current ||
         activeSessionTabTypeRef.current !== 'terminal'
@@ -54,6 +60,7 @@ export function useMobileAttachmentInputLeaseGate({
       if (nativeChatInputLeaseReadyRef.current) {
         return sendLiveInputExternalBoundary(targetHandle, async () => {
           if (
+            inputScope !== inputScopeRef.current ||
             connStateRef.current !== 'connected' ||
             targetHandle !== activeHandleRef.current ||
             activeSessionTabTypeRef.current !== 'terminal' ||
@@ -71,6 +78,8 @@ export function useMobileAttachmentInputLeaseGate({
       activeHandleRef,
       activeSessionTabTypeRef,
       connStateRef,
+      inputScope,
+      inputScopeRef,
       nativeChatInputLeaseReadyRef,
       sendLiveInputExternalBoundary,
       showToast

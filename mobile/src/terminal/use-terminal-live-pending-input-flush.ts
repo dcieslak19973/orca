@@ -18,6 +18,7 @@ type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputOwner: string | null
+  readonly liveInputScope: string
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
   readonly setLiveInputCapture: (text: string) => void
@@ -42,6 +43,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   activeSessionTabTypeRef,
   liveInputRef,
   liveInputOwner,
+  liveInputScope,
   liveInputTerminalHandlesRef,
   sendLiveTerminalInputRef,
   setLiveInputCapture
@@ -49,7 +51,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
   const lifecycleEpochRef = useRef(0)
-  const liveInputOwnerRef = useRef(liveInputOwner)
+  const liveInputGeneration = `${liveInputScope}\0${liveInputOwner ?? ''}`
+  const liveInputGenerationRef = useRef(liveInputGeneration)
+  const liveInputScopeRef = useRef(liveInputScope)
+  liveInputScopeRef.current = liveInputScope
   const heldLiveInputTextRef = useRef('')
   const sentLiveInputTextRef = useRef('')
   const pendingLiveInputHandleRef = useRef<string | null>(null)
@@ -78,13 +83,14 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   }, [liveInputRef, resetMirrorState, setLiveInputCapture])
 
   useLayoutEffect(() => {
-    if (liveInputOwnerRef.current === liveInputOwner) {
+    if (liveInputGenerationRef.current === liveInputGeneration) {
       return
     }
-    liveInputOwnerRef.current = liveInputOwner
+    liveInputGenerationRef.current = liveInputGeneration
     lifecycleEpochRef.current += 1
+    pendingLiveInputFlushRef.current = null
     clearPendingLiveInputCommit()
-  }, [clearPendingLiveInputCommit, liveInputOwner])
+  }, [clearPendingLiveInputCommit, liveInputGeneration])
 
   const waitForPendingLiveInputFlush = useCallback(async (): Promise<boolean> => {
     return waitForTerminalLivePendingFlush(pendingLiveInputFlushRef)
@@ -92,7 +98,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const reconcileLiveInputAfterDisconnect = useCallback(() => {
     // Why: pre-disconnect sends must not release queued control bytes after recovery.
+    const hadPendingFlush = pendingLiveInputFlushRef.current !== null
     lifecycleEpochRef.current += 1
+    pendingLiveInputFlushRef.current = null
     const pendingHandle = pendingLiveInputHandleRef.current
     const heldCodePoint = Array.from(heldLiveInputTextRef.current).at(-1)?.codePointAt(0)
     const canPreserveUnsentKana =
@@ -102,7 +110,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
         activeSessionTabTypeRef.current === 'terminal') &&
       liveInputTerminalHandlesRef.current.has(pendingHandle) &&
       sentLiveInputTextRef.current.length === 0 &&
-      pendingLiveInputFlushRef.current === null &&
+      !hadPendingFlush &&
       heldCodePoint !== undefined &&
       getTerminalLiveHeldCommitPolicy(heldCodePoint) === 'boundary'
     if (canPreserveUnsentKana) {
@@ -120,6 +128,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runMirrorStep = useCallback(
     async (handle: string, fieldText: string, commitHeld: boolean): Promise<boolean> => {
+      if (liveInputScope !== liveInputScopeRef.current) {
+        return false
+      }
       if (
         handle !== activeHandleRef.current ||
         (activeSessionTabTypeRef.current != null &&
@@ -146,8 +157,15 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       // flush only. Arming a settle timer for it would race the flick keyboard's
       // modifier key and commit the base kana the user is about to replace.
       if (step.heldText.length > 0 && step.heldCommitPolicy === 'timer') {
+        const lifecycleEpoch = lifecycleEpochRef.current
         heldCommitTimerRef.current = setTimeout(() => {
           heldCommitTimerRef.current = null
+          if (
+            lifecycleEpoch !== lifecycleEpochRef.current ||
+            liveInputScope !== liveInputScopeRef.current
+          ) {
+            return
+          }
           const heldField = sentLiveInputTextRef.current + heldLiveInputTextRef.current
           void runMirrorStepRef.current(handle, heldField, true)
         }, TERMINAL_LIVE_HELD_SYLLABLE_COMMIT_DELAY_MS)
@@ -159,7 +177,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       }
       const lifecycleEpoch = lifecycleEpochRef.current
       return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () => {
-        if (lifecycleEpoch !== lifecycleEpochRef.current) {
+        if (
+          lifecycleEpoch !== lifecycleEpochRef.current ||
+          liveInputScope !== liveInputScopeRef.current
+        ) {
           return Promise.resolve(false)
         }
         return sendLiveTerminalInputRef.current(handle, payload)
@@ -170,6 +191,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeSessionTabTypeRef,
       clearHeldCommitTimer,
       liveInputTerminalHandlesRef,
+      liveInputScope,
       resetMirrorState,
       sendLiveTerminalInputRef,
       waitForPendingLiveInputFlush
@@ -186,12 +208,16 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runLiveInputBoundary = useCallback(
     (expectedHandle: string | null, sendBoundary: () => Promise<boolean>): Promise<boolean> => {
+      if (liveInputScope !== liveInputScopeRef.current) {
+        return Promise.resolve(false)
+      }
       if (expectedHandle !== null && expectedHandle !== activeHandleRef.current) {
         return Promise.resolve(false)
       }
       const lifecycleEpoch = lifecycleEpochRef.current
       const sendCurrentBoundary = (): Promise<boolean> => {
-        return lifecycleEpoch === lifecycleEpochRef.current
+        return lifecycleEpoch === lifecycleEpochRef.current &&
+          liveInputScope === liveInputScopeRef.current
           ? sendBoundary()
           : Promise.resolve(false)
       }
@@ -230,6 +256,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeSessionTabTypeRef,
       clearPendingLiveInputCommit,
       liveInputTerminalHandlesRef,
+      liveInputScope,
       runMirrorStep
     ]
   )

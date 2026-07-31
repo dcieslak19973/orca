@@ -34,6 +34,7 @@ function createOwnershipHarness() {
   const firstSend = createDeferredBoolean()
   const sent: string[] = []
   let liveInputOwner: string | null = 'terminal-a'
+  let liveInputScope = 'host-a\0worktree-a'
   let handlers: ReturnType<typeof useTerminalLivePendingInputFlush<string>> | null = null
   let renderer: ReactTestRenderer | null = null
 
@@ -43,6 +44,7 @@ function createOwnershipHarness() {
       activeSessionTabTypeRef,
       liveInputRef: { current: null } as RefObject<TextInput | null>,
       liveInputOwner,
+      liveInputScope,
       liveInputTerminalHandlesRef: { current: new Set(['terminal-a', 'terminal-b']) },
       sendLiveTerminalInputRef: {
         current: async (_handle, bytes) => {
@@ -76,6 +78,10 @@ function createOwnershipHarness() {
       liveInputOwner = owner
       act(() => renderer?.update(createElement(Harness)))
     },
+    setScope(scope: string): void {
+      liveInputScope = scope
+      act(() => renderer?.update(createElement(Harness)))
+    },
     unmount(): void {
       act(() => renderer?.unmount())
     }
@@ -93,9 +99,36 @@ it('cancels a queued boundary across an active-terminal ABA change', async () =>
 
   harness.setOwner('terminal-b', 'terminal-b')
   harness.setOwner('terminal-a', 'terminal-a')
+  const currentBoundary = harness.handlers.runLiveInputBoundary('terminal-a', async () => {
+    harness.sent.push('\r')
+    return true
+  })
+
+  await expect(currentBoundary).resolves.toBe(true)
   harness.firstSend.resolve(true)
 
   await expect(boundary).resolves.toBe(false)
+  expect(harness.sent).toEqual(['か', '\r'])
+  harness.unmount()
+})
+
+it('cancels queued and producer boundaries across a reused-route scope change', async () => {
+  const harness = createOwnershipHarness()
+  const staleExternalBoundary = harness.handlers.runLiveInputBoundary
+  harness.handlers.applyLiveInputMirror('terminal-a', 'か')
+  const queuedBoundary = staleExternalBoundary('terminal-a', async () => {
+    harness.sent.push('\r')
+    return true
+  })
+  await vi.waitFor(() => expect(harness.sent).toEqual(['か']))
+
+  harness.setScope('host-a\0worktree-b')
+  const producerSend = vi.fn(async () => true)
+
+  await expect(staleExternalBoundary('terminal-a', producerSend)).resolves.toBe(false)
+  harness.firstSend.resolve(true)
+  await expect(queuedBoundary).resolves.toBe(false)
+  expect(producerSend).not.toHaveBeenCalled()
   expect(harness.sent).toEqual(['か'])
   harness.unmount()
 })
@@ -104,13 +137,14 @@ it('cancels a queued mirror delta across a live-mode ABA change', async () => {
   const harness = createOwnershipHarness()
   harness.handlers.applyLiveInputMirror('terminal-a', 'a')
   harness.handlers.applyLiveInputMirror('terminal-a', 'ab')
+  const staleFlush = harness.handlers.waitForPendingLiveInputFlush()
   await vi.waitFor(() => expect(harness.sent).toEqual(['a']))
 
   harness.setOwner('terminal-a', null)
   harness.setOwner('terminal-a', 'terminal-a')
   harness.firstSend.resolve(true)
 
-  await expect(harness.handlers.waitForPendingLiveInputFlush()).resolves.toBe(false)
+  await expect(staleFlush).resolves.toBe(false)
   expect(harness.sent).toEqual(['a'])
   harness.unmount()
 })
