@@ -4788,9 +4788,11 @@ export class OrcaRuntimeService {
   }
 
   onPtyLivenessAuthorityChanged(ptyId: string): void {
+    const paneKey = this.ptysById.get(ptyId)?.paneKey
     this.emitClientEvent({
       type: 'terminalLivenessAuthorityChanged',
       ptyId,
+      ...(paneKey ? { paneKey } : {}),
       generation: ++this.terminalLivenessAuthorityGeneration
     })
   }
@@ -15604,9 +15606,25 @@ export class OrcaRuntimeService {
       throw new Error('terminal_authority_unknown')
     }
     if (
+      expectedTerminal &&
+      expectedHandleRecord &&
+      ((expectedWorktreeId && expectedHandleRecord.worktreeId !== expectedWorktreeId) ||
+        this.getPaneKeyForTerminalHandle(expectedTerminal) !== paneKey)
+    ) {
+      throw new Error('terminal_authority_unknown')
+    }
+    if (
       expectedPtyId &&
       expectedHandleRecord?.ptyId &&
       expectedHandleRecord.ptyId !== expectedPtyId
+    ) {
+      throw new Error('terminal_authority_unknown')
+    }
+    const expectedPtyRecord = expectedPtyId ? this.ptysById.get(expectedPtyId) : null
+    if (
+      expectedPtyRecord &&
+      ((expectedWorktreeId && expectedPtyRecord.worktreeId !== expectedWorktreeId) ||
+        (expectedPtyRecord.paneKey !== null && expectedPtyRecord.paneKey !== paneKey))
     ) {
       throw new Error('terminal_authority_unknown')
     }
@@ -15619,6 +15637,16 @@ export class OrcaRuntimeService {
     }
     const live = await this.probeExactPtyLiveness(authoritativePtyId)
     if (live === false) {
+      try {
+        const current = this.resolveTerminalPane(paneKey, expectedWorktreeId)
+        if (current.ptyId && current.ptyId !== authoritativePtyId) {
+          throw new Error('terminal_authority_unknown')
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === 'terminal_authority_unknown') {
+          throw error
+        }
+      }
       throw new Error('terminal_not_found')
     }
     if (live !== true) {

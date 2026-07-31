@@ -2831,6 +2831,89 @@ describe('OrcaRuntimeService', () => {
     expect(probePtyLiveness).toHaveBeenNthCalledWith(2, 'pty-replacement')
   })
 
+  it('does not report a dead expected PTY missing after its pane gets a replacement', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const tabId = 'tab-dead-expected-replaced'
+    const paneKey = makePaneKey(tabId, HEADLESS_LEAF_ID)
+    const probePtyLiveness = vi.fn(async (ptyId: string) => ptyId !== 'pty-original')
+    runtime.setPtyController({ probePtyLiveness } as never)
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-replacement'
+        }
+      ]
+    })
+
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, 'pty-original')
+    ).rejects.toThrow('terminal_authority_unknown')
+    expect(probePtyLiveness).toHaveBeenCalledExactlyOnceWith('pty-original')
+  })
+
+  it('does not use a foreign terminal handle as missing authority for another worktree', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const foreignWorktreeId = `${TEST_REPO_ID}::/tmp/foreign-worktree`
+    const probePtyLiveness = vi.fn(async () => false)
+    runtime.setPtyController({ probePtyLiveness } as never)
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-foreign',
+          worktreeId: foreignWorktreeId,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-foreign',
+          worktreeId: foreignWorktreeId,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-foreign'
+        }
+      ]
+    })
+    const foreignHandle = runtime.resolveTerminalPane(
+      makePaneKey('tab-foreign', HEADLESS_LEAF_ID),
+      foreignWorktreeId
+    ).handle
+
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(
+        makePaneKey('tab-requested', HEADLESS_LEAF_ID),
+        TEST_WORKTREE_ID,
+        undefined,
+        foreignHandle
+      )
+    ).rejects.toThrow('terminal_authority_unknown')
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(
+        makePaneKey('tab-requested', HEADLESS_LEAF_ID),
+        TEST_WORKTREE_ID,
+        'pty-foreign'
+      )
+    ).rejects.toThrow('terminal_authority_unknown')
+    expect(probePtyLiveness).not.toHaveBeenCalled()
+  })
+
   it('revalidates exact pane ownership after an awaited liveness probe', async () => {
     const runtime = new OrcaRuntimeService(store)
     const tabId = 'tab-probe-race'
@@ -3007,6 +3090,7 @@ describe('OrcaRuntimeService', () => {
       {
         type: 'terminalLivenessAuthorityChanged',
         ptyId: 'pty-original',
+        paneKey: makePaneKey('tab-authority', HEADLESS_LEAF_ID),
         generation: initialGeneration + 1
       }
     ])

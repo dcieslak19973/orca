@@ -1561,7 +1561,7 @@ describe('createRemoteRuntimePtyTransport', () => {
     transport.destroy?.()
   })
 
-  it('waits for exact persisted-handle topology instead of declaring it missing', async () => {
+  it('reattaches an unknown persisted handle when its SSH host reconnects', async () => {
     const hostPtyId = 'ssh:hub-private@@pty-original'
     const persistedHandle = 'persisted-terminal'
     let topologyHydrated = false
@@ -1608,7 +1608,8 @@ describe('createRemoteRuntimePtyTransport', () => {
     const transport = createRemoteRuntimePtyTransport('hub-env', {
       worktreeId: 'wt-1',
       tabId: 'tab-1',
-      leafId: 'pane:1'
+      leafId: 'pane:1',
+      executionHostId: 'ssh:hub-private'
     })
 
     transport.attach({
@@ -1624,9 +1625,15 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     topologyHydrated = true
     dispatchRuntimeTerminalAuthorityEvent('hub-env', {
-      type: 'terminalLivenessAuthorityChanged',
-      ptyId: hostPtyId,
-      generation: 1
+      type: 'sshStateChanged',
+      targetId: 'hub-private',
+      state: {
+        targetId: 'hub-private',
+        status: 'connected',
+        error: null,
+        reconnectAttempt: 0,
+        connectionGeneration: 2
+      }
     })
     await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
 

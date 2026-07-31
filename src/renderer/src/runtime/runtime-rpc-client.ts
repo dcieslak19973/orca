@@ -8,6 +8,10 @@ import { callRuntimeEnvironmentWithRevision } from './runtime-rpc-environment-ca
 import { RuntimeRpcCallError, unwrapRuntimeRpcResult } from './runtime-rpc-result'
 import { captureRuntimeEnvironmentRequestRevision } from './runtime-environment-revision'
 import type { RuntimeClientTarget } from './runtime-client-target'
+import {
+  clearCoalescedRuntimeCapabilityChecks,
+  runCoalescedRuntimeCapabilityCheck
+} from './runtime-capability-check-coalescing'
 
 export {
   getActiveRuntimeTarget,
@@ -201,6 +205,7 @@ export function clearRecentRuntimeCompatibilityFailure(
     // Why: a saved endpoint can reconnect to a different runtime version; its predecessor's
     // positive capability verdict must not route a structured request to the replacement.
     runtimeCompatibilityChecks.delete(trimmed)
+    clearCoalescedRuntimeCapabilityChecks(trimmed)
   }
 }
 
@@ -208,9 +213,11 @@ export function clearRuntimeCompatibilityCache(environmentId?: string | null): v
   const trimmed = environmentId?.trim()
   if (trimmed) {
     runtimeCompatibilityChecks.delete(trimmed)
+    clearCoalescedRuntimeCapabilityChecks(trimmed)
     return
   }
   runtimeCompatibilityChecks.clear()
+  clearCoalescedRuntimeCapabilityChecks()
 }
 
 export function markRuntimeEnvironmentCompatible(environmentId: string): void {
@@ -275,44 +282,46 @@ export async function getRuntimeEnvironmentStatus(
   return entry.status
 }
 
-export async function runtimeEnvironmentSupportsCapability(
+export function runtimeEnvironmentSupportsCapability(
   environmentId: string,
   capability: RuntimeCapability,
   timeoutMs?: number
 ): Promise<boolean> {
   const trimmed = environmentId.trim()
-  const cached = runtimeCompatibilityChecks.get(trimmed)
-  // Why: callRuntimeRpc re-probes after failed status checks by default. Capability
-  // lookups must not pin to a rejected cache promise or they block recovery for
-  // the full failure TTL even though the next RPC would re-probe successfully.
-  if (cached && cached.failedAt === null) {
-    try {
-      await cached.check
-      if (
-        runtimeCompatibilityChecks.get(trimmed) === cached &&
-        cached.status &&
-        cached.statusCheckedAt !== null &&
-        Date.now() - cached.statusCheckedAt < RUNTIME_CAPABILITY_STATUS_TTL_MS
-      ) {
-        const supported = cached.status.capabilities?.includes(capability) === true
-        if (!supported) {
-          // Why: retain protocol proof for this legacy dispatch, but force the
-          // next capability decision to observe an in-place host upgrade.
-          cached.statusCheckedAt = null
+  return runCoalescedRuntimeCapabilityCheck(trimmed, capability, async () => {
+    const cached = runtimeCompatibilityChecks.get(trimmed)
+    // Why: callRuntimeRpc re-probes after failed status checks by default. Capability
+    // lookups must not pin to a rejected cache promise or they block recovery for
+    // the full failure TTL even though the next RPC would re-probe successfully.
+    if (cached && cached.failedAt === null) {
+      try {
+        await cached.check
+        if (
+          runtimeCompatibilityChecks.get(trimmed) === cached &&
+          cached.status &&
+          cached.statusCheckedAt !== null &&
+          Date.now() - cached.statusCheckedAt < RUNTIME_CAPABILITY_STATUS_TTL_MS
+        ) {
+          const supported = cached.status.capabilities?.includes(capability) === true
+          if (!supported) {
+            // Why: retain protocol proof for this legacy dispatch, but force the
+            // next capability decision to observe an in-place host upgrade.
+            cached.statusCheckedAt = null
+          }
+          return supported
         }
-        return supported
+      } catch {
+        // Fall through to a fresh status.get that refreshes the cache.
       }
-    } catch {
-      // Fall through to a fresh status.get that refreshes the cache.
     }
-  }
-  const status = await getRuntimeEnvironmentStatus(trimmed, timeoutMs)
-  const supported = status.capabilities?.includes(capability) === true
-  const resolved = runtimeCompatibilityChecks.get(trimmed)
-  if (!supported && resolved?.status === status) {
-    resolved.statusCheckedAt = null
-  }
-  return supported
+    const status = await getRuntimeEnvironmentStatus(trimmed, timeoutMs)
+    const supported = status.capabilities?.includes(capability) === true
+    const resolved = runtimeCompatibilityChecks.get(trimmed)
+    if (!supported && resolved?.status === status) {
+      resolved.statusCheckedAt = null
+    }
+    return supported
+  })
 }
 
 export async function assertRuntimeEnvironmentCapability(

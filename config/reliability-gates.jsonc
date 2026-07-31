@@ -1789,7 +1789,7 @@
         "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/remote-runtime-pty-transport.test.ts",
         "pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/pty.test.ts src/main/daemon/daemon-pty-adapter.test.ts src/main/daemon/daemon-pty-router.test.ts src/main/daemon/degraded-daemon-pty-provider.test.ts src/main/providers/ssh-pty-liveness.test.ts",
         "pnpm exec vitest run --config config/vitest.config.ts src/main/runtime/orca-runtime.test.ts",
-        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts src/renderer/src/runtime/runtime-terminal-authority-events.test.ts src/renderer/src/runtime/runtime-client-events.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts src/renderer/src/runtime/runtime-terminal-authority-events.test.ts src/renderer/src/runtime/runtime-client-events.test.ts src/renderer/src/runtime/runtime-capability-check-coalescing.test.ts",
         "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/useIpcEvents.test.ts",
         "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts",
         "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/sleeping-agent-provider-claim-index.test.ts",
@@ -1810,6 +1810,7 @@
         "src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts",
         "src/renderer/src/runtime/runtime-terminal-authority-events.test.ts",
         "src/renderer/src/runtime/runtime-client-events.test.ts",
+        "src/renderer/src/runtime/runtime-capability-check-coalescing.test.ts",
         "src/renderer/src/hooks/useIpcEvents.test.ts",
         "src/renderer/src/components/terminal-pane/pty-transport.test.ts",
         "src/renderer/src/lib/sleeping-agent-provider-claim-index.test.ts",
@@ -1872,7 +1873,7 @@
             "never creates a terminal when a required persisted host pane is unknown",
             "never creates a terminal when a required persisted host pane is missing",
             "does not carry a prior connect PTY identity into a newer attach",
-            "waits for exact persisted-handle topology instead of declaring it missing",
+            "reattaches an unknown persisted handle when its SSH host reconnects",
             "reattaches the exact paired host PTY when unknown authority becomes live",
             "keeps the current authority wait when a stale lifecycle retry settles",
             "treats terminal_not_found from a legacy graph-only host as unknown",
@@ -1945,13 +1946,21 @@
         },
         {
           "file": "src/renderer/src/runtime/runtime-terminal-authority-events.test.ts",
-          "assertions": ["routes authority, SSH reconnect, and runtime replay to matching waiters"]
+          "assertions": [
+            "routes authority, SSH reconnect, and runtime replay to matching waiters",
+            "routes a graph hydration burst only to matching pane identities",
+            "does not fan out pane-less authority events to unrelated pane waiters"
+          ]
         },
         {
           "file": "src/renderer/src/runtime/runtime-client-events.test.ts",
           "assertions": [
             "signals a replay-tagged response so event-derived state can resync after a reconnect"
           ]
+        },
+        {
+          "file": "src/renderer/src/runtime/runtime-capability-check-coalescing.test.ts",
+          "assertions": ["coalesces concurrent missing-capability verdicts onto one status.get"]
         },
         {
           "file": "src/renderer/src/hooks/useIpcEvents.test.ts",
@@ -2018,7 +2027,7 @@
       },
       "performanceBudget": {
         "required": true,
-        "evidence": "Ambiguous records use one shared topology subscription. Synchronous topology publication bursts queue one microtask and visit each still-unknown registration once, so sequential one-hundred-pane hydration is O(U), not O(U²); exact PTY authority events remain synchronous and index-routed. Sequential hydration performs one provider-claim index build, at most one sleeping-record enumeration, and one targeted adjudication/mount per identity instead of rerunning worktree recovery. Requested state is a weak exact-record/topology-generation map, so cleared generations are not retained or reused. Recovery adds at most one coalesced exact-ID host liveness operation per preserved local/daemon/SSH pane; only probes that exceed the one-second caller budget keep their provider-bounded operation long enough to publish one targeted authority generation. SSH completion tokens fence exact retirement, ID reuse, and provider replacement before cache mutation or announcement. All unknown mounted panes share one topology subscription and one authority listener and release both when idle. Paired-runtime raw PTYs use exact PTY and SSH-target indexes; persisted handles add one temporary environment-topology listener and retry only while their exact pane remains unknown. Recovery adds no PTY inventory scan, global layout enumeration, polling loop, or whole-worktree mount, and confirmed-dead recovery skips throwaway scrollback parsing."
+        "evidence": "Ambiguous records use one shared topology subscription. Synchronous topology publication bursts queue one microtask and visit each still-unknown registration once, so sequential one-hundred-pane hydration is O(U), not O(U²); exact PTY authority events remain synchronous and index-routed. Sequential hydration performs one provider-claim index build, at most one sleeping-record enumeration, and one targeted adjudication/mount per identity instead of rerunning worktree recovery. Requested state is a weak exact-record/topology-generation map, so cleared generations are not retained or reused. Recovery adds at most one coalesced exact-ID host liveness operation per preserved local/daemon/SSH pane; only probes that exceed the one-second caller budget keep their provider-bounded operation long enough to publish one targeted authority generation. SSH completion tokens fence exact retirement, ID reuse, and provider replacement before cache mutation or announcement. All unknown mounted panes share one topology subscription and one authority listener and release both when idle. Paired-runtime raw PTYs use exact PTY and SSH-target indexes; persisted handles use exact pane and nested-SSH-target indexes. One hundred targeted pane events invoke one hundred matching callbacks, pane-less events remain PTY-scoped, and one hundred concurrent legacy capability checks share one status request. Recovery adds no PTY inventory scan, global layout enumeration, polling loop, or whole-worktree mount, and confirmed-dead recovery skips throwaway scrollback parsing."
       },
       "promotionCriteria": [
         "Run in soak for at least 100 consecutive passes or 14 days across required CI platforms.",

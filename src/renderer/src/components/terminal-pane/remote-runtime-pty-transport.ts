@@ -8,7 +8,7 @@ import type {
   RuntimeCreateAgentSessionResult,
   RuntimeEnsureAgentSessionResult
 } from '../../../../shared/agent-session-host-authority'
-import type { ExecutionHostId } from '../../../../shared/execution-host'
+import { parseExecutionHostId, type ExecutionHostId } from '../../../../shared/execution-host'
 import type {
   RuntimeMobileSessionTerminalClientTab,
   RuntimeMobileSessionTabsResult,
@@ -88,7 +88,7 @@ import {
 import { getRuntimeEnvironmentRevision } from '@/runtime/runtime-environment-revision'
 import {
   subscribeRuntimeTerminalAuthority,
-  subscribeRuntimeTerminalTopology
+  subscribeRuntimeTerminalPaneAuthority
 } from '@/runtime/runtime-terminal-authority-events'
 
 const REMOTE_TERMINAL_INPUT_FLUSH_MS = 8
@@ -1078,7 +1078,7 @@ export function createRemoteRuntimePtyTransport(
   function waitForPersistedPaneAuthority(
     identity: string,
     retry: () => Promise<'unknown' | 'settled'>,
-    topologyWide = false
+    paneAuthorityKey?: string
   ): void {
     if (
       persistedPaneAuthorityWait?.identity === identity &&
@@ -1096,8 +1096,14 @@ export function createRemoteRuntimePtyTransport(
       unsubscribe: () => {}
     }
     const retryWait = (): void => requestPersistedPaneAuthorityRetry(wait)
-    wait.unsubscribe = topologyWide
-      ? subscribeRuntimeTerminalTopology(wait.environmentId, retryWait)
+    const executionHost = parseExecutionHostId(authoritativeExecutionHostId)
+    wait.unsubscribe = paneAuthorityKey
+      ? subscribeRuntimeTerminalPaneAuthority(
+          wait.environmentId,
+          paneAuthorityKey,
+          retryWait,
+          executionHost?.kind === 'ssh' ? executionHost.targetId : undefined
+        )
       : subscribeRuntimeTerminalAuthority(wait.environmentId, identity, retryWait)
     persistedPaneAuthorityWait = wait
     // Why: closes event-before-registration without polling; the exact second resolve observes any authority transition already delivered.
@@ -1107,7 +1113,7 @@ export function createRemoteRuntimePtyTransport(
   function retryPersistedHostPaneOnAuthority(args: {
     identity: string
     expectedTerminal?: string
-    topologyWide?: boolean
+    paneAuthorityKey?: string
     options: { cols?: number; rows?: number }
     lifecycleEpoch: number
     attachGeneration?: number
@@ -1150,7 +1156,7 @@ export function createRemoteRuntimePtyTransport(
         )
         return 'settled'
       },
-      args.topologyWide
+      args.paneAuthorityKey
     )
   }
 
@@ -2167,7 +2173,7 @@ export function createRemoteRuntimePtyTransport(
             retryPersistedHostPaneOnAuthority({
               identity: persistedHandle,
               expectedTerminal: persistedHandle,
-              topologyWide: true,
+              paneAuthorityKey: `${tabId}:${leafId}`,
               options,
               lifecycleEpoch: attachLifecycleEpoch,
               attachGeneration: generation,
