@@ -3,6 +3,7 @@ import * as Clipboard from 'expo-clipboard'
 import { File as FsFile, Paths } from 'expo-file-system'
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator'
 import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
+import { isTerminalSendRpcAccepted } from '../terminal/terminal-send-rpc-response'
 import type { TerminalModes } from '../terminal/terminal-webview-contract'
 import type { RpcClient } from '../transport/rpc-client'
 import type { ConnectionState } from '../transport/types'
@@ -159,12 +160,12 @@ export function useMobileTerminalPaste({
         ) {
           return false
         }
-        await sendMobileTerminalPasteRequest(currentClient, {
+        const response = await sendMobileTerminalPasteRequest(currentClient, {
           terminal: targetHandle,
           text: payload,
           deviceToken: deviceTokenRef.current
         })
-        return true
+        return isTerminalSendRpcAccepted(response)
       })
       if (!sent) {
         return

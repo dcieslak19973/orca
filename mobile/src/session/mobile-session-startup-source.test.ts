@@ -127,6 +127,17 @@ describe('mobile session startup', () => {
     }
   })
 
+  it('resets reused-route input identities before native events can fire', () => {
+    const routeReset = sliceBetween(
+      'useLayoutEffect(() => {\n    // Why: Expo reuses this screen across worktrees;',
+      "useEffect(() => {\n    if (connState !== 'connected')"
+    )
+
+    expect(routeReset).toContain('activeHandleRef.current = null')
+    expect(routeReset).toContain('activeSessionTabTypeRef.current = null')
+    expect(routeReset).toContain('clearPendingLiveInputCommit()')
+  })
+
   it('activates an already-selected pending terminal tab after hydration', () => {
     expect(source).toContain(
       'const pendingTerminalActivationAttemptRef = useRef<string | null>(null)'

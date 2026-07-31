@@ -33,8 +33,14 @@ function createDeferredText(): DeferredText {
 }
 
 function renderPaste(inputScopeRef: RefObject<string>) {
-  const sendRequest = vi.fn(async () => ({ id: '1', ok: true, result: null }))
+  const sendRequest = vi.fn(async () => ({
+    id: '1',
+    ok: true,
+    result: { send: { accepted: true } }
+  }))
   const client = { sendRequest } as unknown as RpcClient
+  const onSuccess = vi.fn()
+  const refreshCanPaste = vi.fn()
   let paste: (() => Promise<void>) | null = null
   let renderer: ReactTestRenderer | null = null
 
@@ -54,9 +60,9 @@ function renderPaste(inputScopeRef: RefObject<string>) {
       sendLiveInputExternalBoundary: (_handle, send) => send(),
       getActiveWorktreeConnectionId: async () => null,
       onError: vi.fn(),
-      onSuccess: vi.fn(),
+      onSuccess,
       ptyModesRef: { current: new Map<string, TerminalModes>() },
-      refreshCanPaste: vi.fn(),
+      refreshCanPaste,
       showToast: vi.fn()
     })
     return null
@@ -68,7 +74,7 @@ function renderPaste(inputScopeRef: RefObject<string>) {
   if (!paste || !renderer) {
     throw new Error('mobile terminal paste hook did not render')
   }
-  return { paste, renderer, sendRequest }
+  return { onSuccess, paste, refreshCanPaste, renderer, sendRequest }
 }
 
 let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null
@@ -119,5 +125,21 @@ it('drops clipboard text when the route scope changes during the read', async ()
   await result
 
   expect(sendRequest).not.toHaveBeenCalled()
+  act(() => renderer.unmount())
+})
+
+it.each([
+  ['an RPC failure', { ok: false, error: { code: 'stale', message: 'stale' } }],
+  ['an unaccepted send', { ok: true, result: { send: { accepted: false } } }]
+])('does not report paste success after %s', async (_case, response) => {
+  vi.mocked(Clipboard.getStringAsync).mockResolvedValue('echo rejected\n')
+  const inputScopeRef = { current: 'host-a\0worktree-a' }
+  const { onSuccess, paste, refreshCanPaste, renderer, sendRequest } = renderPaste(inputScopeRef)
+  sendRequest.mockResolvedValueOnce(response)
+
+  await paste()
+
+  expect(onSuccess).not.toHaveBeenCalled()
+  expect(refreshCanPaste).not.toHaveBeenCalled()
   act(() => renderer.unmount())
 })

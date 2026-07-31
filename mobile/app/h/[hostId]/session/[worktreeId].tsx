@@ -2640,7 +2640,7 @@ export default function SessionScreen() {
     router.push('/terminal-settings')
   }, [router])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Why: Expo reuses this screen across worktrees; reset route state so it can't open stale UI or reject the next snapshot.
     sessionTabActionSheetRequestSeqRef.current += 1
     sessionTabActionSheetKeyboardHideSubRef.current?.remove()

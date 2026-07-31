@@ -1,4 +1,4 @@
-import { createElement, type RefObject } from 'react'
+import { createElement, startTransition, Suspense, type RefObject } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import type { TextInput } from 'react-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +20,11 @@ type TerminalLiveInputCommitHarness = {
 type TerminalLiveInputCommitHarnessOptions = {
   readonly liveInputEnabled?: boolean
   readonly sendResult?: boolean
+}
+
+const NO_LIVE_INPUT_TERMINAL_HANDLES = new Set<string>()
+const NO_LIVE_INPUT_TERMINAL_HANDLES_REF: RefObject<Set<string>> = {
+  current: NO_LIVE_INPUT_TERMINAL_HANDLES
 }
 
 function suppressReactTestRendererDeprecationWarning(): () => void {
@@ -453,6 +458,62 @@ describe('terminal live input commit hook', () => {
     await expect(staleBoundary('terminal-a', producerSend)).resolves.toBe(false)
     expect(producerSend).not.toHaveBeenCalled()
     harness.unmount()
+  })
+
+  it('publishes only committed producer generations when a scope render is abandoned', async () => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    const activeHandleRef = { current: 'terminal-a' }
+    const activeSessionTabTypeRef = { current: 'terminal' }
+    const liveInputRef: RefObject<TextInput | null> = { current: null }
+    const sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender> = {
+      current: async () => true
+    }
+    const setLiveInputCapture = vi.fn()
+    const captures = new Map<string, ReturnType<typeof useTerminalLiveInputCommit<string>>>()
+    const neverResolves = new Promise<void>(() => undefined)
+
+    function Harness({ scope, suspend }: { scope: string; suspend?: boolean }): null {
+      const handlers = useTerminalLiveInputCommit({
+        activeHandle: 'terminal-a',
+        activeHandleRef,
+        activeSessionTabType: 'terminal',
+        activeSessionTabTypeRef,
+        connected: true,
+        liveInputRef,
+        liveInputScope: scope,
+        liveInputTerminalHandles: NO_LIVE_INPUT_TERMINAL_HANDLES,
+        liveInputTerminalHandlesRef: NO_LIVE_INPUT_TERMINAL_HANDLES_REF,
+        sendLiveTerminalInputRef,
+        setLiveInputCapture
+      })
+      captures.set(scope, handlers)
+      if (suspend) {
+        throw neverResolves
+      }
+      return null
+    }
+
+    const render = (scope: string, suspend = false) =>
+      createElement(Suspense, { fallback: null }, createElement(Harness, { scope, suspend }))
+    let renderer: ReactTestRenderer | null = null
+    await act(async () => {
+      renderer = create(render('scope-a'), { unstable_isConcurrent: true } as never)
+    })
+    const committedBoundary = captures.get('scope-a')?.sendLiveInputExternalBoundary
+
+    await act(async () => {
+      startTransition(() => renderer?.update(render('scope-b', true)))
+      await Promise.resolve()
+    })
+    const abandonedBoundary = captures.get('scope-b')?.sendLiveInputExternalBoundary
+    const committedSend = vi.fn(async () => true)
+    const abandonedSend = vi.fn(async () => true)
+
+    await expect(committedBoundary?.('terminal-a', committedSend)).resolves.toBe(true)
+    await expect(abandonedBoundary?.('terminal-a', abandonedSend)).resolves.toBe(false)
+    expect(committedSend).toHaveBeenCalledOnce()
+    expect(abandonedSend).not.toHaveBeenCalled()
+    act(() => renderer?.unmount())
   })
 
   it('detaches a buffered terminal from the previous producer boundary queue', async () => {
