@@ -9,7 +9,7 @@ import type {
   PtySpawnResult
 } from '../providers/types'
 import type { PtyProcessInspection } from '../providers/pty-process-inspection'
-import { probePtyOwners } from './daemon-pty-liveness-probe'
+import { probePtyOwners, subscribePtyLivenessAuthority } from './daemon-pty-liveness-probe'
 import { shouldHandoffDaemonHistory } from './daemon-history-handoff'
 import type { DaemonPtyRouterDataEvent, DaemonPtyRouterExitEvent } from './daemon-pty-router-events'
 
@@ -87,6 +87,10 @@ export class DaemonPtyRouter implements IPtyProvider {
 
   async probePtyLiveness(id: string): Promise<boolean | null> {
     return await probePtyOwners(id, this.sessionAdapters.get(id), this.allAdapters())
+  }
+
+  onPtyLivenessAuthorityChanged(callback: (payload: { id: string }) => void): () => void {
+    return subscribePtyLivenessAuthority(this.allAdapters(), callback)
   }
 
   write(id: string, data: string): void {

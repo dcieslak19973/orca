@@ -1195,12 +1195,100 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     it('returns unknown when the daemon cannot answer', async () => {
       const client = (
         adapter as unknown as {
-          client: { request: (type: string, payload?: unknown) => Promise<unknown> }
+          client: {
+            request: (type: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>
+          }
         }
       ).client
       vi.spyOn(client, 'request').mockRejectedValueOnce(new Error('unavailable'))
 
       await expect(adapter.probePtyLiveness('session')).resolves.toBeNull()
+    })
+
+    it('returns an immediate exact daemon answer inside the caller budget', async () => {
+      await adapter.spawn({ cols: 80, rows: 24 })
+      const client = (
+        adapter as unknown as {
+          client: {
+            request: (type: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>
+          }
+        }
+      ).client
+      vi.useFakeTimers()
+      vi.setSystemTime(10_000)
+      try {
+        const request = vi
+          .spyOn(client, 'request')
+          .mockResolvedValue({ size: { cols: 80, rows: 24 } })
+
+        await expect(adapter.probePtyLiveness('session')).resolves.toBe(true)
+        expect(request).toHaveBeenCalledWith('getSize', { sessionId: 'session' })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('returns unknown when the total daemon authority budget expires', async () => {
+      await adapter.spawn({ cols: 80, rows: 24 })
+      const client = (
+        adapter as unknown as {
+          client: {
+            request: (type: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>
+          }
+        }
+      ).client
+      vi.useFakeTimers()
+      vi.setSystemTime(10_000)
+      try {
+        vi.spyOn(client, 'request').mockReturnValue(new Promise(() => {}))
+        const probe = adapter.probePtyLiveness('session')
+
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        await expect(probe).resolves.toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('publishes one targeted authority change when a timed-out probe later answers', async () => {
+      await adapter.spawn({ cols: 80, rows: 24 })
+      const client = (
+        adapter as unknown as {
+          client: {
+            request: (type: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>
+          }
+        }
+      ).client
+      let resolveRequest!: (value: { size: { cols: number; rows: number } | null }) => void
+      const request = new Promise<{ size: { cols: number; rows: number } | null }>((resolve) => {
+        resolveRequest = resolve
+      })
+      vi.spyOn(client, 'request').mockReturnValue(request)
+      const authorityChanged = vi.fn()
+      adapter.onPtyLivenessAuthorityChanged(authorityChanged)
+      vi.useFakeTimers()
+      try {
+        const first = adapter.probePtyLiveness('session')
+        const coalesced = adapter.probePtyLiveness('session')
+        for (let tick = 0; tick < 10; tick += 1) {
+          await Promise.resolve()
+        }
+        expect(client.request).toHaveBeenCalledWith('getSize', { sessionId: 'session' })
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        await expect(first).resolves.toBeNull()
+        await expect(coalesced).resolves.toBeNull()
+        resolveRequest({ size: { cols: 80, rows: 24 } })
+        await vi.advanceTimersByTimeAsync(0)
+        for (let tick = 0; tick < 10; tick += 1) {
+          await Promise.resolve()
+        }
+
+        expect(authorityChanged).toHaveBeenCalledExactlyOnceWith({ id: 'session' })
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

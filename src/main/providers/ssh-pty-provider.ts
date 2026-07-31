@@ -23,6 +23,7 @@ import { SshPtySpawnExitRaceTracker } from './ssh-pty-spawn-exit-race'
 import { SshAgentSessionCapabilities } from './ssh-agent-session-capabilities'
 import type { PtyProcessInspection } from './pty-process-inspection'
 import { SSH_SESSION_EXPIRED_ERROR } from './ssh-pty-errors'
+import { SshPtyLivenessAuthority } from './ssh-pty-liveness'
 
 // Why: sequential relay teardown calls share one absolute budget; convert to the mux-relative timeout only at dispatch.
 function relayTimeoutOptions(deadlineMs: number | undefined): { timeoutMs: number } | undefined {
@@ -38,6 +39,7 @@ export class SshPtyProvider implements IPtyProvider {
   private readonly agentSessionCapabilities: SshAgentSessionCapabilities
   private spawnExitRaces = new SshPtySpawnExitRaceTracker()
   private readonly outputState: SshPtyProviderOutputState
+  private readonly livenessAuthority = new SshPtyLivenessAuthority()
 
   constructor(
     connectionId: string,
@@ -54,13 +56,13 @@ export class SshPtyProvider implements IPtyProvider {
       mux,
       toAppPtyId: (id) => this.toAppPtyId(id),
       livePtyIds: this.livePtyIds,
-      recordExit: (relayPtyId, incarnationId) => {
-        this.spawnExitRaces.recordExit(relayPtyId, incarnationId)
-      }
+      recordExit: (id, incarnationId) => this.spawnExitRaces.recordExit(id, incarnationId),
+      onPtyIncarnationChanged: (id) => this.livenessAuthority.invalidate(this.toAppPtyId(id))
     })
   }
 
   dispose(): void {
+    this.livenessAuthority.dispose()
     this.outputState.dispose()
     this.livePtyIds.clear()
   }
@@ -224,6 +226,7 @@ export class SshPtyProvider implements IPtyProvider {
       relayTimeoutOptions(opts.deadlineMs)
     )
     this.livePtyIds.delete(id)
+    this.livenessAuthority.invalidate(id)
   }
 
   async sendSignal(id: string, signal: string): Promise<void> {
@@ -297,8 +300,14 @@ export class SshPtyProvider implements IPtyProvider {
     return processes
   }
 
-  hasPty(id: string): boolean {
-    return this.livePtyIds.has(id)
+  hasPty = (id: string): boolean => this.livePtyIds.has(id)
+
+  async probePtyLiveness(id: string): Promise<boolean | null> {
+    return this.livenessAuthority.probe(this.mux, this.connectionId, id, this.livePtyIds)
+  }
+
+  onPtyLivenessAuthorityChanged(listener: (payload: { id: string }) => void): () => void {
+    return this.livenessAuthority.subscribe(listener)
   }
 
   async getDefaultShell(): Promise<string> {

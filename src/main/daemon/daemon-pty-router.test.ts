@@ -14,6 +14,7 @@ type AdapterMock = DaemonPtyAdapter & {
   emitBackground: (event: PtyBackgroundStreamEvent) => void
   emitExit: (id: string, code: number, incarnationId?: string) => void
   triggerWriteUnavailable: (id: string) => void
+  triggerLivenessAuthority: (id: string) => void
 }
 
 const LARGE_RECONCILE_SESSION_COUNT = 150_000
@@ -37,6 +38,7 @@ function createAdapter(
     []
   const backgroundListeners: ((payload: PtyBackgroundStreamEvent) => void)[] = []
   const writeUnavailableListeners: ((payload: { id: string }) => void)[] = []
+  const livenessAuthorityListeners: ((payload: { id: string }) => void)[] = []
   const exitListeners: ((payload: { id: string; code: number; incarnationId?: string }) => void)[] =
     []
   return {
@@ -119,6 +121,15 @@ function createAdapter(
         }
       }
     }),
+    onPtyLivenessAuthorityChanged: vi.fn((callback: (payload: { id: string }) => void) => {
+      livenessAuthorityListeners.push(callback)
+      return () => {
+        const idx = livenessAuthorityListeners.indexOf(callback)
+        if (idx !== -1) {
+          livenessAuthorityListeners.splice(idx, 1)
+        }
+      }
+    }),
     onExit: vi.fn(
       (callback: (payload: { id: string; code: number; incarnationId?: string }) => void) => {
         exitListeners.push(callback)
@@ -155,6 +166,11 @@ function createAdapter(
         listener({ id })
       }
     },
+    triggerLivenessAuthority: (id: string) => {
+      for (const listener of livenessAuthorityListeners) {
+        listener({ id })
+      }
+    },
     _writes: writes
   } as unknown as AdapterMock
 }
@@ -179,6 +195,23 @@ it('forwards dead-endpoint write-unavailable signals from every routed adapter',
   current.triggerWriteUnavailable('after-unsubscribe')
   legacy.triggerWriteUnavailable('after-unsubscribe')
   expect(recovered).toEqual(['current-pane', 'legacy-pane'])
+})
+
+it('forwards targeted liveness authority and cleans every adapter subscription', () => {
+  const current = createAdapter('current')
+  const legacy = createAdapter('legacy')
+  const router = new DaemonPtyRouter({ current, legacy: [legacy] })
+  const changed: string[] = []
+
+  const unsubscribe = router.onPtyLivenessAuthorityChanged(({ id }) => changed.push(id))
+  current.triggerLivenessAuthority('current-pane')
+  legacy.triggerLivenessAuthority('legacy-pane')
+  expect(changed).toEqual(['current-pane', 'legacy-pane'])
+
+  unsubscribe()
+  current.triggerLivenessAuthority('after-unsubscribe')
+  legacy.triggerLivenessAuthority('after-unsubscribe')
+  expect(changed).toEqual(['current-pane', 'legacy-pane'])
 })
 
 it('rejects completion inspection when no daemon owns the session', async () => {

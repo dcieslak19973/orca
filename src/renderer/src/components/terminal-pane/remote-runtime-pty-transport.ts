@@ -19,7 +19,8 @@ import type {
 } from '../../../../shared/runtime-types'
 import {
   AGENT_SESSION_OMP_RESUME_PATH_RUNTIME_CAPABILITY,
-  TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY
+  TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY,
+  TERMINAL_RESOLVE_PANE_AUTHORITY_RUNTIME_CAPABILITY
 } from '../../../../shared/protocol-version'
 import {
   isTerminalInputTooLargeWithDeferredMeasurement,
@@ -32,7 +33,11 @@ import type {
   PtyTransportRecoveryState
 } from './pty-transport-types'
 import { createPtyOutputProcessor } from './pty-transport'
-import { RuntimeRpcCallError, unwrapRuntimeRpcResult } from '../../runtime/runtime-rpc-client'
+import {
+  RuntimeRpcCallError,
+  runtimeEnvironmentSupportsCapability,
+  unwrapRuntimeRpcResult
+} from '../../runtime/runtime-rpc-client'
 import {
   getRemoteRuntimePtyEnvironmentId,
   getRemoteRuntimeTerminalHandle,
@@ -80,6 +85,7 @@ import {
   ptyShutdownLifecycleHandlers
 } from './pty-shutdown-data-suspension'
 import { getRuntimeEnvironmentRevision } from '@/runtime/runtime-environment-revision'
+import { subscribeRuntimeTerminalAuthority } from '@/runtime/runtime-terminal-authority-events'
 
 const REMOTE_TERMINAL_INPUT_FLUSH_MS = 8
 const REMOTE_TERMINAL_VIEWPORT_FLUSH_MS = 33
@@ -92,6 +98,10 @@ type RemoteAgentSessionLaunchResult =
   | RuntimeEnsureAgentSessionResult
   | RuntimeCreateAgentSessionResult
   | { terminal: RuntimeTerminalCreate; disposition?: undefined }
+type PersistedHostPaneResolution =
+  | { status: 'resolved'; terminal: RuntimeTerminalResolvePane }
+  | { status: 'missing' }
+  | { status: 'unknown' }
 const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
 
 function isRemoteTerminalStaleMessage(message: string): boolean {
@@ -160,6 +170,13 @@ export function createRemoteRuntimePtyTransport(
   let desiredOutputPaused = false
   let desiredViewport: { cols: number; rows: number } | null = null
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
+  const reportAuthoritativeSessionMissing = (): void => {
+    if (storedCallbacks.onAuthoritativeSessionMissing) {
+      storedCallbacks.onAuthoritativeSessionMissing()
+      return
+    }
+    storedCallbacks.onError?.('Remote terminal was closed.')
+  }
   let resubscribeEpoch: number | null = null
   let resubscribeRequestedHandle: string | null = null
   let resubscribeRequestedRequiresReplacement = false
@@ -240,6 +257,14 @@ export function createRemoteRuntimePtyTransport(
   let lastAttachOptions: Parameters<PtyTransport['attach']>[0] | null = null
   let resolvePaneUnavailable = false
   let recoveringPaneHandle: string | null = null
+  let persistedPaneAuthorityWait: {
+    ptyId: string
+    environmentId: string
+    pending: boolean
+    running: boolean
+    retry: () => Promise<'unknown' | 'settled'>
+    unsubscribe: () => void
+  } | null = null
   const adoptExecutionMetadata = (terminal: {
     executionHostId?: ExecutionHostId
     hostPlatform?: NodeJS.Platform
@@ -607,7 +632,7 @@ export function createRemoteRuntimePtyTransport(
       return undefined
     }
     if (hostHandle === null) {
-      storedCallbacks.onError?.('Remote terminal was closed.')
+      reportAuthoritativeSessionMissing()
       return undefined
     }
     if (!hostHandle || !isCurrent()) {
@@ -856,37 +881,66 @@ export function createRemoteRuntimePtyTransport(
     return null
   }
 
-  async function resolvePersistedHostPane(): Promise<RuntimeTerminalResolvePane | null> {
+  function getExpectedPersistedHostPtyId(): string | undefined {
+    const sessionId = lastConnectOptions?.sessionId
+    return sessionId && !getRemoteRuntimeTerminalHandle(sessionId) ? sessionId : undefined
+  }
+
+  async function resolvePersistedHostPane(): Promise<PersistedHostPaneResolution> {
     if (!tabId || !leafId || !worktreeId) {
-      return null
+      return { status: 'unknown' }
     }
     const paneKey = `${tabId}:${leafId}`
     if (resolvePaneUnavailable) {
-      return null
+      return { status: 'unknown' }
     }
+    const expectedPtyId = getExpectedPersistedHostPtyId()
     let terminal: RuntimeTerminalResolvePane
     try {
       const resolved = await callRuntime<{ terminal: RuntimeTerminalResolvePane }>(
         'terminal.resolvePane',
-        { paneKey, worktreeId }
+        { paneKey, worktreeId, expectedPtyId }
       )
       terminal = resolved.terminal
     } catch (error) {
       const message = runtimeTerminalErrorMessage(error)
       if (error instanceof RuntimeRpcCallError && error.code === 'method_not_found') {
         resolvePaneUnavailable = true
-        return null
+        return { status: 'unknown' }
       }
-      if (message.includes('terminal_not_found') || message.includes('method_not_found')) {
-        return null
+      if (message.includes('method_not_found')) {
+        resolvePaneUnavailable = true
+        return { status: 'unknown' }
+      }
+      if (message.includes('terminal_not_found')) {
+        if (!expectedPtyId) {
+          return { status: 'missing' }
+        }
+        try {
+          return (await runtimeEnvironmentSupportsCapability(
+            currentRuntimeEnvironmentId,
+            TERMINAL_RESOLVE_PANE_AUTHORITY_RUNTIME_CAPABILITY
+          ))
+            ? { status: 'missing' }
+            : { status: 'unknown' }
+        } catch {
+          return { status: 'unknown' }
+        }
+      }
+      if (message.includes('terminal_authority_unknown')) {
+        return { status: 'unknown' }
       }
       throw error
     }
     if (
       terminal.tabId !== tabId ||
       terminal.leafId !== leafId ||
-      (terminal.worktreeId !== undefined && terminal.worktreeId !== worktreeId)
+      (terminal.worktreeId !== undefined && terminal.worktreeId !== worktreeId) ||
+      (expectedPtyId !== undefined && terminal.ptyId !== expectedPtyId)
     ) {
+      if (expectedPtyId) {
+        return { status: 'unknown' }
+      }
       throw new Error('terminal_owner_mismatch')
     }
     if (terminal.worktreeId === undefined) {
@@ -903,22 +957,26 @@ export function createRemoteRuntimePtyTransport(
         matchRequestedLeaf: true
       }).some((surface) => surface.status === 'ready' && surface.terminal === terminal.handle)
       if (!exactLegacyOwner) {
-        // Why: legacy resolvePane responses lack worktree identity; only the scoped session snapshot can authorize adoption.
+        if (expectedPtyId) {
+          return { status: 'unknown' }
+        }
         throw new Error('terminal_owner_mismatch')
       }
     }
-    return terminal
+    return { status: 'resolved', terminal }
   }
 
   async function adoptResolvedHostPane(
     terminal: RuntimeTerminalResolvePane,
     options: { cols?: number; rows?: number },
     notifySpawn = true,
-    expectedAttachGeneration?: number
+    expectedAttachGeneration?: number,
+    expectedLifecycleEpoch?: number
   ): Promise<PtyConnectResult | undefined> {
     if (
       destroyed ||
-      (expectedAttachGeneration !== undefined && expectedAttachGeneration !== attachGeneration)
+      (expectedAttachGeneration !== undefined && expectedAttachGeneration !== attachGeneration) ||
+      (expectedLifecycleEpoch !== undefined && expectedLifecycleEpoch !== lifecycleEpoch)
     ) {
       return undefined
     }
@@ -948,11 +1006,120 @@ export function createRemoteRuntimePtyTransport(
       destroyed ||
       !connected ||
       !remotePtyId ||
-      (expectedAttachGeneration !== undefined && expectedAttachGeneration !== attachGeneration)
+      (expectedAttachGeneration !== undefined && expectedAttachGeneration !== attachGeneration) ||
+      (expectedLifecycleEpoch !== undefined && expectedLifecycleEpoch !== lifecycleEpoch)
     ) {
       return undefined
     }
     return { id: remotePtyId, replay: '', isReattach: true }
+  }
+
+  function clearPersistedPaneAuthorityWait(
+    expectedWait?: NonNullable<typeof persistedPaneAuthorityWait>
+  ): void {
+    if (expectedWait && persistedPaneAuthorityWait !== expectedWait) {
+      return
+    }
+    const wait = persistedPaneAuthorityWait
+    persistedPaneAuthorityWait = null
+    wait?.unsubscribe()
+  }
+
+  function requestPersistedPaneAuthorityRetry(
+    wait: NonNullable<typeof persistedPaneAuthorityWait>
+  ): void {
+    if (persistedPaneAuthorityWait !== wait) {
+      return
+    }
+    wait.pending = true
+    if (wait.running) {
+      return
+    }
+    wait.running = true
+    void (async () => {
+      try {
+        while (wait.pending && persistedPaneAuthorityWait === wait) {
+          wait.pending = false
+          if ((await wait.retry()) === 'settled') {
+            clearPersistedPaneAuthorityWait(wait)
+            return
+          }
+        }
+      } finally {
+        wait.running = false
+      }
+    })().catch(() => {})
+  }
+
+  function waitForPersistedPaneAuthority(
+    ptyId: string,
+    retry: () => Promise<'unknown' | 'settled'>
+  ): void {
+    if (
+      persistedPaneAuthorityWait?.ptyId === ptyId &&
+      persistedPaneAuthorityWait.environmentId === currentRuntimeEnvironmentId
+    ) {
+      return
+    }
+    clearPersistedPaneAuthorityWait()
+    const wait: NonNullable<typeof persistedPaneAuthorityWait> = {
+      ptyId,
+      environmentId: currentRuntimeEnvironmentId,
+      pending: false,
+      running: false,
+      retry,
+      unsubscribe: () => {}
+    }
+    wait.unsubscribe = subscribeRuntimeTerminalAuthority(wait.environmentId, ptyId, () =>
+      requestPersistedPaneAuthorityRetry(wait)
+    )
+    persistedPaneAuthorityWait = wait
+    // Why: closes event-before-registration without polling; the exact second resolve observes any authority transition already delivered.
+    requestPersistedPaneAuthorityRetry(wait)
+  }
+
+  function retryPersistedHostPaneOnAuthority(args: {
+    ptyId: string
+    options: { cols?: number; rows?: number }
+    lifecycleEpoch: number
+    attachGeneration?: number
+    notifySpawn: boolean
+  }): void {
+    const environmentId = currentRuntimeEnvironmentId
+    waitForPersistedPaneAuthority(args.ptyId, async () => {
+      if (
+        destroyed ||
+        lifecycleEpoch !== args.lifecycleEpoch ||
+        currentRuntimeEnvironmentId !== environmentId ||
+        (args.attachGeneration !== undefined && attachGeneration !== args.attachGeneration)
+      ) {
+        return 'settled'
+      }
+      const resolution = await resolvePersistedHostPane()
+      if (
+        destroyed ||
+        lifecycleEpoch !== args.lifecycleEpoch ||
+        currentRuntimeEnvironmentId !== environmentId ||
+        (args.attachGeneration !== undefined && attachGeneration !== args.attachGeneration)
+      ) {
+        return 'settled'
+      }
+      if (resolution.status === 'unknown') {
+        return 'unknown'
+      }
+      if (resolution.status === 'missing') {
+        reportAuthoritativeSessionMissing()
+        return 'settled'
+      }
+      await adoptResolvedHostPane(
+        resolution.terminal,
+        args.options,
+        args.notifySpawn,
+        args.attachGeneration,
+        args.lifecycleEpoch
+      )
+      return 'settled'
+    })
   }
 
   function recoverExpiredHostPane(): void {
@@ -1320,16 +1487,22 @@ export function createRemoteRuntimePtyTransport(
         rebindRemoteTerminalHandle(nextHandle)
       }
     } else if (tabId && leafId && worktreeId) {
-      const resolved = await resolvePersistedHostPane()
+      const resolution = await resolvePersistedHostPane()
       if (destroyed || !connected || handle !== previousHandle) {
         return
       }
-      if (!resolved || (requireReplacement && resolved.handle === previousHandle)) {
+      if (resolution.status === 'unknown') {
+        return
+      }
+      if (
+        resolution.status === 'missing' ||
+        (requireReplacement && resolution.terminal.handle === previousHandle)
+      ) {
         retireRemoteTerminalId()
         return
       }
-      if (resolved.handle !== previousHandle) {
-        rebindRemoteTerminalHandle(resolved.handle)
+      if (resolution.terminal.handle !== previousHandle) {
+        rebindRemoteTerminalHandle(resolution.terminal.handle)
       }
     }
     clearPublishedHandleWait()
@@ -1624,6 +1797,7 @@ export function createRemoteRuntimePtyTransport(
   const transport: PtyTransport = {
     async connect(options) {
       cancelTerminalCreateRetryWait()
+      clearPersistedPaneAuthorityWait()
       const connectLifecycleEpoch = ++lifecycleEpoch
       const createEnvironmentId = currentRuntimeEnvironmentId
       lastConnectOptions = options
@@ -1644,9 +1818,28 @@ export function createRemoteRuntimePtyTransport(
 
         if (options.sessionId && !getRemoteRuntimeTerminalHandle(options.sessionId)) {
           // Why: a HUB session persists host-native PTY ids; resolve its pane handle without exposing that SSH identity as a client transport id.
-          const terminal = await resolvePersistedHostPane()
-          if (terminal) {
-            return await adoptResolvedHostPane(terminal, options)
+          const resolution = await resolvePersistedHostPane()
+          if (resolution.status === 'resolved') {
+            return await adoptResolvedHostPane(
+              resolution.terminal,
+              options,
+              true,
+              undefined,
+              connectLifecycleEpoch
+            )
+          }
+          if (options.requireExistingSession) {
+            if (resolution.status === 'missing') {
+              reportAuthoritativeSessionMissing()
+            } else if (resolution.status === 'unknown' && !resolvePaneUnavailable) {
+              retryPersistedHostPaneOnAuthority({
+                ptyId: options.sessionId,
+                options,
+                lifecycleEpoch: connectLifecycleEpoch,
+                notifySpawn: true
+              })
+            }
+            return
           }
         }
 
@@ -1842,6 +2035,7 @@ export function createRemoteRuntimePtyTransport(
     },
 
     attach(options) {
+      clearPersistedPaneAuthorityWait()
       const attachLifecycleEpoch = ++lifecycleEpoch
       const generation = ++attachGeneration
       cancelTerminalCreateRetryWait()
@@ -1893,16 +2087,17 @@ export function createRemoteRuntimePtyTransport(
             },
             options,
             false,
-            generation
+            generation,
+            attachLifecycleEpoch
           )
           return
         }
-        const resolved = await resolvePersistedHostPane()
+        const resolution = await resolvePersistedHostPane()
         if (generation !== attachGeneration || destroyed) {
           return
         }
         if (
-          !resolved &&
+          resolution.status === 'unknown' &&
           resolvePaneUnavailable &&
           persistedEnvironmentId === currentRuntimeEnvironmentId
         ) {
@@ -1916,15 +2111,35 @@ export function createRemoteRuntimePtyTransport(
             },
             options,
             false,
-            generation
+            generation,
+            attachLifecycleEpoch
           )
           return
         }
-        if (!resolved) {
-          storedCallbacks.onError?.('Remote terminal was closed.')
+        if (resolution.status === 'missing') {
+          reportAuthoritativeSessionMissing()
           return
         }
-        await adoptResolvedHostPane(resolved, options, false, generation)
+        if (resolution.status === 'unknown') {
+          const expectedPtyId = getExpectedPersistedHostPtyId()
+          if (expectedPtyId && !resolvePaneUnavailable) {
+            retryPersistedHostPaneOnAuthority({
+              ptyId: expectedPtyId,
+              options,
+              lifecycleEpoch: attachLifecycleEpoch,
+              attachGeneration: generation,
+              notifySpawn: false
+            })
+          }
+          return
+        }
+        await adoptResolvedHostPane(
+          resolution.terminal,
+          options,
+          false,
+          generation,
+          attachLifecycleEpoch
+        )
       })().catch((error) => {
         if (
           generation !== attachGeneration ||
@@ -1942,6 +2157,7 @@ export function createRemoteRuntimePtyTransport(
     disconnect() {
       lifecycleEpoch += 1
       attachGeneration += 1
+      clearPersistedPaneAuthorityWait()
       cancelTerminalCreateRetryWait()
       recovery.cancel()
       recoveryRequiresReplacement = false
@@ -1973,6 +2189,7 @@ export function createRemoteRuntimePtyTransport(
     detach() {
       lifecycleEpoch += 1
       attachGeneration += 1
+      clearPersistedPaneAuthorityWait()
       cancelTerminalCreateRetryWait()
       recovery.cancel()
       recoveryRequiresReplacement = false

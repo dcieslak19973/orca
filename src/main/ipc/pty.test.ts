@@ -474,7 +474,8 @@ describe('registerPtyHandlers', () => {
       'ssh-reattach-fail',
       'ssh-reattach-ok',
       'ssh-runtime-env',
-      'ssh-generation-replacement'
+      'ssh-generation-replacement',
+      'ssh-liveness-authority'
     ]) {
       unregisterSshPtyProvider(leakedConnectionId)
     }
@@ -695,6 +696,7 @@ describe('registerPtyHandlers', () => {
     livePtyIds?: ReadonlySet<string>
     spawn?: ReturnType<typeof vi.fn>
     authoritativeOwnerListings?: boolean
+    probePtyLiveness?: ReturnType<typeof vi.fn>
   }) {
     return {
       spawn: args.spawn ?? vi.fn(async () => ({ id: 'unexpected-spawn' })),
@@ -716,6 +718,7 @@ describe('registerPtyHandlers', () => {
       listProcesses: vi.fn(async () => args.sessions ?? []),
       providesAgentSessionOwnerListings: vi.fn(() => args.authoritativeOwnerListings !== false),
       hasPty: vi.fn((id: string) => args.livePtyIds?.has(id) ?? false),
+      ...(args.probePtyLiveness ? { probePtyLiveness: args.probePtyLiveness } : {}),
       attach: vi.fn(),
       getDefaultShell: vi.fn(),
       getProfiles: vi.fn()
@@ -740,12 +743,14 @@ describe('registerPtyHandlers', () => {
     spawn: (args: Record<string, unknown>) => Promise<unknown>
     write: (ptyId: string, data: string) => boolean
     resize: (ptyId: string, cols: number, rows: number) => boolean
+    probePtyLiveness: (ptyId: string) => Promise<boolean | null>
   } {
     let controller:
       | {
           spawn: (args: Record<string, unknown>) => Promise<unknown>
           write: (ptyId: string, data: string) => boolean
           resize: (ptyId: string, cols: number, rows: number) => boolean
+          probePtyLiveness: (ptyId: string) => Promise<boolean | null>
         }
       | undefined
     const runtime = {
@@ -788,6 +793,26 @@ describe('registerPtyHandlers', () => {
 
     unregisterSshPtyProvider(connectionId)
     clearProviderPtyState(ptyId)
+  })
+
+  it('routes exact runtime liveness probes to the local or SSH PTY owner', async () => {
+    const connectionId = 'ssh-authority'
+    const sshPtyId = `ssh:${connectionId}@@remote-pty`
+    const localProbe = vi.fn(async () => true)
+    const sshProbe = vi.fn(async () => false)
+    const localProvider = createAgentClaimProvider({ probePtyLiveness: localProbe })
+    const sshProvider = createAgentClaimProvider({ probePtyLiveness: sshProbe })
+    setLocalPtyProvider(localProvider as never)
+    registerSshPtyProvider(connectionId, sshProvider as never)
+    const controller = registerAgentClaimController()
+
+    await expect(controller.probePtyLiveness('local-pty')).resolves.toBe(true)
+    await expect(controller.probePtyLiveness(sshPtyId)).resolves.toBe(false)
+    expect(localProbe).toHaveBeenCalledExactlyOnceWith('local-pty')
+    expect(sshProbe).toHaveBeenCalledExactlyOnceWith(sshPtyId)
+
+    unregisterSshPtyProvider(connectionId)
+    clearProviderPtyState(sshPtyId)
   })
 
   it('does not dispatch a runtime PTY spawn after its client disconnects', async () => {
@@ -6233,8 +6258,9 @@ describe('registerPtyHandlers', () => {
     ])
   })
 
-  it('checks single-PTY liveness without listing every session', async () => {
-    const hasPty = vi.fn((id: string) => id === 'live-pty')
+  it('prefers exact single-PTY liveness without listing every session', async () => {
+    const hasPty = vi.fn(() => false)
+    const probePtyLiveness = vi.fn(async (id: string) => id === 'live-pty')
     const listProcesses = vi.fn(async () => {
       throw new Error('listProcesses should not be called')
     })
@@ -6258,6 +6284,7 @@ describe('registerPtyHandlers', () => {
       listProcesses,
       attach: vi.fn(),
       hasPty,
+      probePtyLiveness,
       getDefaultShell: vi.fn(),
       getProfiles: vi.fn()
     } as never)
@@ -6266,9 +6293,149 @@ describe('registerPtyHandlers', () => {
     await expect(handlers.get('pty:hasPty')!(null, { id: 'live-pty' })).resolves.toBe(true)
     await expect(handlers.get('pty:hasPty')!(null, { id: 'dead-pty' })).resolves.toBe(false)
 
-    expect(hasPty).toHaveBeenCalledWith('live-pty')
-    expect(hasPty).toHaveBeenCalledWith('dead-pty')
+    expect(probePtyLiveness).toHaveBeenCalledWith('live-pty')
+    expect(probePtyLiveness).toHaveBeenCalledWith('dead-pty')
+    expect(hasPty).not.toHaveBeenCalled()
     expect(listProcesses).not.toHaveBeenCalled()
+  })
+
+  it('publishes and persists a targeted liveness-authority generation', async () => {
+    let publishAuthority: ((payload: { id: string }) => void) | undefined
+    const unsubscribe = vi.fn()
+    const provider = {
+      ...createAgentClaimProvider({
+        probePtyLiveness: vi.fn(async () => null)
+      }),
+      onPtyLivenessAuthorityChanged: vi.fn((callback: (payload: { id: string }) => void) => {
+        publishAuthority = callback
+        return unsubscribe
+      })
+    }
+    setLocalPtyProvider(provider as never)
+    registerPtyHandlers(mainWindow as never)
+    restorePtyIncarnation('late-authority-pty', 'incarnation-late-authority')
+
+    await expect(
+      handlers.get('pty:probePtyLiveness')!(null, { id: 'late-authority-pty' })
+    ).resolves.toEqual({ live: null, authorityGeneration: 0 })
+    publishAuthority?.({ id: 'unrelated-pty' })
+    publishAuthority?.({ id: 'late-authority-pty' })
+    const generation = handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+      id: 'late-authority-pty'
+    })
+
+    expect(generation).toBeTypeOf('number')
+    expect(generation).toBeGreaterThan(0)
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:livenessAuthorityChanged', {
+      id: 'late-authority-pty',
+      generation
+    })
+    expect(
+      handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+        id: 'never-published-pty'
+      })
+    ).toBe(0)
+    const authoritySendsBeforeRetirement = mainWindow.webContents.send.mock.calls.filter(
+      ([channel]) => channel === 'pty:livenessAuthorityChanged'
+    ).length
+    clearProviderPtyState('late-authority-pty')
+    publishAuthority?.({ id: 'late-authority-pty' })
+    expect(
+      handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+        id: 'late-authority-pty'
+      })
+    ).toBe(0)
+    expect(
+      mainWindow.webContents.send.mock.calls.filter(
+        ([channel]) => channel === 'pty:livenessAuthorityChanged'
+      )
+    ).toHaveLength(authoritySendsBeforeRetirement)
+  })
+
+  it('forwards current SSH authority through runtime and IPC with replacement fencing', () => {
+    let publishFirst: ((payload: { id: string }) => void) | undefined
+    let publishSecond: ((payload: { id: string }) => void) | undefined
+    const unsubscribeFirst = vi.fn()
+    const unsubscribeSecond = vi.fn()
+    const first = {
+      onPtyLivenessAuthorityChanged: vi.fn((callback: (payload: { id: string }) => void) => {
+        publishFirst = callback
+        return unsubscribeFirst
+      })
+    }
+    const second = {
+      onPtyLivenessAuthorityChanged: vi.fn((callback: (payload: { id: string }) => void) => {
+        publishSecond = callback
+        return unsubscribeSecond
+      })
+    }
+    const runtime = {
+      setPtyController: vi.fn(),
+      setRemoteTerminalSourceRangeConsumerHooks: vi.fn(),
+      onPtyLivenessAuthorityChanged: vi.fn()
+    }
+    const id = 'ssh:ssh-liveness-authority@@pty-1'
+
+    registerPtyHandlers(mainWindow as never, runtime as never)
+    mainWindow.webContents.send.mockClear()
+    registerSshPtyProvider('ssh-liveness-authority', first as never)
+    publishFirst?.({ id })
+
+    expect(runtime.onPtyLivenessAuthorityChanged).toHaveBeenCalledOnce()
+    expect(runtime.onPtyLivenessAuthorityChanged).toHaveBeenCalledWith(id)
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith(
+      'pty:livenessAuthorityChanged',
+      expect.objectContaining({ id, generation: expect.any(Number) })
+    )
+
+    registerSshPtyProvider('ssh-liveness-authority', second as never)
+    expect(unsubscribeFirst).toHaveBeenCalledOnce()
+    const sendsBeforeStaleEvents = mainWindow.webContents.send.mock.calls.length
+    publishFirst?.({ id })
+    publishSecond?.({ id: 'ssh:other-target@@pty-1' })
+    expect(mainWindow.webContents.send).toHaveBeenCalledTimes(sendsBeforeStaleEvents)
+
+    publishSecond?.({ id })
+    expect(mainWindow.webContents.send).toHaveBeenCalledTimes(sendsBeforeStaleEvents + 1)
+    expect(runtime.onPtyLivenessAuthorityChanged).toHaveBeenCalledTimes(2)
+
+    unregisterSshPtyProvider('ssh-liveness-authority')
+    expect(unsubscribeSecond).toHaveBeenCalledOnce()
+    expect(
+      handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+        id
+      })
+    ).toBe(0)
+    publishSecond?.({ id })
+    expect(mainWindow.webContents.send).toHaveBeenCalledTimes(sendsBeforeStaleEvents + 1)
+  })
+
+  it('expires untracked SSH liveness-authority generations', () => {
+    vi.useFakeTimers()
+    let publishAuthority: ((payload: { id: string }) => void) | undefined
+    const id = 'ssh:ssh-liveness-authority@@stale-pty'
+    registerSshPtyProvider('ssh-liveness-authority', {
+      onPtyLivenessAuthorityChanged: (callback: (payload: { id: string }) => void) => {
+        publishAuthority = callback
+        return vi.fn()
+      }
+    } as never)
+    registerPtyHandlers(mainWindow as never)
+
+    publishAuthority?.({ id })
+    expect(
+      handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+        id
+      })
+    ).toBeGreaterThan(0)
+
+    vi.advanceTimersByTime(30_000)
+
+    expect(
+      handlers.get('pty:getPtyLivenessAuthorityGeneration')!(null, {
+        id
+      })
+    ).toBe(0)
   })
 
   it('treats unsupported or failed single-PTY liveness as unknown', async () => {
@@ -6298,7 +6465,8 @@ describe('registerPtyHandlers', () => {
 
     await expect(handlers.get('pty:hasPty')!(null, { id: 'maybe-pty' })).resolves.toBe(null)
 
-    const hasPty = vi.fn(() => {
+    const hasPty = vi.fn(() => true)
+    const probePtyLiveness = vi.fn(async () => {
       throw new Error('provider unavailable')
     })
     setLocalPtyProvider({
@@ -6321,11 +6489,13 @@ describe('registerPtyHandlers', () => {
       listProcesses: vi.fn(async () => []),
       attach: vi.fn(),
       hasPty,
+      probePtyLiveness,
       getDefaultShell: vi.fn(),
       getProfiles: vi.fn()
     } as never)
 
     await expect(handlers.get('pty:hasPty')!(null, { id: 'maybe-pty' })).resolves.toBe(null)
+    expect(hasPty).not.toHaveBeenCalled()
   })
 
   it('lists duplicate SSH relay session ids as distinct app sessions', async () => {

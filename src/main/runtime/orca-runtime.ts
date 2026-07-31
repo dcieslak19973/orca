@@ -1566,6 +1566,7 @@ type RuntimePtyController = {
   resize?(ptyId: string, cols: number, rows: number): boolean
   // Why: exact-id mobile polls should not enumerate every local and SSH PTY.
   hasPty?(ptyId: string): boolean | null
+  probePtyLiveness?(ptyId: string): Promise<boolean | null>
   listProcesses?(connectionId?: string | null): Promise<PtyProcessInfo[]>
   serializeBuffer?(
     ptyId: string,
@@ -2727,6 +2728,7 @@ export class OrcaRuntimeService {
   private ptyController: RuntimePtyController | null = null
   private notifier: RuntimeNotifier | null = null
   private clientEventListeners = new Set<(event: RuntimeClientEvent) => void>()
+  private terminalLivenessAuthorityGeneration = 0
   // Why: mobile subscribers discard terminalSideEffects; exclude them from batch delivery and production.
   private terminalSideEffectExcludedClientEventListeners = new Set<
     (event: RuntimeClientEvent) => void
@@ -4785,6 +4787,14 @@ export class OrcaRuntimeService {
     )
   }
 
+  onPtyLivenessAuthorityChanged(ptyId: string): void {
+    this.emitClientEvent({
+      type: 'terminalLivenessAuthorityChanged',
+      ptyId,
+      generation: ++this.terminalLivenessAuthorityGeneration
+    })
+  }
+
   notifyNativeChatLaunchDraftResolved(
     handle: string,
     resolution: { text: string; createdAt: number }
@@ -5197,6 +5207,8 @@ export class OrcaRuntimeService {
 
     const previousTabs = this.tabs
     const previousLeaves = this.leaves
+    const graphWasReady = this.graphStatus === 'ready'
+    const authorityChangedPtyIds = new Set<string>()
     this.tabs = new Map(graph.tabs.map((tab) => [tab.tabId, tab]))
     const lifecycleLeaves = this.reconcileMobileSessionRetirementFences(graph.leaves)
     const changedMobileWorktrees = this.syncMobileSessionTabs(graph.mobileSessionTabs)
@@ -5219,6 +5231,14 @@ export class OrcaRuntimeService {
           : (existing?.ptyGeneration ?? 0)
       const existingPty = ptyId ? this.ptysById.get(ptyId) : undefined
       const tailSource = existing?.ptyId === ptyId ? existing : existingPty
+      if (!graphWasReady || existing?.ptyId !== ptyId || existing?.worktreeId !== leaf.worktreeId) {
+        if (existing?.ptyId) {
+          authorityChangedPtyIds.add(existing.ptyId)
+        }
+        if (ptyId) {
+          authorityChangedPtyIds.add(ptyId)
+        }
+      }
 
       nextLeaves.set(leafKey, {
         ...leaf,
@@ -5278,6 +5298,9 @@ export class OrcaRuntimeService {
     for (const oldLeafKey of this.leaves.keys()) {
       if (!nextLeaves.has(oldLeafKey)) {
         const oldLeaf = this.leaves.get(oldLeafKey)
+        if (oldLeaf?.ptyId) {
+          authorityChangedPtyIds.add(oldLeaf.ptyId)
+        }
         if (
           preserveLivePtysDuringReload &&
           oldLeaf?.ptyId &&
@@ -5359,6 +5382,9 @@ export class OrcaRuntimeService {
     this.refreshWritableFlags()
     for (const leaf of this.leaves.values()) {
       this.adoptPreAllocatedHandle(leaf)
+    }
+    for (const ptyId of authorityChangedPtyIds) {
+      this.onPtyLivenessAuthorityChanged(ptyId)
     }
 
     // Why: createTerminal waits for the renderer's graph sync to populate the
@@ -15561,6 +15587,45 @@ export class OrcaRuntimeService {
       ptyId: record?.ptyId ?? null,
       ...(worktreeId ? { worktreeId } : {}),
       ...this.getPtyExecutionHostMetadata(record?.ptyId ?? pty?.ptyId ?? null)
+    }
+  }
+
+  async resolveTerminalPaneWithAuthority(
+    paneKey: string,
+    expectedWorktreeId?: string,
+    expectedPtyId?: string
+  ): Promise<RuntimeTerminalResolvePane> {
+    if (!expectedPtyId) {
+      return this.resolveTerminalPane(paneKey, expectedWorktreeId)
+    }
+    let resolved: RuntimeTerminalResolvePane | null = null
+    try {
+      resolved = this.resolveTerminalPane(paneKey, expectedWorktreeId)
+    } catch {
+      // Exact host liveness below distinguishes graph hydration from process death.
+    }
+    const live = await this.probeExactPtyLiveness(expectedPtyId)
+    if (live === false) {
+      throw new Error('terminal_not_found')
+    }
+    if (live !== true || resolved?.ptyId !== expectedPtyId) {
+      throw new Error('terminal_authority_unknown')
+    }
+    return resolved
+  }
+
+  private async probeExactPtyLiveness(ptyId: string): Promise<boolean | null> {
+    const controller = this.ptyController
+    if (!controller) {
+      return null
+    }
+    try {
+      if (controller.probePtyLiveness) {
+        return await controller.probePtyLiveness(ptyId)
+      }
+      return controller.hasPty?.(ptyId) ?? null
+    } catch {
+      return null
     }
   }
 

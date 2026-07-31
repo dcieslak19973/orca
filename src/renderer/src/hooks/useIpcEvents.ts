@@ -115,6 +115,10 @@ import { persistWorkspaceSessionByHost } from '@/lib/workspace-session-host-pers
 import { verifyTerminalRevealIdentity } from '@/lib/terminal-reveal-identity'
 import { getLinearIssueWorkspaceName } from '../../../shared/workspace-name'
 import type { RuntimeClientEvent } from '../../../shared/runtime-client-events'
+import {
+  dispatchRuntimeTerminalAuthorityEvent,
+  dispatchRuntimeTerminalAuthorityReconnect
+} from '@/runtime/runtime-terminal-authority-events'
 import { applyHostWorktreeTerminalSleepState } from '@/components/terminal-pane/pty-shutdown-exit-deferral'
 import {
   resolveLegacyWorkerTerminalRecoveryAction,
@@ -916,6 +920,10 @@ export function useIpcEvents(): void {
       event: RuntimeClientEvent,
       generation = getEnvironmentSshStateGeneration(environmentId)
     ): void => {
+      dispatchRuntimeTerminalAuthorityEvent(environmentId, event)
+      if (event.type === 'terminalLivenessAuthorityChanged') {
+        return
+      }
       if (event.type === 'worktreeTerminalSleepState') {
         applyHostWorktreeTerminalSleepState(environmentId, event)
         return
@@ -994,7 +1002,8 @@ export function useIpcEvents(): void {
             // Why: sshStateChanged events during the transport gap are lost, so downgrade the possibly-stale bucket, then refetch.
             useAppStore.getState().markEnvironmentSshStateStale(environmentId)
             void hydrateRuntimeEnvironmentSshState(environmentId, { force: true }).catch(() => {})
-          }
+          },
+          () => dispatchRuntimeTerminalAuthorityReconnect(environmentId)
         )
       },
       onEvent: handleRuntimeClientEvent

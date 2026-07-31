@@ -2088,7 +2088,7 @@ describe('createIpcPtyTransport', () => {
     })
 
     expect(onError).not.toHaveBeenCalled()
-    expect(result).toBeUndefined()
+    expect(result).toEqual({ id: 'pty-dead', sessionRetired: true })
   })
 
   it('still surfaces non-kill spawn errors via onError', async () => {

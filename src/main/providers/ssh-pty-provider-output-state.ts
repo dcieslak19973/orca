@@ -18,6 +18,7 @@ export class SshPtyProviderOutputState {
   private readonly exitListeners = new Set<SshPtyExitCallback>()
   private readonly incarnationByRelayPtyId = new Map<string, string>()
   private readonly pausedRelayPtyIds = new Set<string>()
+  private readonly onPtyIncarnationChanged?: (relayPtyId: string) => void
   private deliveryPauseAdapter: SshPtyDeliveryPauseAdapter | null = null
   private legacyIncarnationSerial = 1
   private subscription: SshPtyNotificationSubscription | null
@@ -29,8 +30,10 @@ export class SshPtyProviderOutputState {
       toAppPtyId: (id: string) => string
       livePtyIds: Set<string>
       recordExit: (relayPtyId: string, incarnationId: unknown) => void
+      onPtyIncarnationChanged?: (relayPtyId: string) => void
     }
   ) {
+    this.onPtyIncarnationChanged = args.onPtyIncarnationChanged
     this.subscription = subscribeSshPtyNotifications({
       ...args,
       dataListeners: this.dataListeners,
@@ -43,6 +46,7 @@ export class SshPtyProviderOutputState {
         args.recordExit(relayPtyId, incarnationId)
         this.incarnationByRelayPtyId.delete(relayPtyId)
         this.pausedRelayPtyIds.delete(relayPtyId)
+        args.onPtyIncarnationChanged?.(relayPtyId)
       }
     })
   }
@@ -116,6 +120,7 @@ export class SshPtyProviderOutputState {
       incarnationId.length > 0
     ) {
       this.incarnationByRelayPtyId.set(relayPtyId, incarnationId)
+      this.onPtyIncarnationChanged?.(relayPtyId)
     }
   }
 

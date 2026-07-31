@@ -60,6 +60,8 @@ export type PtyConnectResult = {
   snapshotRows?: number
   isAlternateScreen?: boolean
   sessionExpired?: boolean
+  /** The user or lifecycle owner intentionally retired this session. */
+  sessionRetired?: boolean
   coldRestore?: { scrollback: string; cwd: string; cols?: number; rows?: number }
   replay?: string
   startupCwdFallback?: { kind: 'worktree'; cwd: string }
@@ -81,6 +83,8 @@ type PtyCallbacks = {
   ) => void
   onStatus?: (shell: string) => void
   onError?: (message: string, errors?: string[]) => void
+  /** The owning host confirmed that this exact persisted terminal no longer exists. */
+  onAuthoritativeSessionMissing?: () => void
   onExit?: (code: number) => void
   onWriteUnavailable?: () => void
   onRecoveryStateChange?: (state: PtyTransportRecoveryState) => void
@@ -107,6 +111,8 @@ export type PtyTransport = {
     cols?: number
     rows?: number
     sessionId?: string
+    /** Reattach this persisted identity only; absence or uncertainty must never fall through to create. */
+    requireExistingSession?: boolean
     /** Hidden-at-spawn declaration (terminal-query-authority.md): no visible
      *  view will consume this PTY's bytes, so main marks it hidden BEFORE the
      *  first byte and the gate + model responder own spawn-time queries.

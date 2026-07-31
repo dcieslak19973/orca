@@ -8,14 +8,45 @@ import type {
 import { parseLegacyNumericPaneKey, parsePaneKey } from '../../../shared/stable-pane-id'
 
 type AppStoreState = ReturnType<typeof useAppStore.getState>
+const recordsByProviderClaimCache = new WeakMap<
+  object,
+  Map<string, readonly SleepingAgentSessionRecord[]>
+>()
 
-export function getProviderSessionClaimKey(record: SleepingAgentSessionRecord): string {
+export function getProviderSessionClaimKey(
+  record: Pick<SleepingAgentSessionRecord, 'worktreeId' | 'agent' | 'providerSession'>
+): string {
   const base = `${record.worktreeId}\0${record.agent}\0${record.providerSession.key}\0${record.providerSession.id}`
   return record.agent === 'pi' ? `${base}\0${record.providerSession.transcriptPath ?? ''}` : base
 }
 
+export function getSleepingAgentRecordsForProviderClaim(
+  state: AppStoreState,
+  identity: Pick<SleepingAgentSessionRecord, 'worktreeId' | 'agent' | 'providerSession'>
+): readonly SleepingAgentSessionRecord[] {
+  const records = state.sleepingAgentSessionsByPaneKey
+  let recordsByClaim = recordsByProviderClaimCache.get(records)
+  if (!recordsByClaim) {
+    const mutableRecordsByClaim = new Map<string, SleepingAgentSessionRecord[]>()
+    for (const record of Object.values(records)) {
+      const claimKey = getProviderSessionClaimKey(record)
+      const grouped = mutableRecordsByClaim.get(claimKey) ?? []
+      grouped.push(record)
+      mutableRecordsByClaim.set(claimKey, grouped)
+    }
+    recordsByClaim = mutableRecordsByClaim
+    recordsByProviderClaimCache.set(records, recordsByClaim)
+  }
+  return recordsByClaim.get(getProviderSessionClaimKey(identity)) ?? []
+}
+
 export function isPassiveCompletedHibernationEvidence(record: SleepingAgentSessionRecord): boolean {
   return record.origin !== 'quit' && record.origin !== 'live' && record.state === 'done'
+}
+
+export function recordHasStablePaneIdentity(record: SleepingAgentSessionRecord): boolean {
+  const stable = parsePaneKey(record.paneKey)
+  return Boolean(stable && (!record.tabId || record.tabId === stable.tabId))
 }
 
 function getLegacyPaneTabId(record: SleepingAgentSessionRecord): string | null {
@@ -76,6 +107,34 @@ function hasRestorableStablePanePty(
   return Boolean(
     hasLeafPty || (isSingleLeafLayout && (tab.ptyId || (ptyIdsByTabId[tabId]?.length ?? 0) > 0))
   )
+}
+
+export function getPreservedStablePaneRecoveryTabId(
+  record: SleepingAgentSessionRecord,
+  state: AppStoreState
+): string | null {
+  const stable = parsePaneKey(record.paneKey)
+  if (!stable || (record.tabId && record.tabId !== stable.tabId)) {
+    return null
+  }
+  const tabId = record.tabId ?? stable.tabId
+  const tab =
+    (state.tabsByWorktree[record.worktreeId] ?? []).find((candidate) => candidate.id === tabId) ??
+    null
+  if (
+    !tab ||
+    !hasMatchingStablePaneLayout(tabId, stable.leafId, state.terminalLayoutsByTabId) ||
+    !hasRestorableStablePanePty(
+      tab,
+      tabId,
+      stable.leafId,
+      state.ptyIdsByTabId,
+      state.terminalLayoutsByTabId
+    )
+  ) {
+    return null
+  }
+  return tabId
 }
 
 // Why: a pane whose PTY is live *right now* already owns its running session

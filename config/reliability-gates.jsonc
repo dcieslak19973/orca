@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-30",
+  "updatedAt": "2026-07-31",
   "policy": {
     "maturityLevels": ["experimental", "soak", "blocking", "accepted-gap", "deprecated"],
     "blockingPromotion": {
@@ -1774,31 +1774,211 @@
       "providers": ["local", "daemon", "ssh", "wsl", "remote-runtime"],
       "coveredPlatforms": ["macos"],
       "coveredProviders": [],
-      "coverageNotes": "Local macOS evidence over the ownership/dedupe suite on main@1282f5c2d. Queued/pending resume-claim indexing, same-session and wrong-session hook proofs, and Electron repeat-activation coverage arrive with the pending stack (#7008).",
+      "coverageNotes": "Deterministic renderer coverage includes a missing-topology hydration barrier, preserved-pane targeting while the PTY mirror is empty, local eager-buffer adoption without a hydrated renderer mirror, exact host true/false/unknown liveness with topology- and host-authority-generation retry, paired-runtime exact raw-PTY adjudication through typed unknown/missing results and an advertised confirmed-death capability, fresh client-event ready barriers, exact record/topology generations, stale-dispatch and paired-pane lifecycle fencing, one linear scan for a synchronous one-hundred-pane hydration burst, singleton exact authority routing, oldest-first late and concurrent same-provider alias arbitration, unrelated-worktree isolation, bounded provider-claim indexing, and probe/resume PTY cleanup without throwaway scrollback replay. SSH probes coalesce per exact identity and fence retirement, ID reuse, provider replacement, and IPC publication; untracked authority tombstones expire and purge with their provider. A Docker SSH renderer-reload run preserves six PTY identities and proves reattached input/output. Physical Linux, Windows, WSL, and SSH-host runs remain gaps.",
       "motivatingLinks": [
         "https://github.com/stablyai/orca/pull/6800",
         "https://github.com/stablyai/orca/pull/5240",
         "https://github.com/stablyai/orca/pull/6411",
         "https://github.com/stablyai/orca/pull/6833"
       ],
-      "invariant": "Workspace activation, launch, restore, sleep, hibernate, dedupe, clearing, and reconnect code must not replay or resume a provider session id already owned, queued, pending, or live in that workspace.",
-      "oracle": "The current renderer-state slice asserts provider-session claim keys are owned by preserved active tabs, inactive split leaves, visible non-focused split groups, live records, quit records, worktree-sleep records, queued startup payloads, time-bounded resume bridge claims, and same-session live hook evidence; duplicates clear without launching a second resume command. The provider list is the risk scope, not proof that every provider has a live integration gate.",
+      "invariant": "Workspace activation, launch, restore, sleep, hibernate, dedupe, clearing, graph hydration, and reconnect code must not replay or resume a provider session id already owned, queued, pending, or live in that workspace. Unknown PTY liveness retains the original recovery placement until its transport resolves host authority.",
+      "oracle": "The hydration oracle starts with an origin-live Codex pane absent from renderer topology and requires zero launches until exact tab/leaf/PTY topology appears, then one targeted mount of the original tab with unrelated state unchanged. Synchronous hydration of one hundred claims coalesces into one targeted linear pass without global PTY/layout enumeration, and an unrelated tab-title transition also enumerates neither map. Record replacement and removal re-arbitrate exact provider claims without pane-key suppression; stale queued topology and paired pane-resolution lifecycles cannot consume or overwrite newer waits. Product connection contracts require local/daemon/SSH probes to query one exact PTY and distinguish live, dead, and unknown; unknown waits for a relevant topology or exact host-authority generation before one original-pane retry; late probe completion cannot retain a disposed pane; eager host buffers and paired-runtime panes must reattach while the renderer mirror is empty; paired hosts must probe the persisted raw PTY and reject replacement PTYs at matching coordinates; raw paired-host identities never consult viewer-local liveness or fall through to generic create; only exact host-authoritative death may resume; probe failures and legacy runtimes preserve ownership; late or concurrent aliases re-arbitrate after confirmed death; untracked SSH authority generations expire and purge on unregister; and discarded cold-restore probes replay no bytes before the resumed PTY becomes the sole binding. Real headed/headless and Docker SSH runs provide the cross-boundary PTY identity and input/output proof.",
       "commands": [
-        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session.test.ts"
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/live-agent-resume-hydration-race.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-connection.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/remote-runtime-pty-transport.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/ipc/pty.test.ts src/main/daemon/daemon-pty-adapter.test.ts src/main/daemon/daemon-pty-router.test.ts src/main/daemon/degraded-daemon-pty-provider.test.ts src/main/providers/ssh-pty-liveness.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/runtime/orca-runtime.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts src/renderer/src/runtime/runtime-terminal-authority-events.test.ts src/renderer/src/runtime/runtime-client-events.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/hooks/useIpcEvents.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/sleeping-agent-provider-claim-index.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/sleeping-agent-recovery-topology.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session-provider-claim.test.ts"
       ],
-      "testFiles": ["src/renderer/src/lib/resume-sleeping-agent-session.test.ts"],
+      "testFiles": [
+        "src/renderer/src/lib/live-agent-resume-hydration-race.test.ts",
+        "src/renderer/src/components/terminal-pane/pty-connection.test.ts",
+        "src/renderer/src/components/terminal-pane/remote-runtime-pty-transport.test.ts",
+        "src/main/ipc/pty.test.ts",
+        "src/main/daemon/daemon-pty-adapter.test.ts",
+        "src/main/daemon/daemon-pty-router.test.ts",
+        "src/main/daemon/degraded-daemon-pty-provider.test.ts",
+        "src/main/providers/ssh-pty-liveness.test.ts",
+        "src/main/runtime/orca-runtime.test.ts",
+        "src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts",
+        "src/renderer/src/runtime/runtime-terminal-authority-events.test.ts",
+        "src/renderer/src/runtime/runtime-client-events.test.ts",
+        "src/renderer/src/hooks/useIpcEvents.test.ts",
+        "src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+        "src/renderer/src/lib/sleeping-agent-provider-claim-index.test.ts",
+        "src/renderer/src/lib/sleeping-agent-recovery-topology.test.ts",
+        "src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
+        "src/renderer/src/lib/resume-sleeping-agent-session-provider-claim.test.ts"
+      ],
       "assertionRefs": [
+        {
+          "file": "src/renderer/src/lib/live-agent-resume-hydration-race.test.ts",
+          "assertions": [
+            "waits for graph topology before targeting the original pane",
+            "waits for stable quit recovery topology before creating a replacement",
+            "advances partial topology hydration once per pending-pane transition",
+            "does not enumerate unchanged topology maps after an unrelated tab title update",
+            "coalesces synchronous hydration into one targeted linear topology pass",
+            "probes the oldest preserved pane first for a duplicated provider session",
+            "waits for the oldest provider alias before probing a newer hydrated alias",
+            "promotes a hydrated provider alias after the pending oldest record clears",
+            "mounts a replacement record that reuses a requested pane key",
+            "does not let renderer PTY hints reorder or retire provider-session aliases"
+          ]
+        },
+        {
+          "file": "src/renderer/src/lib/sleeping-agent-recovery-topology.test.ts",
+          "assertions": ["does not let a queued hydration consume a later reconnect wait"]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/pty-connection.test.ts",
+          "assertions": [
+            "preserves an origin-live PTY when reattach returns empty",
+            "preserves an origin-live PTY when reattach rejects",
+            "preserves an origin-live PTY when host liveness is unknown",
+            "preserves an origin-live PTY when host liveness probe rejects",
+            "reattaches the original provider PTY with live input and output",
+            "retries an unknown live PTY when topology changes during the host probe",
+            "retries one unknown pane only when its exact host authority generation advances",
+            "does not arm a late unknown-liveness waiter after pane disposal",
+            "adopts an origin-live eager PTY while the renderer PTY mirror is empty",
+            "reattaches an origin-live remote PTY while the renderer mirror is empty",
+            "resumes an origin-live remote session only after the host confirms its pane closed",
+            "routes a HUB-owned SSH PTY wake hint through the HUB without direct SSH",
+            "keeps HUB recovery host-authoritative when provider resume is blocked by an alias",
+            "keeps quit HUB recovery host-authoritative when an alias blocks resume",
+            "keeps sleeping HUB recovery host-authoritative when an alias blocks resume",
+            "uses captured launch config after the host confirms an origin-live PTY dead",
+            "defers provider resume when a same-provider alias appears during the host probe",
+            "resumes only after every concurrently mounted provider alias is confirmed dead",
+            "retires only the explicitly killed provider alias and mounts its preserved sibling",
+            "retires a distinct cold-restore probe PTY before binding the resumed PTY",
+            "spawns a fresh PTY when a restored plain shell cannot reattach"
+          ]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/remote-runtime-pty-transport.test.ts",
+          "assertions": [
+            "resolves a HUB-native SSH PTY wake hint to its runtime terminal handle",
+            "does not let a stale pane resolution replace a newer connect lifecycle",
+            "never creates a terminal when a required persisted host pane is unknown",
+            "never creates a terminal when a required persisted host pane is missing",
+            "reattaches the exact paired host PTY when unknown authority becomes live",
+            "keeps the current authority wait when a stale lifecycle retry settles",
+            "treats terminal_not_found from a legacy graph-only host as unknown",
+            "keeps terminal_not_found unknown when host capability status is unavailable",
+            "drops a late paired authority event after the waiting pane is destroyed",
+            "never adopts a replacement PTY occupying the preserved pane coordinates",
+            "attaches an environment-scoped handle when an older runtime lacks pane resolution",
+            "reports an authoritatively missing persisted host pane without treating errors as death",
+            "retires a host mirror that is authoritatively absent"
+          ]
+        },
+        {
+          "file": "src/main/ipc/pty.test.ts",
+          "assertions": [
+            "prefers exact single-PTY liveness without listing every session",
+            "publishes and persists a targeted liveness-authority generation",
+            "forwards current SSH authority through runtime and IPC with replacement fencing",
+            "expires untracked SSH liveness-authority generations",
+            "routes exact runtime liveness probes to the local or SSH PTY owner",
+            "treats unsupported or failed single-PTY liveness as unknown"
+          ]
+        },
+        {
+          "file": "src/main/daemon/daemon-pty-adapter.test.ts",
+          "assertions": [
+            "reads daemon truth before a fresh adapter has attached the session",
+            "returns unknown when the daemon cannot answer",
+            "publishes one targeted authority change when a timed-out probe later answers"
+          ]
+        },
+        {
+          "file": "src/main/runtime/orca-runtime.test.ts",
+          "assertions": [
+            "distinguishes a missing host graph from exact PTY liveness $live",
+            "resolves only an exact live PTY and refuses a live replacement at the same coordinates",
+            "emits one exact authority generation when the host graph rehydrates"
+          ]
+        },
+        {
+          "file": "src/main/daemon/daemon-pty-router.test.ts",
+          "assertions": [
+            "forwards targeted liveness authority and cleans every adapter subscription"
+          ]
+        },
+        {
+          "file": "src/main/daemon/degraded-daemon-pty-provider.test.ts",
+          "assertions": [
+            "forwards targeted liveness authority only from daemon adapters and cleans listeners"
+          ]
+        },
+        {
+          "file": "src/main/providers/ssh-pty-liveness.test.ts",
+          "assertions": [
+            "probes exact relay PTY liveness and refreshes the local cache",
+            "announces exact authority when an unknown probe later resolves live",
+            "ignores late probe results after exact retirement or id reuse"
+          ]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/terminal-pane-authority-recovery.test.ts",
+          "assertions": [
+            "routes 100 unknown panes through one store and authority subscription",
+            "coalesces a synchronous 100-pane hydration burst into one exact registration scan",
+            "drops a queued topology drain when every registration is disposed"
+          ]
+        },
+        {
+          "file": "src/renderer/src/runtime/runtime-terminal-authority-events.test.ts",
+          "assertions": ["routes authority, SSH reconnect, and runtime replay to matching waiters"]
+        },
+        {
+          "file": "src/renderer/src/runtime/runtime-client-events.test.ts",
+          "assertions": [
+            "signals a replay-tagged response so event-derived state can resync after a reconnect"
+          ]
+        },
+        {
+          "file": "src/renderer/src/hooks/useIpcEvents.test.ts",
+          "assertions": ["routes local and runtime worktree events to their owning hosts"]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+          "assertions": ["TerminalKilledError is classified as intentional session retirement"]
+        },
+        {
+          "file": "src/renderer/src/lib/sleeping-agent-provider-claim-index.test.ts",
+          "assertions": ["indexes one hundred provider claims once per sleeping-record generation"]
+        },
         {
           "file": "src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
           "assertions": [
-            "preserved panes claim their provider session and only stale duplicates are cleared",
-            "one launch per provider session: skipped duplicates are cleared instead of relaunched",
-            "active stable-pane records owned by preserved or visible panes are not resumed again",
-            "hibernated stable panes with cleared live PTY bindings are skipped"
+            "retains unresolved same-provider aliases while probing a preserved pane",
+            "launches once and clears skipped duplicates for the same provider session",
+            "waits when live or worktree-sleep stable panes lack hydrated PTY identity",
+            "retains completed stable worktree-sleep records while topology is unknown",
+            "folder, split, visible, and hibernated stable panes do not duplicate recovery"
           ]
         }
       ],
       "evidenceRuns": [
+        {
+          "date": "2026-07-31",
+          "runner": "local",
+          "platform": "macos",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/live-agent-resume-hydration-race.test.ts",
+          "result": "passed",
+          "durationSeconds": 2.45,
+          "summary": "The exact graph-hydration oracle passed with one preserved tab and zero create, queue, or resume claims."
+        },
         {
           "date": "2026-07-03",
           "runner": "local",
@@ -1818,12 +1998,12 @@
         "evidence": "Registered after targeted tests were found; needs soak history before blocking promotion."
       },
       "redGreenEvidence": {
-        "status": "partial",
-        "evidence": "Tests encode provider-session dedupe and ownership claims across active/inactive/visible split records, queued pendingStartupByTabId resume payloads, time-bounded runtime automaticAgentResumeClaimsByTabId bridge claims, live same-session hook evidence, wrong-session hook rejection, and a bounded queued-claim index over many records/tabs. Needs saved red/green artifact for the class-level replay invariant."
+        "status": "complete",
+        "evidence": "Latest main launched one replacement tab in the byte-identical empty-mirror oracle. The candidate launches zero and requests the preserved tab mount; disabling the preserved-pane recovery placement restores the exact launched-equals-one failure."
       },
       "performanceBudget": {
         "required": true,
-        "evidence": "Current state tests are cheap and assert queued pending-startup provider-session ids are indexed once per activation. PRs adding new ownership scans must show bounded work over records and no hidden-pane wake loop before blocking promotion."
+        "evidence": "Ambiguous records use one shared topology subscription. Synchronous topology publication bursts queue one microtask and visit each still-unknown registration once, so sequential one-hundred-pane hydration is O(U), not O(U²); exact PTY authority events remain synchronous and index-routed. Sequential hydration performs one provider-claim index build, at most one sleeping-record enumeration, and one targeted adjudication/mount per identity instead of rerunning worktree recovery. Requested state is a weak exact-record/topology-generation map, so cleared generations are not retained or reused. Recovery adds at most one coalesced exact-ID host liveness operation per preserved local/daemon/SSH pane; only probes that exceed the one-second caller budget keep their provider-bounded operation long enough to publish one targeted authority generation. SSH completion tokens fence exact retirement, ID reuse, and provider replacement before cache mutation or announcement. All unknown mounted panes share one topology subscription and one authority listener and release both when idle. Paired-runtime waits share one environment dispatcher with exact PTY and SSH-target indexes. Recovery adds no PTY inventory scan, global layout enumeration, polling loop, or whole-worktree mount, and confirmed-dead recovery skips throwaway scrollback parsing."
       },
       "promotionCriteria": [
         "Run in soak for at least 100 consecutive passes or 14 days across required CI platforms.",
@@ -1831,9 +2011,9 @@
         "Attach red/green evidence that display/replay evidence alone cannot claim ownership."
       ],
       "knownGaps": [
-        "Providers listed on this gate are affected identity surfaces; the current executable command is renderer-state coverage, not live local/daemon/SSH/WSL/remote-runtime coverage.",
+        "Providers listed on this gate are affected identity surfaces; Docker SSH reload and I/O passed, but physical Linux, Windows, WSL, and SSH hosts remain untested.",
         "Current command models live same-session and wrong-session hook evidence, but does not run the real hook timing through Electron.",
-        "Current command does not run a real workspace activation loop repeatedly through Electron."
+        "Physical paired-host and prolonged sleep/wake soak remain external validation gaps."
       ],
       "demotionRule": "Demote or quarantine if failures are non-actionable or if a duplicate resume escape occurs outside the modeled matrix."
     },

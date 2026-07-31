@@ -12,7 +12,7 @@ import type {
   PtySpawnResult
 } from '../providers/types'
 import { findDaemonAdapter, listProviderSessionIds } from './degraded-daemon-session-routing'
-import { probePtyOwners } from './daemon-pty-liveness-probe'
+import { probePtyOwners, subscribePtyLivenessAuthority } from './daemon-pty-liveness-probe'
 
 export class DegradedDaemonPtyProvider implements IPtyProvider {
   readonly routesFreshSpawnsToLocalProvider = true
@@ -86,6 +86,9 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
   async probePtyLiveness(id: string): Promise<boolean | null> {
     return await probePtyOwners(id, this.sessionProviders.get(id), this.allDaemonAdapters())
   }
+
+  onPtyLivenessAuthorityChanged = (callback: (payload: { id: string }) => void): (() => void) =>
+    subscribePtyLivenessAuthority(this.allDaemonAdapters(), callback)
 
   // Why: an unknown id cannot borrow listing authority from the fresh-spawn provider.
   providesAgentSessionOwnerListings = (ptyId: string): boolean =>

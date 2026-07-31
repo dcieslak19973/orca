@@ -1512,6 +1512,9 @@ export type PreloadApi = {
     write: (id: string, data: string) => void
     writeAccepted: (id: string, data: string) => Promise<boolean>
     onWriteUnavailable?: (callback: (payload: { id: string }) => void) => () => void
+    onLivenessAuthorityChanged?: (
+      callback: (payload: { id: string; generation: number }) => void
+    ) => () => void
     resize: (id: string, cols: number, rows: number) => void
     claimViewport: (id: string, cols: number, rows: number) => void
     reportGeometry: (id: string, cols: number, rows: number) => void
@@ -1562,6 +1565,10 @@ export type PreloadApi = {
       ids: string[]
     ) => { id: string; authoritative: boolean | null }[]
     hasPty: (id: string) => Promise<boolean | null>
+    probePtyLiveness?: (
+      id: string
+    ) => Promise<{ live: boolean | null; authorityGeneration: number }>
+    getPtyLivenessAuthorityGeneration?: (id: string) => Promise<number>
     getMainBufferSnapshot: (
       id: string,
       opts?: { scrollbackRows?: number }

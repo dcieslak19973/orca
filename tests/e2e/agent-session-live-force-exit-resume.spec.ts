@@ -114,7 +114,7 @@ function killPid(pid: number): void {
   }
 }
 
-function stripPersistedPtyOwnership(userDataDir: string): void {
+function stripPersistedPtyIdentity(userDataDir: string): void {
   const data = readPersistedData(userDataDir)
   const session = data.workspaceSession
   if (!session) {
@@ -125,9 +125,8 @@ function stripPersistedPtyOwnership(userDataDir: string): void {
       tab.ptyId = null
     }
   }
-  // Why: this models the updater/crash artifact from #6370: the UI tab and
-  // live resume record survive, but no pane has the old stable leaf key or
-  // daemon session to own resume.
+  // Why: without a pane or PTY identity, host liveness is unknown rather than
+  // confirmed dead; recovery must retain the record without launching.
   session.terminalLayoutsByTabId = {}
   session.activeWorktreeIdsOnShutdown = []
   for (const record of Object.values(session.sleepingAgentSessionsByPaneKey ?? {})) {
@@ -149,7 +148,7 @@ function persistedLiveRecordExists(userDataDir: string): boolean {
 
 test.describe.configure({ mode: 'serial' })
 
-test('resumes a live agent record after force-exit restart when pane PTY ownership is gone', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
+test('retains a live agent record after force-exit restart when PTY liveness is unknowable', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
 {}, testInfo) => {
   const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
   if (!repoPath || !existsSync(repoPath)) {
@@ -182,6 +181,10 @@ test('resumes a live agent record after force-exit restart when pane PTY ownersh
     await waitForPaneCount(page, 1, 30_000)
 
     const descriptor = await waitForActivePaneHookDescriptor(page)
+    const originalTabId = await page.evaluate(() => window.__store?.getState().activeTabId ?? null)
+    if (!originalTabId) {
+      throw new Error('Expected an active terminal tab before force exit')
+    }
     const ptyId = await waitForActivePanePtyId(page)
     const transcriptPath = session.seedCodexResumeRollout(PROVIDER_SESSION_ID, repoPath)
     const marker = `AGENT_LIVE_FORCE_EXIT_${Date.now()}`
@@ -248,7 +251,7 @@ test('resumes a live agent record after force-exit restart when pane PTY ownersh
     await forceKillElectronApp(firstApp)
     firstApp = null
     killPid(daemonPid)
-    stripPersistedPtyOwnership(session.userDataDir)
+    stripPersistedPtyIdentity(session.userDataDir)
 
     const secondLaunch = await session.launch()
     secondApp = secondLaunch.app
@@ -262,13 +265,30 @@ test('resumes a live agent record after force-exit restart when pane PTY ownersh
     await ensureTerminalVisible(secondLaunch.page)
     await waitForActiveTerminalManager(secondLaunch.page, 30_000)
 
-    await waitForTerminalOutput(secondLaunch.page, PROVIDER_SESSION_ID, 30_000)
-
-    const terminalTabCount = await secondLaunch.page.evaluate(
-      (wtId) => (window.__store?.getState().tabsByWorktree[wtId] ?? []).length,
-      worktreeId
+    const recoveryState = await secondLaunch.page.evaluate(
+      ({ wtId, providerSessionId }) => {
+        const state = window.__store?.getState()
+        const records = Object.values(state?.sleepingAgentSessionsByPaneKey ?? {})
+        return {
+          tabIds: (state?.tabsByWorktree[wtId] ?? []).map((tab) => tab.id),
+          retainedRecordCount: records.filter(
+            (record) => record.providerSession?.id === providerSessionId
+          ).length,
+          resumeLaunchConfigCount: Object.values(state?.agentLaunchConfigByPaneKey ?? {}).filter(
+            (entry) => entry.launchConfig.agentCommand === 'echo'
+          ).length
+        }
+      },
+      { wtId: worktreeId, providerSessionId: PROVIDER_SESSION_ID }
     )
-    expect(terminalTabCount).toBe(2)
+    expect(recoveryState).toEqual({
+      tabIds: [originalTabId],
+      retainedRecordCount: 1,
+      resumeLaunchConfigCount: 0
+    })
+    const renderedTabs = secondLaunch.page.locator('[data-testid="sortable-tab"]')
+    await expect(renderedTabs).toHaveCount(1)
+    await expect(renderedTabs.first()).toHaveAttribute('data-tab-id', originalTabId)
   } finally {
     if (secondApp) {
       await session.close(secondApp)

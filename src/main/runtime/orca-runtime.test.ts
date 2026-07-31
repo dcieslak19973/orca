@@ -1837,6 +1837,7 @@ describe('OrcaRuntimeService', () => {
     expect(status.capabilities).toContain('workspace-ports.v1')
     expect(status.capabilities).toContain('mobile.tasks.v1')
     expect(status.capabilities).toContain('terminal.quick-commands.v1')
+    expect(status.capabilities).toContain('terminal.resolve-pane-authority.v1')
     expect(status.capabilities).toContain('worktree.create-idempotency.v1')
     expect(status.capabilities).toContain('files.mutation-ownership.v1')
     expect(status.capabilities).toContain('project-host-setup.v1')
@@ -2763,6 +2764,123 @@ describe('OrcaRuntimeService', () => {
     expect(() => runtime.resolveTerminalPane(paneKey, TEST_WORKTREE_ID)).toThrow(
       'terminal_not_found'
     )
+  })
+
+  it.each([
+    { live: true, error: 'terminal_authority_unknown' },
+    { live: null, error: 'terminal_authority_unknown' },
+    { live: false, error: 'terminal_not_found' }
+  ] as const)(
+    'distinguishes a missing host graph from exact PTY liveness $live',
+    async ({ live, error }) => {
+      const runtime = new OrcaRuntimeService(store)
+      const probePtyLiveness = vi.fn(async () => live)
+      runtime.setPtyController({ probePtyLiveness } as never)
+
+      await expect(
+        runtime.resolveTerminalPaneWithAuthority(
+          makePaneKey('tab-hydrating', HEADLESS_LEAF_ID),
+          TEST_WORKTREE_ID,
+          'pty-original'
+        )
+      ).rejects.toThrow(error)
+      expect(probePtyLiveness).toHaveBeenCalledExactlyOnceWith('pty-original')
+    }
+  )
+
+  it('resolves only an exact live PTY and refuses a live replacement at the same coordinates', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const tabId = 'tab-exact-authority'
+    const paneKey = makePaneKey(tabId, HEADLESS_LEAF_ID)
+    const probePtyLiveness = vi.fn(async () => true)
+    runtime.setPtyController({ probePtyLiveness } as never)
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-replacement'
+        }
+      ]
+    })
+
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, 'pty-original')
+    ).rejects.toThrow('terminal_authority_unknown')
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, 'pty-replacement')
+    ).resolves.toMatchObject({
+      tabId,
+      leafId: HEADLESS_LEAF_ID,
+      ptyId: 'pty-replacement',
+      worktreeId: TEST_WORKTREE_ID
+    })
+    expect(probePtyLiveness).toHaveBeenNthCalledWith(1, 'pty-original')
+    expect(probePtyLiveness).toHaveBeenNthCalledWith(2, 'pty-replacement')
+  })
+
+  it('emits one exact authority generation when the host graph rehydrates', () => {
+    const runtime = new OrcaRuntimeService(store)
+    const events: {
+      type: 'terminalLivenessAuthorityChanged'
+      ptyId: string
+      generation: number
+    }[] = []
+    runtime.onClientEvent((event) => {
+      if (event.type === 'terminalLivenessAuthorityChanged') {
+        events.push(event)
+      }
+    })
+    const graph = {
+      tabs: [
+        {
+          tabId: 'tab-authority',
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-authority',
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-original'
+        }
+      ]
+    }
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, graph)
+    const initialGeneration = events.at(-1)?.generation ?? 0
+    events.length = 0
+
+    runtime.markRendererReloading(1)
+    runtime.syncWindowGraph(1, graph)
+    expect(events).toEqual([
+      {
+        type: 'terminalLivenessAuthorityChanged',
+        ptyId: 'pty-original',
+        generation: initialGeneration + 1
+      }
+    ])
+
+    events.length = 0
+    runtime.syncWindowGraph(1, graph)
+    expect(events).toEqual([])
   })
 
   it('recovers a disconnected pane through one HUB-owned replacement', async () => {

@@ -100,6 +100,7 @@ export function subscribeSshPtyNotifications(args: {
     }
     if (method === 'pty.replay') {
       const id = args.toAppPtyId(relayPtyId)
+      args.resolvePtyIncarnation(relayPtyId, params.incarnationId)
       args.livePtyIds.add(id)
       for (const listener of args.replayListeners) {
         listener({ id, data: params.data as string })

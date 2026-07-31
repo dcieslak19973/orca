@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SleepingAgentSessionRecord } from '../../../shared/agent-session-resume'
 import { makePaneKey } from '../../../shared/stable-pane-id'
+import {
+  takeAllPendingBackgroundTerminalWorktreeMounts,
+  takePendingBackgroundTerminalWorktreeMount
+} from '@/components/terminal/background-terminal-worktree-mount'
 import { useAppStore } from '@/store'
 import { resumeSleepingAgentSessionsForWorktree } from './resume-sleeping-agent-session'
 
@@ -9,6 +13,7 @@ const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const OTHER_LEAF_ID = '22222222-2222-4222-8222-222222222222'
 
 afterEach(() => {
+  takeAllPendingBackgroundTerminalWorktreeMounts()
   useAppStore.setState(initialAppStoreState, true)
 })
 
@@ -123,7 +128,7 @@ describe('resume sleeping agent provider claims', () => {
     expect(state.sleepingAgentSessionsByPaneKey[record.paneKey]).toBeUndefined()
   })
 
-  it('does not launch a hidden pane whose same provider session is still working', () => {
+  it('mounts a hidden pane whose same provider session is still working', () => {
     const paneKey = makePaneKey('tab-1', LEAF_ID)
     const record = makeRecord(paneKey, 'worktree-sleep')
     useAppStore.setState({
@@ -139,6 +144,10 @@ describe('resume sleeping agent provider claims', () => {
 
     const state = useAppStore.getState()
     expect(state.tabsByWorktree['wt-1']).toHaveLength(1)
-    expect(state.sleepingAgentSessionsByPaneKey[record.paneKey]).toBeUndefined()
+    expect(state.sleepingAgentSessionsByPaneKey[record.paneKey]).toBe(record)
+    expect(takePendingBackgroundTerminalWorktreeMount('wt-1')).toEqual({
+      worktreeId: 'wt-1',
+      tabIds: ['tab-1']
+    })
   })
 })

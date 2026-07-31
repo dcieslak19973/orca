@@ -11,7 +11,9 @@ type ProviderMock = IPtyProvider & {
   emitReplay: (id: string, data: string) => void
   emitExit: (id: string, code: number) => void
   triggerWriteUnavailable: (id: string) => void
+  triggerLivenessAuthority: (id: string) => void
   onWriteUnavailable: (callback: (payload: { id: string }) => void) => () => void
+  onPtyLivenessAuthorityChanged: (callback: (payload: { id: string }) => void) => () => void
 }
 
 function createProvider(
@@ -24,6 +26,7 @@ function createProvider(
   const replayListeners: ((payload: { id: string; data: string }) => void)[] = []
   const exitListeners: ((payload: { id: string; code: number }) => void)[] = []
   const writeUnavailableListeners: ((payload: { id: string }) => void)[] = []
+  const livenessAuthorityListeners: ((payload: { id: string }) => void)[] = []
   return {
     spawn: vi.fn(async (opts: PtySpawnOptions): Promise<PtySpawnResult> => {
       const id = opts.sessionId ?? `${label}-new`
@@ -109,8 +112,22 @@ function createProvider(
         }
       }
     }),
+    onPtyLivenessAuthorityChanged: vi.fn((callback: (payload: { id: string }) => void) => {
+      livenessAuthorityListeners.push(callback)
+      return () => {
+        const idx = livenessAuthorityListeners.indexOf(callback)
+        if (idx !== -1) {
+          livenessAuthorityListeners.splice(idx, 1)
+        }
+      }
+    }),
     triggerWriteUnavailable: (id: string) => {
       for (const listener of writeUnavailableListeners) {
+        listener({ id })
+      }
+    },
+    triggerLivenessAuthority: (id: string) => {
+      for (const listener of livenessAuthorityListeners) {
         listener({ id })
       }
     }
@@ -153,6 +170,24 @@ it('forwards dead-endpoint write-unavailable signals from the daemon adapters', 
   unsubscribe()
   current.triggerWriteUnavailable('after-unsubscribe')
   expect(recovered).toEqual(['daemon-pane', 'legacy-pane'])
+})
+
+it('forwards targeted liveness authority only from daemon adapters and cleans listeners', () => {
+  const current = createDaemonAdapter('daemon')
+  const legacy = createDaemonAdapter('legacy')
+  const fallback = createProvider('fallback')
+  const provider = new DegradedDaemonPtyProvider({ current, legacy: [legacy], fallback })
+  const changed: string[] = []
+
+  const unsubscribe = provider.onPtyLivenessAuthorityChanged(({ id }) => changed.push(id))
+  current.triggerLivenessAuthority('daemon-pane')
+  legacy.triggerLivenessAuthority('legacy-pane')
+  fallback.triggerLivenessAuthority('fallback-pane')
+  expect(changed).toEqual(['daemon-pane', 'legacy-pane'])
+
+  unsubscribe()
+  current.triggerLivenessAuthority('after-unsubscribe')
+  expect(changed).toEqual(['daemon-pane', 'legacy-pane'])
 })
 
 it('rejects completion inspection instead of borrowing the fallback provider', async () => {

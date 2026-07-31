@@ -175,7 +175,9 @@ import { createBrowserUuid } from '@/lib/browser-uuid'
 import { makePaneKey, parseLegacyNumericPaneKey } from '../../../../shared/stable-pane-id'
 import {
   getProviderSessionClaimKey,
-  isPassiveCompletedHibernationEvidence
+  getSleepingAgentRecordsForProviderClaim,
+  isPassiveCompletedHibernationEvidence,
+  recordHasStablePaneIdentity
 } from '@/lib/sleeping-agent-pane-ownership'
 import { createTerminalCommandLifecycle } from './terminal-command-lifecycle'
 import { createPaneForegroundAgentTracker } from './pane-foreground-agent-tracker'
@@ -183,6 +185,7 @@ import { parseAppSshPtyId } from '../../../../shared/ssh-pty-id'
 import { resolveSshPaneConnectGate } from './ssh-pane-connect-gate'
 import { dispatchTerminalCommandFinishedEvent } from '@/hooks/terminal-command-finished-event'
 import { e2eConfig } from '@/lib/e2e-config'
+import { resumeSleepingAgentSessionsForWorktree } from '@/lib/resume-sleeping-agent-session'
 import {
   isFreshNonDoneAgentStatus,
   type AgentStatusEntry,
@@ -225,6 +228,10 @@ import {
 import { getTerminalPasteSshRemotePlatform } from './terminal-paste-ssh-platform'
 import { resolveTerminalPasteRuntime } from './terminal-paste-runtime'
 import { isKnownTuiAgentTerminalStartupCommand } from './terminal-startup-command-classifier'
+import {
+  captureTerminalPaneAuthorityTopology,
+  waitForTerminalPaneAuthorityChange
+} from './terminal-pane-authority-recovery'
 import { createCommandCodeOutputStatusDetector } from '../../../../shared/command-code-output-status'
 import type { PtyDataMeta } from './pty-dispatcher'
 import { getEagerPtyBufferHandle } from './pty-dispatcher'
@@ -3918,6 +3925,55 @@ export function connectPanePty(
   // pre-existing session when a late reattach resolves, so a remount racing
   // a slow-but-alive connect costs a wasted view rebuild, not a shell.
   const TRANSPORT_CONNECT_SETTLE_GRACE_MS = 60_000
+  let authoritativeLivenessRetryTeardown: (() => void) | null = null
+  const waitForAuthoritativeLivenessTopologyChange = (
+    initial: ReturnType<typeof captureTerminalPaneAuthorityTopology>,
+    ptyId: string,
+    initialAuthorityGeneration: number | null
+  ): void => {
+    if (disposed || authoritativeLivenessRetryTeardown) {
+      return
+    }
+    let unsubscribe = (): void => {}
+    const teardown = (): void => {
+      unsubscribe()
+      const index = waitTeardowns.indexOf(teardown)
+      if (index !== -1) {
+        waitTeardowns.splice(index, 1)
+      }
+      if (authoritativeLivenessRetryTeardown === teardown) {
+        authoritativeLivenessRetryTeardown = null
+      }
+    }
+    authoritativeLivenessRetryTeardown = teardown
+    waitTeardowns.push(teardown)
+    if (disposed) {
+      teardown()
+      return
+    }
+    const requestRecovery = (): void => {
+      teardown()
+      if (disposed) {
+        return
+      }
+      void requestTerminalPaneRecovery({
+        tabId: deps.tabId,
+        ptyId,
+        reason: 'restore-blocked',
+        terminalRecoveryGeneration,
+        terminalRecoveryInstanceId: terminalRecoveryInstance.id
+      })
+    }
+    unsubscribe = waitForTerminalPaneAuthorityChange({
+      worktreeId: deps.worktreeId,
+      tabId: deps.tabId,
+      paneKey: cacheKey,
+      ptyId,
+      initial,
+      initialAuthorityGeneration,
+      recover: requestRecovery
+    })
+  }
   const requestRecoveryForUndeliverableInput = (providerRejected = false): void => {
     if (!providerRejected && transport.isConnected?.() && transport.getPtyId() !== null) {
       return
@@ -4856,6 +4912,10 @@ export function connectPanePty(
       }
       return CLIENT_PLATFORM
     }
+    let providerResumeBlockedRecordEntry: {
+      paneKey: string
+      record: SleepingAgentSessionRecord
+    } | null = null
     const buildColdRestoreAgentResumeStartup = (): ColdRestoreAgentResumeStartup | null => {
       if (pendingStartupCommand) {
         return null
@@ -4876,6 +4936,18 @@ export function connectPanePty(
         useLiveEntry ? entry.providerSession : sleepingRecord?.providerSession
       )
       if (!providerSession) {
+        return null
+      }
+      const competingRecoveryRecord = getSleepingAgentRecordsForProviderClaim(state, {
+        worktreeId: deps.worktreeId,
+        agent,
+        providerSession
+      }).find(
+        (record) =>
+          record.paneKey !== sleepingRecordEntry?.paneKey && recordHasStablePaneIdentity(record)
+      )
+      if (competingRecoveryRecord) {
+        providerResumeBlockedRecordEntry = sleepingRecordEntry
         return null
       }
       const matchingSleepingLaunchConfig =
@@ -4927,6 +4999,42 @@ export function connectPanePty(
         hasSleepingRecord: Boolean(sleepingRecord),
         sleepingRecordEntry
       }
+    }
+    const prepareColdRestoreAgentRecoveryProbe = (): ColdRestoreAgentResumeStartup | null => {
+      const startup = buildColdRestoreAgentResumeStartup()
+      if (startup?.sleepingRecordEntry) {
+        providerResumeBlockedRecordEntry = startup.sleepingRecordEntry
+      }
+      return startup
+    }
+    const resolveProviderResumeAfterConfirmedDeath = (): {
+      startup: ColdRestoreAgentResumeStartup | null
+      deferredToAlias: boolean
+    } => {
+      const confirmedDeadRecordEntry = providerResumeBlockedRecordEntry
+      const confirmedDeadPaneKey = confirmedDeadRecordEntry?.paneKey
+      const finalAliasStartup = buildColdRestoreAgentResumeStartup()
+      if (finalAliasStartup) {
+        providerResumeBlockedRecordEntry = null
+        return { startup: finalAliasStartup, deferredToAlias: false }
+      }
+      const deferredToAlias = Boolean(
+        confirmedDeadRecordEntry &&
+        getSleepingAgentRecordsForProviderClaim(
+          useAppStore.getState(),
+          confirmedDeadRecordEntry.record
+        ).some(
+          (record) => record.paneKey !== confirmedDeadPaneKey && recordHasStablePaneIdentity(record)
+        )
+      )
+      if (confirmedDeadPaneKey) {
+        useAppStore.getState().clearSleepingAgentSession(confirmedDeadPaneKey)
+      }
+      providerResumeBlockedRecordEntry = null
+      if (confirmedDeadPaneKey) {
+        resumeSleepingAgentSessionsForWorktree(deps.worktreeId)
+      }
+      return { startup: null, deferredToAlias }
     }
     const applyColdRestoreAgentResumeStartup = (
       startup: ColdRestoreAgentResumeStartup | null
@@ -5666,7 +5774,10 @@ export function connectPanePty(
       scheduleReplayDataDrain()
     }
 
-    const captureTransportOutputCallbacks = (onError: (message: string) => void) => {
+    const captureTransportOutputCallbacks = (
+      onError: (message: string) => void,
+      onAuthoritativeSessionMissing?: () => void
+    ) => {
       // Why: a new stream generation cannot inherit an old replay's pending
       // destination-grid fit or keep its live-data waiter open.
       pendingHiddenSnapshotFit?.cancel()
@@ -5701,6 +5812,15 @@ export function connectPanePty(
               onError(message)
             }
           },
+          ...(onAuthoritativeSessionMissing
+            ? {
+                onAuthoritativeSessionMissing: (): void => {
+                  if (isCurrent()) {
+                    onAuthoritativeSessionMissing()
+                  }
+                }
+              }
+            : {}),
           onWriteUnavailable: (): void => {
             if (isCurrent()) {
               requestRecoveryForUndeliverableInput(true)
@@ -7669,9 +7789,25 @@ export function connectPanePty(
       }
       const connectResult =
         result && typeof result === 'object' && 'id' in result ? (result as PtyConnectResult) : null
+      let coldRestoreReplacementStartup: ColdRestoreAgentResumeStartup | null = null
+      let retireColdRestoreProbe = false
 
       if (connectResult?.exitedBeforeAttach) {
         // Why: the transport already delivered the dead session's final frame + exit; treat as terminal state, not a failed reattach.
+        return true
+      }
+      if (connectResult?.sessionRetired) {
+        const retiredRecordEntry =
+          coldRestoreStartup?.sleepingRecordEntry ?? providerResumeBlockedRecordEntry
+        if (retiredRecordEntry) {
+          useAppStore.getState().clearSleepingAgentSession(retiredRecordEntry.paneKey)
+          resumeSleepingAgentSessionsForWorktree(deps.worktreeId)
+        }
+        providerResumeBlockedRecordEntry = null
+        if (staleSessionId) {
+          deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
+          deps.clearTabPtyId(deps.tabId, staleSessionId)
+        }
         return true
       }
 
@@ -7692,29 +7828,25 @@ export function connectPanePty(
           paneId: pane.id,
           ptyId: staleSessionId ?? null
         })
-        // Why: a stale restored session can fail reattach after mount; don't leave xterm alive without a backing PTY.
+        if (coldRestoreStartup || providerResumeBlockedRecordEntry) {
+          // Why: no result is transport uncertainty, not host-authoritative death.
+          return false
+        }
         if (staleSessionId) {
           deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
+          deps.clearTabPtyId(deps.tabId, staleSessionId)
         } else {
           deps.syncPanePtyLayoutBinding(pane.id, null)
         }
-        if (staleSessionId) {
-          deps.clearTabPtyId(deps.tabId, staleSessionId)
-        }
-        startFreshColdRestoreAgentResume(coldRestoreStartup, {
-          forceBlankRestoredViewport: true
-        })
+        startFreshColdRestoreAgentResume(null, { forceBlankRestoredViewport: true })
         return false
       }
-      registerEffectiveLaunchConfig(connectResult?.launchConfig, {
-        ...(coldRestoreStartup ? { launchToken: coldRestoreStartup.launchToken } : {}),
-        ...(connectResult?.launchAgent
-          ? { launchAgent: connectResult.launchAgent }
-          : coldRestoreStartup
-            ? { launchAgent: coldRestoreStartup.agent }
-            : {})
-      })
+      registerEffectiveLaunchConfig(
+        connectResult?.launchConfig,
+        connectResult?.launchAgent ? { launchAgent: connectResult.launchAgent } : {}
+      )
       if (connectResult?.sessionExpired) {
+        const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
         if (staleSessionId) {
           deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
         } else {
@@ -7724,10 +7856,22 @@ export function connectPanePty(
           deps.clearTabPtyId(deps.tabId, staleSessionId)
         }
         // Why: SSH sleep/reconnect can invalidate the relay PTY while the tab stays mounted; replace the dead lease in-place, not a stale overlay.
-        startFreshColdRestoreAgentResume(coldRestoreStartup, {
-          forceBlankRestoredViewport: true
-        })
+        if (!confirmedDeath.deferredToAlias) {
+          startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+            forceBlankRestoredViewport: true
+          })
+        }
         return false
+      }
+      if (connectResult?.coldRestore) {
+        const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
+        retireColdRestoreProbe = confirmedDeath.deferredToAlias
+        coldRestoreReplacementStartup = confirmedDeath.deferredToAlias
+          ? null
+          : confirmedDeath.startup
+        coldRestoreStartup = null
+      } else {
+        providerResumeBlockedRecordEntry = null
       }
       const isCurrentReattachPayload = (): boolean => {
         const currentPtyId = transport.getPtyId()
@@ -7736,6 +7880,26 @@ export function connectPanePty(
         )
       }
       if (!isCurrentReattachPayload()) {
+        return false
+      }
+      if (retireColdRestoreProbe || coldRestoreReplacementStartup) {
+        if (connectResult?.agentResumeUnavailable) {
+          showSessionRestoredBanner('resume-unavailable')
+        } else if (coldRestoreReplacementStartup?.hasSleepingRecord) {
+          showSessionRestoredBanner()
+        }
+        transport.disconnect()
+        deps.clearExitedPanePtyLayoutBinding(pane.id, ptyId)
+        deps.clearTabPtyId(deps.tabId, ptyId)
+        if (staleSessionId && staleSessionId !== ptyId) {
+          deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
+          deps.clearTabPtyId(deps.tabId, staleSessionId)
+        }
+        if (coldRestoreReplacementStartup) {
+          startFreshColdRestoreAgentResume(coldRestoreReplacementStartup, {
+            forceBlankRestoredViewport: true
+          })
+        }
         return false
       }
       // Strict precedence snapshot > replay > coldRestore: paint exactly one, else overlapping tails duplicate TUI output on worktree switch.
@@ -7985,7 +8149,7 @@ export function connectPanePty(
           }
           // Why: recorded scrollback is raw PTY output that may hold query sequences; xterm.write would auto-reply into the new shell's stdin. See replay-guard.ts.
           writeReplayData(connectResult.coldRestore.scrollback)
-          const preparedStartup = coldRestoreStartup ?? buildColdRestoreAgentResumeStartup()
+          const preparedStartup = coldRestoreStartup ?? null
           const didPrepareResume = applyColdRestoreAgentResumeStartup(preparedStartup)
           if (didPrepareResume) {
             if (connectResult.agentResumeUnavailable) {
@@ -8006,9 +8170,6 @@ export function connectPanePty(
           writeFreshShellViewportBlanking(Math.max(destinationRows, pane.terminal.rows))
           if (!isRemoteRuntimePtyId(ptyId)) {
             window.api.pty.ackColdRestore(ptyId)
-          }
-          if (didPrepareResume && !coldRestoreStartup) {
-            schedulePendingStartupCommandDelivery()
           }
         }
         if (hasStructuralReplay || prefetchedParkModelSnapshot) {
@@ -8265,7 +8426,7 @@ export function connectPanePty(
                 ? Promise.resolve(null)
                 : window.api.pty.declarePendingPaneSerializer(cacheKey).catch(() => null)
             let expiredReattachError = false
-            const coldRestoreStartup = buildColdRestoreAgentResumeStartup()
+            const coldRestoreStartup = prepareColdRestoreAgentRecoveryProbe()
             clearPaneMode2031State()
             clearHiddenOutputRestoreState()
             const outputCallbacks = captureTransportOutputCallbacks((message) => {
@@ -8285,20 +8446,6 @@ export function connectPanePty(
               cols,
               rows,
               sessionId: pendingSessionId,
-              ...(coldRestoreStartup?.command ? { command: coldRestoreStartup.command } : {}),
-              ...(coldRestoreStartup?.env
-                ? { env: mergeStartupEnvWithPaneIdentity(coldRestoreStartup.env) }
-                : {}),
-              ...(coldRestoreStartup?.launchConfig
-                ? { launchConfig: coldRestoreStartup.launchConfig }
-                : {}),
-              ...(coldRestoreStartup?.resumeProviderSession
-                ? { resumeProviderSession: coldRestoreStartup.resumeProviderSession }
-                : {}),
-              ...(coldRestoreStartup?.launchToken
-                ? { launchToken: coldRestoreStartup.launchToken }
-                : {}),
-              ...(coldRestoreStartup?.agent ? { launchAgent: coldRestoreStartup.agent } : {}),
               ...(shouldDeclareHiddenAtSpawn() ? { initiallyHidden: true } : {}),
               ...(directSshRetryAttempt ? { admitPtyId: claimCapturedDirectSshRetryPty } : {}),
               callbacks: outputCallbacks.callbacks
@@ -8328,6 +8475,7 @@ export function connectPanePty(
                     : 'undefined'
                 )
                 if (!result && expiredReattachError) {
+                  const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
                   finishReattachLiveDataDeferral(false, outputCallbacks.generation)
                   const gen = await preSignalPromise
                   if (typeof gen === 'number') {
@@ -8341,9 +8489,11 @@ export function connectPanePty(
                   }
                   deps.clearExitedPanePtyLayoutBinding(pane.id, pendingSessionId)
                   deps.clearTabPtyId(deps.tabId, pendingSessionId)
-                  startFreshColdRestoreAgentResume(coldRestoreStartup, {
-                    forceBlankRestoredViewport: true
-                  })
+                  if (!confirmedDeath.deferredToAlias) {
+                    startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+                      forceBlankRestoredViewport: true
+                    })
+                  }
                   return
                 }
                 const accepted = await handleReattachResult(
@@ -8386,16 +8536,22 @@ export function connectPanePty(
                   return
                 }
                 if (isSshSessionExpiredError(err)) {
+                  const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
                   deps.clearExitedPanePtyLayoutBinding(pane.id, pendingSessionId)
                   deps.clearTabPtyId(deps.tabId, pendingSessionId)
-                  startFreshColdRestoreAgentResume(coldRestoreStartup, {
-                    forceBlankRestoredViewport: true
-                  })
+                  if (!confirmedDeath.deferredToAlias) {
+                    startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+                      forceBlankRestoredViewport: true
+                    })
+                  }
                   return
                 }
-                startFreshColdRestoreAgentResume(coldRestoreStartup, {
-                  forceBlankRestoredViewport: true
-                })
+                reportError(err instanceof Error ? err.message : String(err))
+                if (!coldRestoreStartup && !providerResumeBlockedRecordEntry) {
+                  startFreshColdRestoreAgentResume(null, {
+                    forceBlankRestoredViewport: true
+                  })
+                }
               })
             armDirectSshPaneRetryTimeout(trackedReattachPromise, directSshRetryAttempt)
           } else {
@@ -8415,7 +8571,9 @@ export function connectPanePty(
     const existingPtyId = storeSnapshot.tabsByWorktree[deps.worktreeId]?.find(
       (t) => t.id === deps.tabId
     )?.ptyId
-    const hasSleepingAgentSession = Boolean(getSleepingRecordForPane(storeSnapshot))
+    const sleepingAgentSession = getSleepingRecordForPane(storeSnapshot)
+    const hasSleepingAgentSession = Boolean(sleepingAgentSession)
+    const hasLiveSleepingAgentSession = sleepingAgentSession?.record.origin === 'live'
 
     // Why: the tab-level fallback must not steal a PTY a setup sibling already published while the main pane waited for split geometry.
     const tabFallbackPtyId =
@@ -8429,7 +8587,10 @@ export function connectPanePty(
 
     const restoredSessionId = restoredPtyId ?? null
     const sleptRemoteRuntimeSessionId =
-      restoredSessionId && isRemoteRuntimePtyId(restoredSessionId) && hasSleepingAgentSession
+      restoredSessionId &&
+      isRemoteRuntimePtyId(restoredSessionId) &&
+      hasSleepingAgentSession &&
+      !hasLiveSleepingAgentSession
         ? restoredSessionId
         : null
     const detachedLivePtyId =
@@ -8441,7 +8602,9 @@ export function connectPanePty(
           : tabFallbackPtyId
         : null
     const detachedRemoteLeafPtyId =
-      restoredSessionId && isRemoteRuntimePtyId(restoredSessionId) && !hasSleepingAgentSession
+      restoredSessionId &&
+      isRemoteRuntimePtyId(restoredSessionId) &&
+      (!hasSleepingAgentSession || hasLiveSleepingAgentSession)
         ? restoredSessionId
         : null
     const candidateReattachSessionId =
@@ -8472,7 +8635,7 @@ export function connectPanePty(
     const eagerLivePtyId =
       candidateReattachSessionId &&
       candidateHasEagerBuffer &&
-      currentTabLivePtyIds.includes(candidateReattachSessionId)
+      (currentTabLivePtyIds.includes(candidateReattachSessionId) || hasLiveSleepingAgentSession)
         ? candidateReattachSessionId
         : null
     // Why: after a daemon crash + cold restore, a stale session-to-tab mapping can make a tab hold a ptyId from another worktree.
@@ -8513,8 +8676,8 @@ export function connectPanePty(
           : window.api.pty.declarePendingPaneSerializer(cacheKey).catch(() => null)
 
       let expiredReattachError = false
-      const coldRestoreStartup = buildColdRestoreAgentResumeStartup()
-      const outputCallbacks = captureTransportOutputCallbacks((message) => {
+      const coldRestoreStartup = prepareColdRestoreAgentRecoveryProbe()
+      const handleReattachError = (message: string): void => {
         if (isSshSessionExpiredError(message)) {
           expiredReattachError = true
           return
@@ -8523,30 +8686,79 @@ export function connectPanePty(
           return
         }
         reportError(message)
-      })
+      }
+      const requiresRuntimeHostExistingSession = Boolean(
+        runtimeHostPtyWakeHint && (hasSleepingAgentSession || coldRestoreStartup)
+      )
+      let runtimeHostDeathHandled = false
+      const handleRuntimeHostSessionMissing = (): void => {
+        if (!requiresRuntimeHostExistingSession || runtimeHostDeathHandled) {
+          return
+        }
+        runtimeHostDeathHandled = true
+        prepareColdRestoreAgentRecoveryProbe()
+        const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
+        transport.detach?.({ preserveExitObserver: false })
+        deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
+        deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
+        if (!confirmedDeath.deferredToAlias) {
+          startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+            forceBlankRestoredViewport: true
+          })
+        }
+      }
+      const outputCallbacks = captureTransportOutputCallbacks(
+        handleReattachError,
+        requiresRuntimeHostExistingSession ? handleRuntimeHostSessionMissing : undefined
+      )
       beginReattachLiveDataDeferral(outputCallbacks.generation)
       transportConnectInFlightSince = Date.now()
-      const reattachPromise = transport.connect({
-        url: '',
-        cols,
-        rows,
-        sessionId: deferredReattachSessionId,
-        ...(coldRestoreStartup?.command ? { command: coldRestoreStartup.command } : {}),
-        ...(coldRestoreStartup?.env
-          ? { env: mergeStartupEnvWithPaneIdentity(coldRestoreStartup.env) }
-          : {}),
-        ...(coldRestoreStartup?.launchConfig
-          ? { launchConfig: coldRestoreStartup.launchConfig }
-          : {}),
-        ...(coldRestoreStartup?.resumeProviderSession
-          ? { resumeProviderSession: coldRestoreStartup.resumeProviderSession }
-          : {}),
-        ...(coldRestoreStartup?.launchToken ? { launchToken: coldRestoreStartup.launchToken } : {}),
-        ...(coldRestoreStartup?.agent ? { launchAgent: coldRestoreStartup.agent } : {}),
-        ...(shouldDeclareHiddenAtSpawn() ? { initiallyHidden: true } : {}),
-        ...(directSshRetryAttempt ? { admitPtyId: claimCapturedDirectSshRetryPty } : {}),
-        callbacks: outputCallbacks.callbacks
-      })
+      const connectAfterAuthoritativeLivenessProbe = async (): Promise<
+        void | string | PtyConnectResult
+      > => {
+        if (
+          hasSleepingAgentSession &&
+          !runtimeEnvironmentId &&
+          !isRemoteRuntimePtyId(deferredReattachSessionId)
+        ) {
+          const initialTopology = captureTerminalPaneAuthorityTopology(
+            deps.worktreeId,
+            deps.tabId,
+            cacheKey
+          )
+          const probe = window.api.pty.probePtyLiveness
+            ? await window.api.pty
+                .probePtyLiveness(deferredReattachSessionId)
+                .catch(() => ({ live: null, authorityGeneration: 0 }))
+            : {
+                live: await window.api.pty.hasPty(deferredReattachSessionId).catch(() => null),
+                authorityGeneration: null
+              }
+          const live = probe.live
+          if (live === false) {
+            return { id: deferredReattachSessionId, sessionExpired: true }
+          }
+          if (live !== true) {
+            waitForAuthoritativeLivenessTopologyChange(
+              initialTopology,
+              deferredReattachSessionId,
+              probe.authorityGeneration
+            )
+            return
+          }
+        }
+        return transport.connect({
+          url: '',
+          cols,
+          rows,
+          sessionId: deferredReattachSessionId,
+          ...(shouldDeclareHiddenAtSpawn() ? { initiallyHidden: true } : {}),
+          ...(directSshRetryAttempt ? { admitPtyId: claimCapturedDirectSshRetryPty } : {}),
+          ...(requiresRuntimeHostExistingSession ? { requireExistingSession: true } : {}),
+          callbacks: outputCallbacks.callbacks
+        })
+      }
+      const reattachPromise = connectAfterAuthoritativeLivenessProbe()
 
       void Promise.resolve(reattachPromise)
         .catch(() => null)
@@ -8564,6 +8776,7 @@ export function connectPanePty(
             return
           }
           if (!result && expiredReattachError) {
+            const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
             finishReattachLiveDataDeferral(false, outputCallbacks.generation)
             const gen = await preSignalPromise
             if (typeof gen === 'number') {
@@ -8577,9 +8790,11 @@ export function connectPanePty(
             }
             deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
             deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
-            startFreshColdRestoreAgentResume(coldRestoreStartup, {
-              forceBlankRestoredViewport: true
-            })
+            if (!confirmedDeath.deferredToAlias) {
+              startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+                forceBlankRestoredViewport: true
+              })
+            }
             return
           }
           const accepted = await handleReattachResult(
@@ -8629,18 +8844,25 @@ export function connectPanePty(
             ptyId: deferredReattachSessionId,
             reason: message
           })
-          deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
-          deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
           if (connectionId && isSshSessionExpiredError(err)) {
-            startFreshColdRestoreAgentResume(coldRestoreStartup, {
-              forceBlankRestoredViewport: true
-            })
+            const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
+            deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
+            deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
+            if (!confirmedDeath.deferredToAlias) {
+              startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+                forceBlankRestoredViewport: true
+              })
+            }
             return
           }
           reportError(message)
-          startFreshColdRestoreAgentResume(coldRestoreStartup, {
-            forceBlankRestoredViewport: true
-          })
+          if (!coldRestoreStartup && !providerResumeBlockedRecordEntry) {
+            deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
+            deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
+            startFreshColdRestoreAgentResume(null, {
+              forceBlankRestoredViewport: true
+            })
+          }
         })
       armDirectSshPaneRetryTimeout(trackedReattachPromise, directSshRetryAttempt)
     } else if (
@@ -8665,7 +8887,30 @@ export function connectPanePty(
         try {
           clearPaneMode2031State()
           clearHiddenOutputRestoreState()
-          const outputCallbacks = captureTransportOutputCallbacks(reportError)
+          const probesHostRecovery =
+            attachPtyId === detachedRemoteLeafPtyId && hasLiveSleepingAgentSession
+          if (probesHostRecovery) {
+            prepareColdRestoreAgentRecoveryProbe()
+          }
+          let hostDeathHandled = false
+          const handleAuthoritativeSessionMissing = (): void => {
+            if (probesHostRecovery && !hostDeathHandled) {
+              hostDeathHandled = true
+              const confirmedDeath = resolveProviderResumeAfterConfirmedDeath()
+              transport.detach?.({ preserveExitObserver: false })
+              deps.clearExitedPanePtyLayoutBinding(pane.id, attachPtyId)
+              deps.clearTabPtyId(deps.tabId, attachPtyId)
+              if (!confirmedDeath.deferredToAlias) {
+                startFreshColdRestoreAgentResume(confirmedDeath.startup, {
+                  forceBlankRestoredViewport: true
+                })
+              }
+            }
+          }
+          const outputCallbacks = captureTransportOutputCallbacks(
+            reportError,
+            handleAuthoritativeSessionMissing
+          )
           transport.attach({
             existingPtyId: attachPtyId,
             cols,

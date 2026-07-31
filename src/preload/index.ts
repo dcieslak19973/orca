@@ -950,6 +950,16 @@ const api = {
       ipcRenderer.on('pty:writeUnavailable', handler)
       return () => ipcRenderer.removeListener('pty:writeUnavailable', handler)
     },
+    onLivenessAuthorityChanged: (
+      callback: (payload: { id: string; generation: number }) => void
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { id: string; generation: number }
+      ): void => callback(payload)
+      ipcRenderer.on('pty:livenessAuthorityChanged', handler)
+      return () => ipcRenderer.removeListener('pty:livenessAuthorityChanged', handler)
+    },
 
     resize: (id: string, cols: number, rows: number): void => {
       ipcRenderer.send('pty:resize', { id, cols, rows })
@@ -1034,6 +1044,12 @@ const api = {
     ): { id: string; authoritative: boolean | null }[] =>
       ipcRenderer.sendSync('pty:getAuthoritativeBufferSnapshotCapabilitiesSync', { ids }),
     hasPty: (id: string): Promise<boolean | null> => ipcRenderer.invoke('pty:hasPty', { id }),
+    probePtyLiveness: (
+      id: string
+    ): Promise<{ live: boolean | null; authorityGeneration: number }> =>
+      ipcRenderer.invoke('pty:probePtyLiveness', { id }),
+    getPtyLivenessAuthorityGeneration: (id: string): Promise<number> =>
+      ipcRenderer.invoke('pty:getPtyLivenessAuthorityGeneration', { id }),
 
     getMainBufferSnapshot: (
       id: string,

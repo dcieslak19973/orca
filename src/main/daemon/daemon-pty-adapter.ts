@@ -133,6 +133,7 @@ export type DaemonIdentityChangeEvent = {
 
 const MAX_TOMBSTONES = 1000
 const MAX_CONCURRENT_CHECKPOINTS = 4
+const PTY_LIVENESS_PROBE_TIMEOUT_MS = 1_000
 
 // Why: providers take an absolute teardown deadline, but the client RPC takes a
 // relative timeout — convert only here, at the request itself, so sequential RPCs
@@ -163,6 +164,9 @@ export class DaemonPtyAdapter implements IPtyProvider {
   private readonly trackAuditEligibility = createDaemonAuditEligibilityTracker()
   private auditObservationListeners: ((observation: DaemonAuditObservation) => void)[] = []
   private identityChangeListeners: ((event: DaemonIdentityChangeEvent) => void)[] = []
+  private livenessAuthorityListeners: ((payload: { id: string }) => void)[] = []
+  private livenessProbesById = new Map<string, Promise<boolean>>()
+  private lateLivenessAnnouncements = new Set<Promise<boolean>>()
   private historyManager: HistoryManager | null
   private historyReader: HistoryReader | null
   private respawnFn: DaemonPtyAdapterOptions['respawn'] | null
@@ -308,6 +312,11 @@ export class DaemonPtyAdapter implements IPtyProvider {
   onDaemonIdentityChanged(listener: (event: DaemonIdentityChangeEvent) => void): () => void {
     this.identityChangeListeners.push(listener)
     return () => removeListener(this.identityChangeListeners, listener)
+  }
+
+  onPtyLivenessAuthorityChanged(listener: (payload: { id: string }) => void): () => void {
+    this.livenessAuthorityListeners.push(listener)
+    return () => removeListener(this.livenessAuthorityListeners, listener)
   }
 
   onAuditEligibilityObservation(
@@ -877,14 +886,61 @@ export class DaemonPtyAdapter implements IPtyProvider {
   }
 
   async probePtyLiveness(id: string): Promise<boolean | null> {
-    try {
-      const result = await this.client.request<{ size: { cols: number; rows: number } | null }>(
-        'getSize',
-        { sessionId: id }
+    const timedOut = Symbol('timed-out')
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    let probe = this.livenessProbesById.get(id)
+    if (!probe) {
+      probe = this.withDaemonRetry(async () => {
+        await this.ensureConnected()
+        const result = await this.client.request<{ size: { cols: number; rows: number } | null }>(
+          'getSize',
+          { sessionId: id }
+        )
+        return result.size !== null
+      })
+      this.livenessProbesById.set(id, probe)
+      void probe.then(
+        () => {
+          if (this.livenessProbesById.get(id) === probe) {
+            this.livenessProbesById.delete(id)
+          }
+        },
+        () => {
+          if (this.livenessProbesById.get(id) === probe) {
+            this.livenessProbesById.delete(id)
+          }
+        }
       )
-      return result.size !== null
+    }
+    try {
+      const result = await Promise.race([
+        probe,
+        new Promise<typeof timedOut>((resolve) => {
+          timeout = setTimeout(() => resolve(timedOut), PTY_LIVENESS_PROBE_TIMEOUT_MS)
+        })
+      ])
+      if (result === timedOut) {
+        if (!this.lateLivenessAnnouncements.has(probe)) {
+          this.lateLivenessAnnouncements.add(probe)
+          void probe.then(
+            () => {
+              this.lateLivenessAnnouncements.delete(probe)
+              notifyAuditListeners(this.livenessAuthorityListeners, { id })
+            },
+            () => {
+              this.lateLivenessAnnouncements.delete(probe)
+            }
+          )
+        }
+        return null
+      }
+      return result
     } catch {
       return null
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout)
+      }
     }
   }
 
@@ -1538,6 +1594,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.producerResumesOwedOnReconnect.clear()
     this.auditObservationListeners.length = 0
     this.identityChangeListeners.length = 0
+    this.livenessAuthorityListeners.length = 0
     this.removeEventListener?.()
     this.removeEventListener = null
     // Why: final checkpoints are written daemon-side (TerminalHost.dispose); here the adapter only marks sessions

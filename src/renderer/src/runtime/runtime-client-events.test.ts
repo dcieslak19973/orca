@@ -94,6 +94,7 @@ describe('subscribeRuntimeClientEvents', () => {
     })
     const onEvent = vi.fn()
     const onReplayed = vi.fn()
+    const onReady = vi.fn()
 
     vi.stubGlobal('window', {
       api: {
@@ -101,7 +102,7 @@ describe('subscribeRuntimeClientEvents', () => {
       }
     })
 
-    await subscribeRuntimeClientEvents('env-1', onEvent, vi.fn(), onReplayed)
+    await subscribeRuntimeClientEvents('env-1', onEvent, vi.fn(), onReplayed, onReady)
     if (!capturedOnResponse) {
       throw new Error('Expected subscription callbacks')
     }
@@ -111,6 +112,7 @@ describe('subscribeRuntimeClientEvents', () => {
       result: { type: 'ready', subscriptionId: 'sub-1' }
     })
     expect(onReplayed).not.toHaveBeenCalled()
+    expect(onReady).toHaveBeenCalledTimes(1)
 
     capturedOnResponse({
       ok: true,
@@ -118,6 +120,7 @@ describe('subscribeRuntimeClientEvents', () => {
       _replayedAfterReconnect: true
     })
     expect(onReplayed).toHaveBeenCalledTimes(1)
+    expect(onReady).toHaveBeenCalledTimes(2)
 
     // A replay-tagged event frame both signals and still delivers the event.
     capturedOnResponse({
@@ -126,7 +129,14 @@ describe('subscribeRuntimeClientEvents', () => {
       _replayedAfterReconnect: true
     })
     expect(onReplayed).toHaveBeenCalledTimes(2)
+    expect(onReady).toHaveBeenCalledTimes(2)
     expect(onEvent).toHaveBeenCalledWith({ type: 'worktreesChanged', repoId: 'repo-1' })
+
+    capturedOnResponse({
+      ok: false,
+      error: { code: 'internal_error', message: 'lost' }
+    })
+    expect(onReady).toHaveBeenCalledTimes(2)
   })
 
   it('forwards every host terminal sleep disposition through the response decoder', async () => {

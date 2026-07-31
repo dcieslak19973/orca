@@ -1,5 +1,6 @@
 import type { IPtyProvider } from '../providers/types'
 import type { DaemonPtyAdapter } from './daemon-pty-adapter'
+import { combineUnsubscribes } from './combine-unsubscribes'
 
 export async function probePtyOwners(
   id: string,
@@ -17,4 +18,13 @@ export async function probePtyOwners(
     : results.every((result) => result === false)
       ? false
       : null
+}
+
+export function subscribePtyLivenessAuthority(
+  providers: readonly IPtyProvider[],
+  callback: (payload: { id: string }) => void
+): () => void {
+  return combineUnsubscribes(
+    providers.map((provider) => provider.onPtyLivenessAuthorityChanged?.(callback) ?? (() => {}))
+  )
 }

@@ -19,7 +19,8 @@ export async function subscribeRuntimeClientEvents(
   // lost, not queued. The replay tag on the first post-reconnect response is
   // the renderer's only signal that mirrored event-derived state (e.g. the
   // per-environment SSH bucket) may have missed transitions and must resync.
-  onReplayedAfterReconnect?: () => void
+  onReplayedAfterReconnect?: () => void,
+  onReady?: () => void
 ): Promise<RuntimeClientEventSubscription> {
   const handle = await window.api.runtimeEnvironments.subscribe(
     {
@@ -30,7 +31,13 @@ export async function subscribeRuntimeClientEvents(
     },
     {
       onResponse: (response) => {
-        handleRuntimeClientEventResponse(response, onEvent, onError, onReplayedAfterReconnect)
+        handleRuntimeClientEventResponse(
+          response,
+          onEvent,
+          onError,
+          onReplayedAfterReconnect,
+          onReady
+        )
       },
       onError
     }
@@ -42,7 +49,8 @@ function handleRuntimeClientEventResponse(
   response: RuntimeRpcResponse<unknown>,
   onEvent: (event: RuntimeClientEvent) => void,
   onError: (error: unknown) => void,
-  onReplayedAfterReconnect?: () => void
+  onReplayedAfterReconnect?: () => void,
+  onReady?: () => void
 ): void {
   if (response.ok === false) {
     onError(response.error)
@@ -61,6 +69,7 @@ function handleRuntimeClientEventResponse(
         onError(new Error('Invalid retained SSH connection state'))
       }
     }
+    onReady?.()
     return
   }
   if (message.type === 'end') {
@@ -88,6 +97,7 @@ function isRuntimeClientEvent(
     message.type === 'worktreesChanged' ||
     message.type === 'nativeChatLaunchDraftResolved' ||
     message.type === 'terminalSideEffects' ||
+    message.type === 'terminalLivenessAuthorityChanged' ||
     message.type === 'sshStateChanged' ||
     message.type === 'linearLinkedIssueUpdated' ||
     message.type === 'activateWorktree' ||

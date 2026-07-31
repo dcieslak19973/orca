@@ -4663,6 +4663,7 @@ describe('useIpcEvents CLI-created worktree activation', () => {
   it('routes local and runtime worktree events to their owning hosts', async () => {
     const fetchWorktrees = vi.fn()
     const fetchWorktreeLineage = vi.fn()
+    const dispatchRuntimeTerminalAuthorityReconnect = vi.fn()
     // Mutable so the test can drop the runtime mid-run and prove the local flag
     // is origin-based, not a sample of runtime state.
     const mockSettings: { activeRuntimeEnvironmentId: string | null; terminalFontSize: number } = {
@@ -4739,6 +4740,10 @@ describe('useIpcEvents CLI-created worktree activation', () => {
 
     vi.doMock('@/lib/ui-zoom', () => ({
       applyUIZoom: vi.fn()
+    }))
+    vi.doMock('@/runtime/runtime-terminal-authority-events', () => ({
+      dispatchRuntimeTerminalAuthorityEvent: vi.fn(),
+      dispatchRuntimeTerminalAuthorityReconnect
     }))
     vi.doMock('@/lib/worktree-activation', () => ({
       activateAndRevealWorktree: vi.fn(),
@@ -4883,6 +4888,16 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     if (!localWorktreesOnChanged) {
       throw new Error('Expected local worktree event callback')
     }
+    if (!runtimeOnResponse) {
+      throw new Error('Expected runtime client event callbacks')
+    }
+    runtimeOnResponse({
+      ok: true,
+      result: { type: 'ready', subscriptionId: 'sub-1' }
+    })
+    expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledOnce()
+    expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledWith('env-1')
+
     localWorktreesOnChanged({ repoId: 'repo-1' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -4905,9 +4920,6 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     fetchWorktrees.mockClear()
     fetchWorktreeLineage.mockClear()
     mockSettings.activeRuntimeEnvironmentId = null
-    if (!runtimeOnResponse) {
-      throw new Error('Expected runtime client event callbacks')
-    }
     runtimeOnResponse({
       ok: true,
       result: { type: 'worktreesChanged', repoId: 'repo-1' }

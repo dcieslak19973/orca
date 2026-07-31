@@ -223,6 +223,17 @@ type FreshLocalFallbackProvider = IPtyProvider & {
 }
 const sshProviders = new Map<string, IPtyProvider>()
 const sshProvidersByGeneration = new Map<number, IPtyProvider>()
+const sshLivenessAuthoritySubscriptions = new Map<
+  string,
+  { provider: IPtyProvider; unsubscribe: () => void }
+>()
+const ptyLivenessAuthorityGenerationById = new Map<string, number>()
+const sshLivenessAuthorityIdsByConnection = new Map<string, Set<string>>()
+const sshLivenessAuthorityExpiryById = new Map<string, ReturnType<typeof setTimeout>>()
+let ptyLivenessAuthoritySequence = 0
+let ptyLivenessAuthorityWindow: BrowserWindow | null = null
+let ptyLivenessAuthorityRuntime: OrcaRuntimeService | undefined
+const SSH_LIVENESS_AUTHORITY_RETENTION_MS = 30_000
 
 type RegisteredPtyProvider = {
   provider: IPtyProvider
@@ -242,6 +253,62 @@ const PRODUCER_FLOW_CONTROL_ENABLED = true
 // Why: post-spawn write/resize/kill calls carry only the PTY ID; map it to its connectionId so ops route to the right provider.
 const ptyOwnership = new Map<string, string | null>()
 const ptyIncarnationById = new Map<string, string>()
+
+function clearPtyLivenessAuthority(id: string, connectionId?: string): void {
+  ptyLivenessAuthorityGenerationById.delete(id)
+  const expiry = sshLivenessAuthorityExpiryById.get(id)
+  if (expiry) {
+    clearTimeout(expiry)
+    sshLivenessAuthorityExpiryById.delete(id)
+  }
+  if (!connectionId) {
+    return
+  }
+  const ids = sshLivenessAuthorityIdsByConnection.get(connectionId)
+  ids?.delete(id)
+  if (ids?.size === 0) {
+    sshLivenessAuthorityIdsByConnection.delete(connectionId)
+  }
+}
+
+function publishPtyLivenessAuthority(
+  id: string,
+  requireTrackedPty: boolean,
+  connectionId?: string
+): void {
+  if (requireTrackedPty && !ptyIncarnationById.has(id)) {
+    return
+  }
+  const generation = ++ptyLivenessAuthoritySequence
+  ptyLivenessAuthorityGenerationById.set(id, generation)
+  if (connectionId) {
+    const ids = sshLivenessAuthorityIdsByConnection.get(connectionId) ?? new Set<string>()
+    ids.add(id)
+    sshLivenessAuthorityIdsByConnection.set(connectionId, ids)
+    const previousExpiry = sshLivenessAuthorityExpiryById.get(id)
+    if (previousExpiry) {
+      clearTimeout(previousExpiry)
+    }
+    const expiry = setTimeout(() => {
+      if (ptyLivenessAuthorityGenerationById.get(id) === generation) {
+        clearPtyLivenessAuthority(id, connectionId)
+      }
+    }, SSH_LIVENESS_AUTHORITY_RETENTION_MS)
+    expiry.unref?.()
+    sshLivenessAuthorityExpiryById.set(id, expiry)
+  }
+  ptyLivenessAuthorityRuntime?.onPtyLivenessAuthorityChanged(id)
+  const mainWindow = ptyLivenessAuthorityWindow
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    (typeof mainWindow.webContents.isDestroyed === 'function' &&
+      mainWindow.webContents.isDestroyed())
+  ) {
+    return
+  }
+  mainWindow.webContents.send('pty:livenessAuthorityChanged', { id, generation })
+}
 
 export function isCurrentPtyExit(payload: { id: string; incarnationId?: string }): boolean {
   const current = ptyIncarnationById.get(payload.id)
@@ -1330,7 +1397,29 @@ function beginPtySpawnForWorktree(
 
 /** Register an SSH PTY provider for a connection. */
 export function registerSshPtyProvider(connectionId: string, provider: IPtyProvider): void {
+  const previousAuthority = sshLivenessAuthoritySubscriptions.get(connectionId)
   sshProviders.set(connectionId, provider)
+  if (previousAuthority) {
+    sshLivenessAuthoritySubscriptions.delete(connectionId)
+    previousAuthority.unsubscribe()
+  }
+  const unsubscribe = provider.onPtyLivenessAuthorityChanged?.((payload) => {
+    const parsed = parseAppSshPtyId(payload.id)
+    let ownsTarget = false
+    try {
+      ownsTarget =
+        parsed !== null && toRelaySshPtyId(connectionId, payload.id) === parsed.relayPtyId
+    } catch {
+      ownsTarget = false
+    }
+    if (sshProviders.get(connectionId) !== provider || !ownsTarget) {
+      return
+    }
+    publishPtyLivenessAuthority(payload.id, false, connectionId)
+  })
+  if (unsubscribe) {
+    sshLivenessAuthoritySubscriptions.set(connectionId, { provider, unsubscribe })
+  }
   const generation = (provider as { providerGeneration?: number }).providerGeneration
   if (Number.isSafeInteger(generation) && generation! > 0) {
     sshProvidersByGeneration.set(generation!, provider)
@@ -1340,11 +1429,19 @@ export function registerSshPtyProvider(connectionId: string, provider: IPtyProvi
 /** Remove an SSH PTY provider when a connection is closed. */
 export function unregisterSshPtyProvider(connectionId: string): void {
   const provider = sshProviders.get(connectionId)
+  sshProviders.delete(connectionId)
+  const authority = sshLivenessAuthoritySubscriptions.get(connectionId)
+  if (authority && authority.provider === provider) {
+    sshLivenessAuthoritySubscriptions.delete(connectionId)
+    authority.unsubscribe()
+  }
   const generation = (provider as { providerGeneration?: number } | undefined)?.providerGeneration
   if (generation !== undefined && sshProvidersByGeneration.get(generation) === provider) {
     sshProvidersByGeneration.delete(generation)
   }
-  sshProviders.delete(connectionId)
+  for (const id of sshLivenessAuthorityIdsByConnection.get(connectionId) ?? []) {
+    clearPtyLivenessAuthority(id, connectionId)
+  }
 }
 
 /** Get the SSH PTY provider for a connection (for dispose on cleanup). */
@@ -1414,6 +1511,8 @@ export function clearProviderPtyState(
   markClaudePtyExited(id)
   ptySizes.delete(id)
   ptyIncarnationById.delete(id)
+  const parsedSshId = parseAppSshPtyId(id)
+  clearPtyLivenessAuthority(id, parsedSshId?.connectionId)
   lastInputAtByPty.delete(id)
   interactiveOutputCharsByPty.delete(id)
   const activeChanged = activeRendererPtys.delete(id)
@@ -1494,6 +1593,7 @@ let localDataUnsub: (() => void) | null = null
 let localExitUnsub: (() => void) | null = null
 let localBackgroundStreamUnsub: (() => void) | null = null
 let localWriteUnavailableUnsub: (() => void) | null = null
+let localLivenessAuthorityUnsub: (() => void) | null = null
 let didFinishLoadHandler: (() => void) | null = null
 let didFinishLoadWebContents: WebContents | null = null
 let rendererLifecycleResetWebContents: WebContents | null = null
@@ -1700,10 +1800,12 @@ export function unbindLocalProviderListeners(): void {
   localExitUnsub?.()
   localBackgroundStreamUnsub?.()
   localWriteUnavailableUnsub?.()
+  localLivenessAuthorityUnsub?.()
   localDataUnsub = null
   localExitUnsub = null
   localBackgroundStreamUnsub = null
   localWriteUnavailableUnsub = null
+  localLivenessAuthorityUnsub = null
 }
 
 // ─── IPC Registration ───────────────────────────────────────────────
@@ -1729,6 +1831,8 @@ export function registerPtyHandlers(
   invalidatePendingPtyDrainPriority = () => {}
   invalidatePendingPtyDrainPolicy = () => {}
   registerRendererLifecycleResetHandlers(mainWindow.webContents)
+  ptyLivenessAuthorityWindow = mainWindow
+  ptyLivenessAuthorityRuntime = runtime
 
   const getLocalPtyStartupPromise = (connectionId?: string | null): Promise<void> | undefined => {
     if (connectionId) {
@@ -1752,6 +1856,8 @@ export function registerPtyHandlers(
   ipcMain.removeHandler('pty:kill')
   ipcMain.removeHandler('pty:listSessions')
   ipcMain.removeHandler('pty:hasPty')
+  ipcMain.removeHandler('pty:probePtyLiveness')
+  ipcMain.removeHandler('pty:getPtyLivenessAuthorityGeneration')
   ipcMain.removeHandler('pty:hasChildProcesses')
   ipcMain.removeHandler('pty:getForegroundProcess')
   ipcMain.removeHandler('pty:inspectProcess')
@@ -3313,6 +3419,7 @@ export function registerPtyHandlers(
     localExitUnsub?.()
     localBackgroundStreamUnsub?.()
     localWriteUnavailableUnsub?.()
+    localLivenessAuthorityUnsub?.()
 
     // Why: a daemon death takes down every session at once. The provider signals
     // each affected pane here so background panes remount + re-attach too, not
@@ -3327,6 +3434,10 @@ export function registerPtyHandlers(
           return
         }
         mainWindow.webContents.send('pty:writeUnavailable', { id: payload.id })
+      }) ?? null
+    localLivenessAuthorityUnsub =
+      localProvider.onPtyLivenessAuthorityChanged?.((payload) => {
+        publishPtyLivenessAuthority(payload.id, true)
       }) ?? null
 
     // Daemon keep-tail thinning facts, in byte order with onData: markers flip transient-fact scan authority; a gap forces renderer restore from the snapshot.
@@ -4564,6 +4675,16 @@ export function registerPtyHandlers(
     hasPty: (ptyId) => {
       try {
         return getProviderForPty(ptyId).hasPty?.(ptyId) ?? null
+      } catch {
+        return null
+      }
+    },
+    probePtyLiveness: async (ptyId) => {
+      try {
+        const provider = getProviderForPty(ptyId)
+        return provider.probePtyLiveness
+          ? await provider.probePtyLiveness(ptyId)
+          : (provider.hasPty?.(ptyId) ?? null)
       } catch {
         return null
       }
@@ -6149,16 +6270,50 @@ export function registerPtyHandlers(
     const provider = parsedSshId
       ? sshProviders.get(parsedSshId.connectionId)
       : tryGetProviderForPty(args.id)
-    if (!provider?.hasPty) {
+    if (!provider) {
       return null
     }
     try {
-      return provider.hasPty(args.id)
+      if (provider.probePtyLiveness) {
+        return await provider.probePtyLiveness(args.id)
+      }
+      return provider.hasPty?.(args.id) ?? null
     } catch {
       // Why: liveness is only allowed to close panes on an authoritative false.
       return null
     }
   })
+
+  ipcMain.handle(
+    'pty:probePtyLiveness',
+    async (
+      _event,
+      args: { id: string }
+    ): Promise<{ live: boolean | null; authorityGeneration: number }> => {
+      const authorityGeneration = ptyLivenessAuthorityGenerationById.get(args.id) ?? 0
+      const ownedConnectionId = ptyOwnership.get(args.id)
+      const parsedSshId = ownedConnectionId === undefined ? parseAppSshPtyId(args.id) : null
+      const provider = parsedSshId
+        ? sshProviders.get(parsedSshId.connectionId)
+        : tryGetProviderForPty(args.id)
+      if (!provider) {
+        return { live: null, authorityGeneration }
+      }
+      try {
+        const live = provider.probePtyLiveness
+          ? await provider.probePtyLiveness(args.id)
+          : (provider.hasPty?.(args.id) ?? null)
+        return { live, authorityGeneration }
+      } catch {
+        return { live: null, authorityGeneration }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'pty:getPtyLivenessAuthorityGeneration',
+    (_event, args: { id: string }): number => ptyLivenessAuthorityGenerationById.get(args.id) ?? 0
+  )
 
   ipcMain.handle(
     'pty:hasChildProcesses',

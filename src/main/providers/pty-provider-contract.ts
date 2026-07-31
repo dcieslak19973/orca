@@ -108,6 +108,8 @@ export type IPtyProvider = {
   hasPty?: (id: string) => boolean
   /** Exact provider readback: false only when the provider answered that the PTY is absent. */
   probePtyLiveness?: (id: string) => Promise<boolean | null>
+  /** Fires when a previously unknown exact-id probe later obtains an authoritative answer. */
+  onPtyLivenessAuthorityChanged?: (callback: (payload: { id: string }) => void) => () => void
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
   /**
