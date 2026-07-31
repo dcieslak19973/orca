@@ -143,16 +143,30 @@ describe('HostWorktreeRequestGate', () => {
     const firstClient = {} as RpcClient
     const secondClient = {} as RpcClient
 
-    expect(gate.begin(firstClient, false)).toBe(true)
-    expect(gate.begin(firstClient, false)).toBe(false)
+    expect(gate.begin(firstClient, {})).toBe(true)
+    expect(gate.begin(firstClient, {})).toBe(false)
     expect(gate.isSuperseded(firstClient)).toBe(false)
 
-    expect(gate.begin(firstClient, true)).toBe(false)
+    expect(gate.begin(firstClient, { queueIfInFlight: true })).toBe(false)
     expect(gate.isSuperseded(firstClient)).toBe(true)
-    expect(gate.begin(secondClient, false)).toBe(true)
+    expect(gate.begin(secondClient, {})).toBe(true)
 
-    expect(gate.finish(secondClient)).toBe(false)
-    expect(gate.finish(firstClient)).toBe(true)
-    expect(gate.begin(firstClient, false)).toBe(true)
+    expect(gate.finish(secondClient)).toBeNull()
+    expect(gate.finish(firstClient)).toEqual({ queueIfInFlight: true })
+    expect(gate.begin(firstClient, {})).toBe(true)
+  })
+
+  it('preserves the strongest queued modal refresh policy', () => {
+    const gate = new HostWorktreeRequestGate()
+    const client = {} as RpcClient
+
+    expect(gate.begin(client, {})).toBe(true)
+    expect(gate.begin(client, { queueIfInFlight: true })).toBe(false)
+    expect(gate.begin(client, { allowDuringModal: true, queueIfInFlight: true })).toBe(false)
+
+    expect(gate.finish(client)).toEqual({
+      allowDuringModal: true,
+      queueIfInFlight: true
+    })
   })
 })

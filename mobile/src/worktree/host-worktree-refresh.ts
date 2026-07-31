@@ -15,12 +15,18 @@ type HostWorktreeRefreshArgs = {
 
 export class HostWorktreeRequestGate {
   private readonly inFlight = new WeakSet<RpcClient>()
-  private readonly pending = new WeakSet<RpcClient>()
+  private readonly pending = new WeakMap<RpcClient, WorktreeRefreshOptions>()
 
-  begin(client: RpcClient, queueIfInFlight: boolean): boolean {
+  begin(client: RpcClient, options: WorktreeRefreshOptions): boolean {
     if (this.inFlight.has(client)) {
-      if (queueIfInFlight) {
-        this.pending.add(client)
+      if (options.queueIfInFlight) {
+        const pending = this.pending.get(client)
+        this.pending.set(client, {
+          queueIfInFlight: true,
+          ...(pending?.allowDuringModal || options.allowDuringModal
+            ? { allowDuringModal: true }
+            : {})
+        })
       }
       return false
     }
@@ -32,10 +38,11 @@ export class HostWorktreeRequestGate {
     return this.pending.has(client)
   }
 
-  finish(client: RpcClient): boolean {
-    const refreshQueued = this.pending.delete(client)
+  finish(client: RpcClient): WorktreeRefreshOptions | null {
+    const pending = this.pending.get(client) ?? null
+    this.pending.delete(client)
     this.inFlight.delete(client)
-    return refreshQueued
+    return pending
   }
 }
 

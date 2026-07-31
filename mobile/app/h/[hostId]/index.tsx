@@ -315,6 +315,9 @@ export function HostScreen({
   // Why: mirror client into a ref so imperative call sites read it without re-subscribing.
   useEffect(() => {
     clientRef.current = client
+    return () => {
+      clientRef.current = null
+    }
   }, [client])
 
   useEffect(() => {
@@ -418,7 +421,7 @@ export function HostScreen({
         return
       }
       // Why: prevent slow remote hosts from stacking overlapping worktree.ps requests during polling.
-      if (!fetchWorktreeRequestGateRef.current.begin(client, options.queueIfInFlight === true)) {
+      if (!fetchWorktreeRequestGateRef.current.begin(client, options)) {
         return
       }
       const requestClient = client
@@ -487,9 +490,9 @@ export function HostScreen({
       } catch {
         // Will retry on reconnect
       } finally {
-        const refreshQueued = fetchWorktreeRequestGateRef.current.finish(requestClient)
-        if (refreshQueued && clientRef.current === requestClient && hostId === requestHostId) {
-          void fetchWorktrees({ allowDuringModal: true, queueIfInFlight: true })
+        const pendingOptions = fetchWorktreeRequestGateRef.current.finish(requestClient)
+        if (pendingOptions && clientRef.current === requestClient && hostId === requestHostId) {
+          void fetchWorktrees(pendingOptions)
         }
       }
     },
