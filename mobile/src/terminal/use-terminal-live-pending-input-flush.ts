@@ -16,6 +16,7 @@ import {
 type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly activeHandleRef: RefObject<string | null>
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
+  readonly inputStateReady: boolean
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputGeneration: symbol
   readonly liveInputProducerGeneration: symbol
@@ -41,6 +42,7 @@ type TerminalLivePendingInputFlush = {
 export function useTerminalLivePendingInputFlush<TTabType extends string>({
   activeHandleRef,
   activeSessionTabTypeRef,
+  inputStateReady,
   liveInputRef,
   liveInputGeneration,
   liveInputProducerGeneration,
@@ -130,7 +132,11 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runMirrorStep = useCallback(
     async (handle: string, fieldText: string, commitHeld: boolean): Promise<boolean> => {
-      if (disposedRef.current || liveInputGeneration !== currentLiveInputGenerationRef.current) {
+      if (
+        !inputStateReady ||
+        disposedRef.current ||
+        liveInputGeneration !== currentLiveInputGenerationRef.current
+      ) {
         return false
       }
       if (
@@ -194,6 +200,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeHandleRef,
       activeSessionTabTypeRef,
       clearHeldCommitTimer,
+      inputStateReady,
       liveInputGeneration,
       liveInputTerminalHandlesRef,
       resetMirrorState,
@@ -213,6 +220,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const runLiveInputBoundary = useCallback(
     (expectedHandle: string | null, sendBoundary: () => Promise<boolean>): Promise<boolean> => {
       if (
+        !inputStateReady ||
         disposedRef.current ||
         liveInputProducerGeneration !== currentLiveInputProducerGenerationRef.current
       ) {
@@ -223,7 +231,8 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       }
       const lifecycleEpoch = lifecycleEpochRef.current
       const sendCurrentBoundary = (): Promise<boolean> => {
-        return !disposedRef.current &&
+        return inputStateReady &&
+          !disposedRef.current &&
           lifecycleEpoch === lifecycleEpochRef.current &&
           liveInputProducerGeneration === currentLiveInputProducerGenerationRef.current
           ? sendBoundary()
@@ -263,6 +272,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeHandleRef,
       activeSessionTabTypeRef,
       clearPendingLiveInputCommit,
+      inputStateReady,
       liveInputTerminalHandlesRef,
       liveInputProducerGeneration,
       runMirrorStep

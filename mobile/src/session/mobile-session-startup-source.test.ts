@@ -135,6 +135,8 @@ describe('mobile session startup', () => {
 
     expect(routeReset).toContain('activeHandleRef.current = null')
     expect(routeReset).toContain('activeSessionTabTypeRef.current = null')
+    expect(routeReset).toContain('terminalInputStateScopeRef.current = terminalInputScope')
+    expect(routeReset).toContain("setInput('')")
     expect(routeReset).toContain('clearPendingLiveInputCommit()')
   })
 

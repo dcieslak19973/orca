@@ -79,7 +79,11 @@ describe('terminal input connection gate', () => {
 
 describe('session route offline-compose wiring', () => {
   it('derives both gates from the shared resolver', () => {
-    expect(sessionRouteSource).toContain('resolveMobileTerminalInputGate({')
+    const gateCall = routeSlice(
+      'const { canCompose, canSend } = resolveMobileTerminalInputGate({',
+      'const liveInputEnabled ='
+    )
+    expect(gateCall).toContain('activeHandle: terminalInputStateReady ? activeHandle : null')
   })
 
   it('keeps the buffered command box editable offline while the live capture stays send-gated', () => {
@@ -114,6 +118,7 @@ describe('session route offline-compose wiring', () => {
   it('tells the live-input commit hook about connection loss so stale mirror state resets', () => {
     const hookCall = routeSlice('useTerminalLiveInputCommit({', 'setLiveInputCapture')
     expect(hookCall).toContain("connected: connState === 'connected'")
+    expect(hookCall).toContain('inputStateReady: terminalInputStateReady')
   })
 
   it('keeps every keystroke-grade terminal send now-or-never so nothing replays after reconnect', () => {

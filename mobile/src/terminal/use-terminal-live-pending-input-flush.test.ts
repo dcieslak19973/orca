@@ -60,6 +60,7 @@ it('reserves a slow kana boundary before a newer live-input generation', async (
     handlers = useTerminalLivePendingInputFlush({
       activeHandleRef,
       activeSessionTabTypeRef,
+      inputStateReady: true,
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
@@ -121,6 +122,7 @@ it('preserves new kana when an old terminal boundary arrives late', async () => 
     handlers = useTerminalLivePendingInputFlush({
       activeHandleRef,
       activeSessionTabTypeRef,
+      inputStateReady: true,
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
@@ -181,6 +183,7 @@ it('cancels queued terminal sends when the hook unmounts', async () => {
     handlers = useTerminalLivePendingInputFlush({
       activeHandleRef,
       activeSessionTabTypeRef,
+      inputStateReady: true,
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
@@ -242,6 +245,7 @@ it('cancels queued terminal boundaries when the connection drops', async () => {
     handlers = useTerminalLivePendingInputFlush({
       activeHandleRef,
       activeSessionTabTypeRef,
+      inputStateReady: true,
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,

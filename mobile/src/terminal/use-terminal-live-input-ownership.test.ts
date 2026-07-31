@@ -42,6 +42,7 @@ function createOwnershipHarness() {
     handlers = useTerminalLivePendingInputFlush({
       activeHandleRef,
       activeSessionTabTypeRef,
+      inputStateReady: true,
       liveInputRef: { current: null } as RefObject<TextInput | null>,
       liveInputGeneration,
       liveInputProducerGeneration,

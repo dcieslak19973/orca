@@ -13,7 +13,10 @@ type TerminalLiveInputCommitHarness = {
   readonly setActiveHandle: (next: string) => void
   readonly setActiveSessionTabType: (next: string | undefined) => void
   readonly setConnected: (next: boolean) => void
+  readonly setInputStateReady: (next: boolean) => void
+  readonly setLiveInputEnabled: (next: boolean) => void
   readonly setSendResult: (next: boolean) => void
+  readonly setScope: (next: string) => void
   readonly unmount: () => void
 }
 
@@ -68,6 +71,8 @@ function createTerminalLiveInputCommitHarness({
   // Refs never re-render; only these variables re-run the hook's clear effects.
   let currentActiveSessionTabType: string | undefined = 'terminal'
   let currentConnected = true
+  let currentInputStateReady = true
+  let currentScope = 'host-a\0worktree-a'
   let handlers: ReturnType<typeof useTerminalLiveInputCommit<string>> | null = null
   let renderer: ReactTestRenderer | null = null
 
@@ -78,8 +83,9 @@ function createTerminalLiveInputCommitHarness({
       activeSessionTabType: currentActiveSessionTabType,
       activeSessionTabTypeRef,
       connected: currentConnected,
+      inputStateReady: currentInputStateReady,
       liveInputRef,
-      liveInputScope: 'host-a\0worktree-a',
+      liveInputScope: currentScope,
       liveInputTerminalHandles,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
@@ -131,8 +137,33 @@ function createTerminalLiveInputCommitHarness({
         renderer?.update(createElement(Harness))
       })
     },
+    setInputStateReady: (next: boolean): void => {
+      currentInputStateReady = next
+      act(() => {
+        renderer?.update(createElement(Harness))
+      })
+    },
+    setLiveInputEnabled: (next: boolean): void => {
+      liveInputTerminalHandles.clear()
+      liveInputTerminalHandlesRef.current.clear()
+      if (next) {
+        for (const handle of ['terminal-a', 'terminal-b']) {
+          liveInputTerminalHandles.add(handle)
+          liveInputTerminalHandlesRef.current.add(handle)
+        }
+      }
+      act(() => {
+        renderer?.update(createElement(Harness))
+      })
+    },
     setSendResult: (next: boolean): void => {
       currentSendResult = next
+    },
+    setScope: (next: string): void => {
+      currentScope = next
+      act(() => {
+        renderer?.update(createElement(Harness))
+      })
     },
     unmount: () => {
       act(() => renderer?.unmount())
@@ -460,6 +491,45 @@ describe('terminal live input commit hook', () => {
     harness.unmount()
   })
 
+  it('advances producer generations for connection, scope, and live-mode ABA only', () => {
+    const harness = createTerminalLiveInputCommitHarness({ liveInputEnabled: false })
+    let previousGeneration = harness.handlers.liveInputProducerGeneration
+    const expectGenerationChange = (update: () => void): void => {
+      update()
+      const nextGeneration = harness.handlers.liveInputProducerGeneration
+      expect(nextGeneration).not.toBe(previousGeneration)
+      previousGeneration = nextGeneration
+    }
+
+    expectGenerationChange(() => harness.setConnected(false))
+    expectGenerationChange(() => harness.setConnected(true))
+    expectGenerationChange(() => harness.setScope('host-a\0worktree-b'))
+    expectGenerationChange(() => harness.setScope('host-a\0worktree-a'))
+    expectGenerationChange(() => harness.setLiveInputEnabled(true))
+    expectGenerationChange(() => harness.setLiveInputEnabled(false))
+
+    harness.setActiveSessionTabType(undefined)
+    expect(harness.handlers.liveInputProducerGeneration).toBe(previousGeneration)
+    harness.setActiveSessionTabType('terminal')
+    expect(harness.handlers.liveInputProducerGeneration).toBe(previousGeneration)
+    harness.unmount()
+  })
+
+  it('rejects new callbacks while terminal state still belongs to the previous route', async () => {
+    const harness = createTerminalLiveInputCommitHarness()
+    harness.setInputStateReady(false)
+    const producerSend = vi.fn(async () => true)
+
+    harness.handlers.handleLiveInputChange('stale')
+    await expect(
+      harness.handlers.sendLiveInputExternalBoundary('terminal-a', producerSend)
+    ).resolves.toBe(false)
+
+    expect(harness.sent).toEqual([])
+    expect(producerSend).not.toHaveBeenCalled()
+    harness.unmount()
+  })
+
   it('publishes only committed producer generations when a scope render is abandoned', async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     const activeHandleRef = { current: 'terminal-a' }
@@ -479,6 +549,7 @@ describe('terminal live input commit hook', () => {
         activeSessionTabType: 'terminal',
         activeSessionTabTypeRef,
         connected: true,
+        inputStateReady: true,
         liveInputRef,
         liveInputScope: scope,
         liveInputTerminalHandles: NO_LIVE_INPUT_TERMINAL_HANDLES,

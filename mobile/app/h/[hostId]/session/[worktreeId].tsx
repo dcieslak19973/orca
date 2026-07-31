@@ -95,6 +95,7 @@ import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/tr
 import { headlessActivationNeedsHostRenderer } from '../../../../src/worktree/worktree-activation-result'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
 import { useMobileDictationRouteContext } from '../../../../src/session/mobile-dictation-route-context'
+import { dispatchMobileDictationTranscript } from '../../../../src/session/mobile-dictation-transcript-dispatch'
 import {
   triggerMediumImpact,
   triggerSelection,
@@ -138,10 +139,7 @@ import {
   getTerminalLiveInputKeyboardType
 } from '../../../../src/terminal/terminal-keyboard-type'
 import { normalizeTerminalTextInput } from '../../../../src/terminal/terminal-text-input-normalization'
-import {
-  appendBufferedDictation,
-  routeDictationTranscript
-} from '../../../../src/terminal/terminal-live-dictation-routing'
+import { appendBufferedDictation } from '../../../../src/terminal/terminal-live-dictation-routing'
 import { countTerminalGestureInputSequences } from '../../../../src/terminal/terminal-gesture-input'
 import {
   recoverActiveTerminalAfterForeground,
@@ -1036,6 +1034,8 @@ export default function SessionScreen() {
   useLayoutEffect(() => {
     terminalInputScopeRef.current = terminalInputScope
   }, [terminalInputScope])
+  const terminalInputStateScopeRef = useRef(terminalInputScope)
+  const terminalInputStateReady = terminalInputStateScopeRef.current === terminalInputScope
   const pendingActiveSessionTabIdRef = useRef<string | null>(null)
   const pendingActiveTerminalHandleRef = useRef<string | null>(null)
   // Why: remember the page id to activate its session tab once it syncs (bridge auto-activate flags only webContents, not the app-level active tab).
@@ -1073,6 +1073,7 @@ export default function SessionScreen() {
     activeSessionTabType: activeSessionTab?.type,
     activeSessionTabTypeRef,
     connected: connState === 'connected',
+    inputStateReady: terminalInputStateReady,
     liveInputRef,
     liveInputScope: terminalInputScope,
     liveInputTerminalHandles,
@@ -1082,7 +1083,7 @@ export default function SessionScreen() {
   })
   const { canCompose, canSend } = resolveMobileTerminalInputGate({
     connState,
-    activeHandle,
+    activeHandle: terminalInputStateReady ? activeHandle : null,
     activeSessionTabType: activeSessionTab?.type
   })
   const liveInputEnabled = activeHandle ? liveInputTerminalHandles.has(activeHandle) : false
@@ -1207,37 +1208,19 @@ export default function SessionScreen() {
     client,
     enabled: canSend,
     onTranscript: (text) => {
-      const routeContext = dictationRouteContext.consume()
-      if (!routeContext) {
-        return
-      }
-      // Why: dictation belongs to the visible composer — native chat consumes it locally, terminal mode keeps live-input routing.
-      if (routeContext.showNativeChat) {
-        nativeChatController.setChatComposerText((current) =>
-          appendBufferedDictation(current, text)
-        )
-        showToast('Dictation inserted')
-        return
-      }
-      // Live mode inserts the transcript into its PTY as text (no Return); buffered mode appends to the command field.
-      const route = routeDictationTranscript(text, routeContext.liveInputEnabled)
-      if (route.kind === 'live-insert') {
-        const insertHandle = routeContext.handle
-        if (!insertHandle) {
-          return
-        }
-        void (async () => {
-          const sent = await sendLiveInputExternalBoundary(insertHandle, () =>
-            sendLiveTerminalInput(insertHandle, route.text)
-          )
-          if (sent) {
-            showToast('Dictation inserted')
-          }
-        })()
-        return
-      }
-      setInput((current) => appendBufferedDictation(current, route.text))
-      showToast('Dictation inserted')
+      void dispatchMobileDictationTranscript({
+        consumeRouteContext: dictationRouteContext.consume,
+        insertBufferedText: (transcript) =>
+          setInput((current) => appendBufferedDictation(current, transcript)),
+        insertNativeChatText: (transcript) =>
+          nativeChatController.setChatComposerText((current) =>
+            appendBufferedDictation(current, transcript)
+          ),
+        notifyInserted: () => showToast('Dictation inserted'),
+        sendLiveText: (handle, transcript) =>
+          sendLiveInputExternalBoundary(handle, () => sendLiveTerminalInput(handle, transcript)),
+        text
+      })
     },
     onError: (err) => {
       dictationRouteContext.clear()
@@ -2642,6 +2625,7 @@ export default function SessionScreen() {
 
   useLayoutEffect(() => {
     // Why: Expo reuses this screen across worktrees; reset route state so it can't open stale UI or reject the next snapshot.
+    terminalInputStateScopeRef.current = terminalInputScope
     sessionTabActionSheetRequestSeqRef.current += 1
     sessionTabActionSheetKeyboardHideSubRef.current?.remove()
     sessionTabActionSheetKeyboardHideSubRef.current = null
@@ -2668,6 +2652,7 @@ export default function SessionScreen() {
     terminalsRef.current = []
     setSessionTabs([])
     setActiveSessionTabId(null)
+    setInput('')
     clearPendingLiveInputCommit()
     setMarkdownDocs(new Map())
     setFileDocs(new Map())

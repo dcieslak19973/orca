@@ -25,6 +25,7 @@ type TerminalLiveInputCommitOptions<TTabType extends string> = {
   readonly activeSessionTabType: TTabType | null | undefined
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
   readonly connected: boolean
+  readonly inputStateReady: boolean
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputScope: string
   readonly liveInputTerminalHandles: ReadonlySet<string>
@@ -51,6 +52,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   activeSessionTabType,
   activeSessionTabTypeRef,
   connected,
+  inputStateReady,
   liveInputRef,
   liveInputScope,
   liveInputTerminalHandles,
@@ -58,14 +60,14 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   sendLiveTerminalInputRef,
   setLiveInputCapture
 }: TerminalLiveInputCommitOptions<TTabType>): TerminalLiveInputCommitHandlers {
-  const liveInputOwner =
-    activeHandle &&
-    liveInputTerminalHandles.has(activeHandle) &&
-    (activeSessionTabType == null || activeSessionTabType === 'terminal')
+  const liveInputProducerOwner =
+    inputStateReady && (activeSessionTabType == null || activeSessionTabType === 'terminal')
       ? activeHandle
       : null
-  const liveInputProducerOwner =
-    activeSessionTabType == null || activeSessionTabType === 'terminal' ? activeHandle : null
+  const liveInputOwner =
+    liveInputProducerOwner && liveInputTerminalHandles.has(liveInputProducerOwner)
+      ? liveInputProducerOwner
+      : null
   // Buffered producers share the boundary queue, so terminal changes must detach it even with live input off.
   const liveInputGeneration = useMemo(
     () => Symbol('terminal-live-input-generation'),
@@ -73,7 +75,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   )
   const liveInputProducerGeneration = useMemo(
     () => Symbol('terminal-live-input-producer-generation'),
-    [connected, liveInputGeneration, liveInputProducerOwner]
+    [connected, liveInputGeneration]
   )
   const {
     applyLiveInputMirror,
@@ -87,6 +89,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   } = useTerminalLivePendingInputFlush({
     activeHandleRef,
     activeSessionTabTypeRef,
+    inputStateReady,
     liveInputRef,
     liveInputGeneration,
     liveInputProducerGeneration,
