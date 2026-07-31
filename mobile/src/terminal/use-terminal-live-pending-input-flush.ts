@@ -139,6 +139,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runLiveInputBoundary = useCallback(
     (expectedHandle: string | null, sendBoundary: () => Promise<boolean>): Promise<boolean> => {
+      if (expectedHandle !== null && expectedHandle !== activeHandleRef.current) {
+        return Promise.resolve(false)
+      }
       const handle = pendingLiveInputHandleRef.current
       if (!handle) {
         return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)

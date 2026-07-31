@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
 import { useMobileAttachmentInputLeaseGate } from './use-mobile-attachment-input-lease-gate'
 
 type Gate = (targetHandle: string, sendBoundary: () => Promise<boolean>) => Promise<boolean>
@@ -35,11 +36,13 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     tabType: { current: string | null }
     leaseReady: { current: boolean }
     showToast: (message: string, durationMs?: number) => void
+    sendLiveInputExternalBoundary?: TerminalLiveInputBoundarySender
   }): { gate: () => Gate } {
     let gate: Gate = () => Promise.resolve(false)
     function Probe(): null {
       gate = useMobileAttachmentInputLeaseGate({
-        sendLiveInputExternalBoundary: (_handle, send) => send(),
+        sendLiveInputExternalBoundary:
+          args.sendLiveInputExternalBoundary ?? ((_handle, send) => send()),
         connStateRef: args.connState,
         activeHandleRef: args.activeHandle,
         activeSessionTabTypeRef: args.tabType,
@@ -131,6 +134,42 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     refs.connState.current = 'reconnecting'
     await vi.advanceTimersByTimeAsync(3200)
     await expect(result).resolves.toBe(false)
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('revalidates the target when a queued attachment boundary executes', async () => {
+    const refs = baseRefs()
+    const showToast = vi.fn()
+    let runQueuedBoundary = async (): Promise<boolean> => {
+      throw new Error('attachment boundary was not queued')
+    }
+    let resolveQueuedResult: (value: boolean) => void = () => {
+      throw new Error('attachment boundary result was not initialized')
+    }
+    const queuedResult = new Promise<boolean>((resolve) => {
+      resolveQueuedResult = resolve
+    })
+    const sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender = (_handle, send) => {
+      runQueuedBoundary = async () => {
+        const result = await send()
+        resolveQueuedResult(result)
+        return result
+      }
+      return queuedResult
+    }
+    const { gate } = renderGate({
+      ...refs,
+      showToast,
+      sendLiveInputExternalBoundary
+    })
+    const sendBoundary = vi.fn(async () => true)
+
+    const result = gate()('terminal-1', sendBoundary)
+    refs.activeHandle.current = 'terminal-2'
+
+    await expect(runQueuedBoundary()).resolves.toBe(false)
+    await expect(result).resolves.toBe(false)
+    expect(sendBoundary).not.toHaveBeenCalled()
     expect(showToast).not.toHaveBeenCalled()
   })
 })

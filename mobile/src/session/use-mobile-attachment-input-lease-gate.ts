@@ -52,7 +52,17 @@ export function useMobileAttachmentInputLeaseGate({
         return false
       }
       if (nativeChatInputLeaseReadyRef.current) {
-        return sendLiveInputExternalBoundary(targetHandle, sendBoundary)
+        return sendLiveInputExternalBoundary(targetHandle, async () => {
+          if (
+            connStateRef.current !== 'connected' ||
+            targetHandle !== activeHandleRef.current ||
+            activeSessionTabTypeRef.current !== 'terminal' ||
+            !nativeChatInputLeaseReadyRef.current
+          ) {
+            return false
+          }
+          return sendBoundary()
+        })
       }
       showToast('Attach failed (reconnecting)', 1500)
       return false
