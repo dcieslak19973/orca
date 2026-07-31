@@ -7,12 +7,14 @@ import {
 } from '@/components/terminal/background-terminal-worktree-mount'
 import { useAppStore } from '@/store'
 import { resumeSleepingAgentSessionsForWorktree } from './resume-sleeping-agent-session'
+import { cancelRecoveryTopologyWait } from './sleeping-agent-recovery-topology'
 
 const initialAppStoreState = useAppStore.getState()
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const OTHER_LEAF_ID = '22222222-2222-4222-8222-222222222222'
 
 afterEach(() => {
+  cancelRecoveryTopologyWait('wt-1')
   takeAllPendingBackgroundTerminalWorktreeMounts()
   useAppStore.setState(initialAppStoreState, true)
 })

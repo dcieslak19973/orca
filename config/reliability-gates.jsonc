@@ -1773,7 +1773,7 @@
       "platforms": ["macos", "linux", "windows"],
       "providers": ["local", "daemon", "ssh", "wsl", "remote-runtime"],
       "coveredPlatforms": ["macos"],
-      "coveredProviders": [],
+      "coveredProviders": ["local", "daemon", "ssh", "remote-runtime"],
       "coverageNotes": "Deterministic renderer coverage includes a missing-topology hydration barrier, preserved-pane targeting while the PTY mirror is empty, local eager-buffer adoption without a hydrated renderer mirror, exact host true/false/unknown liveness with topology- and host-authority-generation retry, paired-runtime exact raw-PTY adjudication through typed unknown/missing results and an advertised confirmed-death capability, fresh client-event ready barriers, exact record/topology generations, stale-dispatch and paired-pane lifecycle fencing, one linear scan for a synchronous one-hundred-pane hydration burst, singleton exact authority routing, oldest-first late and concurrent same-provider alias arbitration, unrelated-worktree isolation, bounded provider-claim indexing, and probe/resume PTY cleanup without throwaway scrollback replay. SSH probes coalesce per exact identity and fence retirement, ID reuse, provider replacement, and IPC publication; untracked authority tombstones expire and purge with their provider. A Docker SSH renderer-reload run preserves six PTY identities and proves reattached input/output. Physical Linux, Windows, WSL, and SSH-host runs remain gaps.",
       "motivatingLinks": [
         "https://github.com/stablyai/orca/pull/6800",
@@ -1868,8 +1868,11 @@
           "assertions": [
             "resolves a HUB-native SSH PTY wake hint to its runtime terminal handle",
             "does not let a stale pane resolution replace a newer connect lifecycle",
+            "does not report stale missing evidence through a newer connect lifecycle",
             "never creates a terminal when a required persisted host pane is unknown",
             "never creates a terminal when a required persisted host pane is missing",
+            "does not carry a prior connect PTY identity into a newer attach",
+            "waits for exact persisted-handle topology instead of declaring it missing",
             "reattaches the exact paired host PTY when unknown authority becomes live",
             "keeps the current authority wait when a stale lifecycle retry settles",
             "treats terminal_not_found from a legacy graph-only host as unknown",
@@ -1878,6 +1881,7 @@
             "never adopts a replacement PTY occupying the preserved pane coordinates",
             "attaches an environment-scoped handle when an older runtime lacks pane resolution",
             "reports an authoritatively missing persisted host pane without treating errors as death",
+            "treats a missing persisted handle from an older runtime as unknown",
             "retires a host mirror that is authoritatively absent"
           ]
         },
@@ -1905,6 +1909,9 @@
           "assertions": [
             "distinguishes a missing host graph from exact PTY liveness $live",
             "resolves only an exact live PTY and refuses a live replacement at the same coordinates",
+            "revalidates exact pane ownership after an awaited liveness probe",
+            "accepts an exact pane that hydrates while its liveness probe is pending",
+            "uses a persisted terminal handle as exact authority while its pane graph hydrates",
             "emits one exact authority generation when the host graph rehydrates"
           ]
         },
@@ -1967,6 +1974,14 @@
             "retains completed stable worktree-sleep records while topology is unknown",
             "folder, split, visible, and hibernated stable panes do not duplicate recovery"
           ]
+        },
+        {
+          "file": "src/renderer/src/lib/resume-sleeping-agent-session-provider-claim.test.ts",
+          "assertions": [
+            "keeps a pane-owned quit record when its own persisted status is still working",
+            "clears the quit record when another pane already resumed the provider session",
+            "mounts a hidden pane whose same provider session is still working"
+          ]
         }
       ],
       "evidenceRuns": [
@@ -1990,8 +2005,8 @@
         }
       ],
       "runtimeBudget": {
-        "p95Seconds": 15,
-        "scope": "local renderer state test"
+        "p95Seconds": 30,
+        "scope": "cross-layer renderer, main, daemon, SSH, and runtime authority suite"
       },
       "flakeHistory": {
         "status": "unknown",
@@ -2003,7 +2018,7 @@
       },
       "performanceBudget": {
         "required": true,
-        "evidence": "Ambiguous records use one shared topology subscription. Synchronous topology publication bursts queue one microtask and visit each still-unknown registration once, so sequential one-hundred-pane hydration is O(U), not O(U²); exact PTY authority events remain synchronous and index-routed. Sequential hydration performs one provider-claim index build, at most one sleeping-record enumeration, and one targeted adjudication/mount per identity instead of rerunning worktree recovery. Requested state is a weak exact-record/topology-generation map, so cleared generations are not retained or reused. Recovery adds at most one coalesced exact-ID host liveness operation per preserved local/daemon/SSH pane; only probes that exceed the one-second caller budget keep their provider-bounded operation long enough to publish one targeted authority generation. SSH completion tokens fence exact retirement, ID reuse, and provider replacement before cache mutation or announcement. All unknown mounted panes share one topology subscription and one authority listener and release both when idle. Paired-runtime waits share one environment dispatcher with exact PTY and SSH-target indexes. Recovery adds no PTY inventory scan, global layout enumeration, polling loop, or whole-worktree mount, and confirmed-dead recovery skips throwaway scrollback parsing."
+        "evidence": "Ambiguous records use one shared topology subscription. Synchronous topology publication bursts queue one microtask and visit each still-unknown registration once, so sequential one-hundred-pane hydration is O(U), not O(U²); exact PTY authority events remain synchronous and index-routed. Sequential hydration performs one provider-claim index build, at most one sleeping-record enumeration, and one targeted adjudication/mount per identity instead of rerunning worktree recovery. Requested state is a weak exact-record/topology-generation map, so cleared generations are not retained or reused. Recovery adds at most one coalesced exact-ID host liveness operation per preserved local/daemon/SSH pane; only probes that exceed the one-second caller budget keep their provider-bounded operation long enough to publish one targeted authority generation. SSH completion tokens fence exact retirement, ID reuse, and provider replacement before cache mutation or announcement. All unknown mounted panes share one topology subscription and one authority listener and release both when idle. Paired-runtime raw PTYs use exact PTY and SSH-target indexes; persisted handles add one temporary environment-topology listener and retry only while their exact pane remains unknown. Recovery adds no PTY inventory scan, global layout enumeration, polling loop, or whole-worktree mount, and confirmed-dead recovery skips throwaway scrollback parsing."
       },
       "promotionCriteria": [
         "Run in soak for at least 100 consecutive passes or 14 days across required CI platforms.",

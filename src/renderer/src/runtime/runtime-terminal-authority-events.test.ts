@@ -3,12 +3,14 @@ import { toAppSshPtyId } from '../../../shared/ssh-pty-id'
 import {
   dispatchRuntimeTerminalAuthorityEvent,
   dispatchRuntimeTerminalAuthorityReconnect,
-  subscribeRuntimeTerminalAuthority
+  subscribeRuntimeTerminalAuthority,
+  subscribeRuntimeTerminalTopology
 } from './runtime-terminal-authority-events'
 
 it('routes authority, SSH reconnect, and runtime replay to matching waiters', () => {
   const exact = vi.fn()
   const sibling = vi.fn()
+  const topology = vi.fn()
   const otherEnvironment = vi.fn()
   const ptyId = toAppSshPtyId('ssh-a', 'pty-1')
   const disposeExact = subscribeRuntimeTerminalAuthority('env-1', ptyId, exact)
@@ -18,6 +20,7 @@ it('routes authority, SSH reconnect, and runtime replay to matching waiters', ()
     sibling
   )
   const disposeOther = subscribeRuntimeTerminalAuthority('env-2', ptyId, otherEnvironment)
+  const disposeTopology = subscribeRuntimeTerminalTopology('env-1', topology)
 
   dispatchRuntimeTerminalAuthorityEvent('env-1', {
     type: 'terminalLivenessAuthorityChanged',
@@ -26,6 +29,7 @@ it('routes authority, SSH reconnect, and runtime replay to matching waiters', ()
   })
   expect(exact).toHaveBeenCalledOnce()
   expect(sibling).not.toHaveBeenCalled()
+  expect(topology).toHaveBeenCalledOnce()
   expect(otherEnvironment).not.toHaveBeenCalled()
 
   dispatchRuntimeTerminalAuthorityEvent('env-1', {
@@ -41,13 +45,16 @@ it('routes authority, SSH reconnect, and runtime replay to matching waiters', ()
   })
   expect(exact).toHaveBeenCalledTimes(2)
   expect(sibling).not.toHaveBeenCalled()
+  expect(topology).toHaveBeenCalledOnce()
 
   dispatchRuntimeTerminalAuthorityReconnect('env-1')
   expect(exact).toHaveBeenCalledTimes(3)
   expect(sibling).toHaveBeenCalledOnce()
+  expect(topology).toHaveBeenCalledTimes(2)
   expect(otherEnvironment).not.toHaveBeenCalled()
 
   disposeExact()
   disposeSibling()
   disposeOther()
+  disposeTopology()
 })

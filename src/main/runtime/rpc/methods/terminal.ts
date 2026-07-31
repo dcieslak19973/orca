@@ -822,7 +822,8 @@ const TerminalResolveActive = z.object({
 const TerminalResolvePane = z.object({
   paneKey: requiredString('Missing pane key'),
   worktreeId: OptionalString,
-  expectedPtyId: OptionalString
+  expectedPtyId: OptionalString,
+  expectedTerminal: OptionalString
 })
 
 const TerminalRecoverPane = z.object({
@@ -1125,7 +1126,8 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
       terminal: await runtime.resolveTerminalPaneWithAuthority(
         params.paneKey,
         params.worktreeId,
-        params.expectedPtyId
+        params.expectedPtyId,
+        params.expectedTerminal
       )
     })
   }),

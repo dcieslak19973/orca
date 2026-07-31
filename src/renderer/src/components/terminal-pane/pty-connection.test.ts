@@ -8210,6 +8210,7 @@ describe('connectPanePty', () => {
       createPane(2) as never,
       createManager(2) as never,
       createDeps({
+        startup: { command: 'codex', delivery: 'terminal-paste' },
         restoredLeafId: LEAF_2,
         restoredPtyIdByLeafId: { [LEAF_2]: 'preserved-pty' }
       }) as never

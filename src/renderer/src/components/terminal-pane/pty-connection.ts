@@ -8713,6 +8713,7 @@ export function connectPanePty(
       )
       beginReattachLiveDataDeferral(outputCallbacks.generation)
       transportConnectInFlightSince = Date.now()
+      let reattachDeferredForAuthority = false
       const connectAfterAuthoritativeLivenessProbe = async (): Promise<
         void | string | PtyConnectResult
       > => {
@@ -8744,6 +8745,7 @@ export function connectPanePty(
               deferredReattachSessionId,
               probe.authorityGeneration
             )
+            reattachDeferredForAuthority = true
             return
           }
         }
@@ -8768,6 +8770,14 @@ export function connectPanePty(
       const trackedReattachPromise = Promise.resolve(reattachPromise)
         .then(async (result) => {
           if (outputCallbacks.generation !== transportStreamGeneration) {
+            finishReattachLiveDataDeferral(false, outputCallbacks.generation)
+            const gen = await preSignalPromise
+            if (typeof gen === 'number') {
+              void window.api.pty.clearPendingPaneSerializer(cacheKey, gen).catch(() => {})
+            }
+            return
+          }
+          if (reattachDeferredForAuthority) {
             finishReattachLiveDataDeferral(false, outputCallbacks.generation)
             const gen = await preSignalPromise
             if (typeof gen === 'number') {

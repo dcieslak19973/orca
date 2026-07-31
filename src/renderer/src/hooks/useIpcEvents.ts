@@ -981,29 +981,37 @@ export function useIpcEvents(): void {
       getDesiredEnvironmentIds: getRuntimeClientEventEnvironmentIds,
       getSubscriptionKey: (environmentId) => buildRuntimeClientEventEnvironmentKey([environmentId]),
       subscribe: (environmentId, onEvent, onError) => {
-        const sshGeneration = getEnvironmentSshStateGeneration(environmentId)
+        let sshGeneration = getEnvironmentSshStateGeneration(environmentId)
         const runtimeGeneration = getRuntimeEnvironmentConnectionGeneration(environmentId)
         const runtimeRevision = getRuntimeEnvironmentRevision(environmentId)
+        const subscriptionIsCurrent = (): boolean =>
+          sshGeneration === getEnvironmentSshStateGeneration(environmentId) &&
+          runtimeGeneration === getRuntimeEnvironmentConnectionGeneration(environmentId) &&
+          runtimeRevision === getRuntimeEnvironmentRevision(environmentId)
         return subscribeRuntimeClientEvents(
           environmentId,
           (event) => {
-            if (
-              sshGeneration === getEnvironmentSshStateGeneration(environmentId) &&
-              runtimeGeneration === getRuntimeEnvironmentConnectionGeneration(environmentId) &&
-              runtimeRevision === getRuntimeEnvironmentRevision(environmentId)
-            ) {
+            if (subscriptionIsCurrent()) {
               onEvent(event)
             }
           },
           onError,
           () => {
+            if (!subscriptionIsCurrent()) {
+              return
+            }
             // Why: events during a transport gap are lost; a quick reconnect won't flip unreachable, so refetch (#7970).
             runtimeProjectRefreshScheduler.request(environmentId)
             // Why: sshStateChanged events during the transport gap are lost, so downgrade the possibly-stale bucket, then refetch.
             useAppStore.getState().markEnvironmentSshStateStale(environmentId)
+            sshGeneration = getEnvironmentSshStateGeneration(environmentId)
             void hydrateRuntimeEnvironmentSshState(environmentId, { force: true }).catch(() => {})
           },
-          () => dispatchRuntimeTerminalAuthorityReconnect(environmentId)
+          () => {
+            if (subscriptionIsCurrent()) {
+              dispatchRuntimeTerminalAuthorityReconnect(environmentId)
+            }
+          }
         )
       },
       onEvent: handleRuntimeClientEvent

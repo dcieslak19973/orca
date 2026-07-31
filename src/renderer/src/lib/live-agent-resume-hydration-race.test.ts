@@ -8,6 +8,7 @@ import {
 } from '../components/terminal/background-terminal-worktree-mount'
 import { useAppStore } from '@/store'
 import { resumeSleepingAgentSessionsForWorktree } from './resume-sleeping-agent-session'
+import { cancelRecoveryTopologyWait } from './sleeping-agent-recovery-topology'
 
 const initialAppStoreState = useAppStore.getState()
 const WORKTREE_ID = 'ssh-worktree'
@@ -64,6 +65,12 @@ function makeRecord(
 }
 
 afterEach(() => {
+  cancelRecoveryTopologyWait(WORKTREE_ID)
+  cancelRecoveryTopologyWait(OTHER_WORKTREE_ID)
+  cancelRecoveryTopologyWait('folder:folder-1')
+  for (let index = 0; index < 10; index += 1) {
+    cancelRecoveryTopologyWait(`worktree-${index}`)
+  }
   takeAllPendingBackgroundTerminalWorktreeMounts()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()

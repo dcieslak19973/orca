@@ -15593,25 +15593,49 @@ export class OrcaRuntimeService {
   async resolveTerminalPaneWithAuthority(
     paneKey: string,
     expectedWorktreeId?: string,
-    expectedPtyId?: string
+    expectedPtyId?: string,
+    expectedTerminal?: string
   ): Promise<RuntimeTerminalResolvePane> {
-    if (!expectedPtyId) {
+    const expectedHandleRecord = expectedTerminal ? this.handles.get(expectedTerminal) : null
+    if (
+      expectedTerminal &&
+      (!expectedHandleRecord || expectedHandleRecord.runtimeId !== this.runtimeId)
+    ) {
+      throw new Error('terminal_authority_unknown')
+    }
+    if (
+      expectedPtyId &&
+      expectedHandleRecord?.ptyId &&
+      expectedHandleRecord.ptyId !== expectedPtyId
+    ) {
+      throw new Error('terminal_authority_unknown')
+    }
+    const authoritativePtyId = expectedPtyId ?? expectedHandleRecord?.ptyId ?? undefined
+    if (!authoritativePtyId) {
+      if (expectedTerminal) {
+        throw new Error('terminal_authority_unknown')
+      }
       return this.resolveTerminalPane(paneKey, expectedWorktreeId)
     }
-    let resolved: RuntimeTerminalResolvePane | null = null
-    try {
-      resolved = this.resolveTerminalPane(paneKey, expectedWorktreeId)
-    } catch {
-      // Exact host liveness below distinguishes graph hydration from process death.
-    }
-    const live = await this.probeExactPtyLiveness(expectedPtyId)
+    const live = await this.probeExactPtyLiveness(authoritativePtyId)
     if (live === false) {
       throw new Error('terminal_not_found')
     }
-    if (live !== true || resolved?.ptyId !== expectedPtyId) {
+    if (live !== true) {
       throw new Error('terminal_authority_unknown')
     }
-    return resolved
+    try {
+      const resolved = this.resolveTerminalPane(paneKey, expectedWorktreeId)
+      if (
+        resolved.ptyId === authoritativePtyId &&
+        (!expectedTerminal || resolved.handle === expectedTerminal)
+      ) {
+        return resolved
+      }
+    } catch {
+      // Exact liveness proves the PTY survived; topology may still be hydrating.
+    }
+    throw new Error('terminal_authority_unknown')
   }
 
   private async probeExactPtyLiveness(ptyId: string): Promise<boolean | null> {

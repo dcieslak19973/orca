@@ -4664,6 +4664,11 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     const fetchWorktrees = vi.fn()
     const fetchWorktreeLineage = vi.fn()
     const dispatchRuntimeTerminalAuthorityReconnect = vi.fn()
+    const hydrateRuntimeEnvironmentSshState = vi.fn(async () => {})
+    let sshGeneration = 0
+    const markEnvironmentSshStateStale = vi.fn(() => {
+      sshGeneration += 1
+    })
     // Mutable so the test can drop the runtime mid-run and prove the local flag
     // is origin-based, not a sample of runtime state.
     const mockSettings: { activeRuntimeEnvironmentId: string | null; terminalFontSize: number } = {
@@ -4686,6 +4691,14 @@ describe('useIpcEvents CLI-created worktree activation', () => {
         }
       }
     })
+
+    vi.doMock('@/store/slices/runtime-environment-ssh', () => ({
+      getEnvironmentSshStateGeneration: () => sshGeneration
+    }))
+    vi.doMock('@/runtime/runtime-environment-ssh-state', () => ({
+      applyRuntimeEnvironmentSshStateChanged: vi.fn(),
+      hydrateRuntimeEnvironmentSshState
+    }))
 
     vi.doMock('../store', () => ({
       useAppStore: {
@@ -4733,6 +4746,7 @@ describe('useIpcEvents CLI-created worktree activation', () => {
           enqueueSshCredentialRequest: vi.fn(),
           removeSshCredentialRequest: vi.fn(),
           clearTabPtyId: vi.fn(),
+          markEnvironmentSshStateStale,
           settings: mockSettings
         })
       }
@@ -4898,6 +4912,15 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledOnce()
     expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledWith('env-1')
 
+    runtimeOnResponse({
+      ok: true,
+      result: { type: 'ready', subscriptionId: 'replayed-subscription' },
+      _replayedAfterReconnect: true
+    })
+    expect(markEnvironmentSshStateStale).toHaveBeenCalledOnce()
+    expect(hydrateRuntimeEnvironmentSshState).toHaveBeenCalledWith('env-1', { force: true })
+    expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledTimes(2)
+
     localWorktreesOnChanged({ repoId: 'repo-1' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -4933,6 +4956,15 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     expect(fetchWorktreeLineage).toHaveBeenCalledWith({
       executionHostId: 'runtime:env-1'
     })
+
+    const { replaceRuntimeEnvironmentRevisions } =
+      await import('../runtime/runtime-environment-revision')
+    replaceRuntimeEnvironmentRevisions([{ id: 'env-1', createdAt: 2, pairingRevision: 2 }])
+    runtimeOnResponse({
+      ok: true,
+      result: { type: 'ready', subscriptionId: 'stale-subscription' }
+    })
+    expect(dispatchRuntimeTerminalAuthorityReconnect).toHaveBeenCalledTimes(2)
   })
 })
 

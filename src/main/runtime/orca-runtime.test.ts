@@ -2831,6 +2831,139 @@ describe('OrcaRuntimeService', () => {
     expect(probePtyLiveness).toHaveBeenNthCalledWith(2, 'pty-replacement')
   })
 
+  it('revalidates exact pane ownership after an awaited liveness probe', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const tabId = 'tab-probe-race'
+    const paneKey = makePaneKey(tabId, HEADLESS_LEAF_ID)
+    const liveness = deferred<boolean | null>()
+    runtime.setPtyController({ probePtyLiveness: vi.fn(() => liveness.promise) } as never)
+    runtime.attachWindow(1)
+    const graph = (ptyId: string) => ({
+      tabs: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId
+        }
+      ]
+    })
+    runtime.syncWindowGraph(1, graph('pty-original'))
+
+    const resolution = runtime.resolveTerminalPaneWithAuthority(
+      paneKey,
+      TEST_WORKTREE_ID,
+      'pty-original'
+    )
+    runtime.syncWindowGraph(1, graph('pty-replacement'))
+    liveness.resolve(true)
+
+    await expect(resolution).rejects.toThrow('terminal_authority_unknown')
+  })
+
+  it('accepts an exact pane that hydrates while its liveness probe is pending', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const tabId = 'tab-probe-hydrates'
+    const paneKey = makePaneKey(tabId, HEADLESS_LEAF_ID)
+    const liveness = deferred<boolean | null>()
+    runtime.setPtyController({ probePtyLiveness: vi.fn(() => liveness.promise) } as never)
+    runtime.attachWindow(1)
+
+    const resolution = runtime.resolveTerminalPaneWithAuthority(
+      paneKey,
+      TEST_WORKTREE_ID,
+      'pty-original'
+    )
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-original'
+        }
+      ]
+    })
+    liveness.resolve(true)
+
+    await expect(resolution).resolves.toMatchObject({
+      tabId,
+      leafId: HEADLESS_LEAF_ID,
+      ptyId: 'pty-original',
+      worktreeId: TEST_WORKTREE_ID
+    })
+  })
+
+  it('uses a persisted terminal handle as exact authority while its pane graph hydrates', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const tabId = 'tab-handle-authority'
+    const paneKey = makePaneKey(tabId, HEADLESS_LEAF_ID)
+    const probePtyLiveness = vi.fn(async () => true)
+    runtime.setPtyController({ probePtyLiveness } as never)
+    const handle = runtime.preAllocateHandleForPty('pty-original')
+    runtime.attachWindow(1)
+    const graph = {
+      tabs: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId,
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'pty-original'
+        }
+      ]
+    }
+    runtime.syncWindowGraph(1, graph)
+    runtime.registerPty('pty-original', TEST_WORKTREE_ID)
+    expect(runtime.resolveTerminalPane(paneKey, TEST_WORKTREE_ID).handle).toBe(handle)
+
+    runtime.markRendererReloading(1)
+    runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, undefined, handle)
+    ).resolves.toMatchObject({ handle, ptyId: 'pty-original' })
+    expect(probePtyLiveness).toHaveBeenCalledExactlyOnceWith('pty-original')
+
+    probePtyLiveness.mockResolvedValueOnce(false)
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, undefined, handle)
+    ).rejects.toThrow('terminal_not_found')
+
+    runtime.syncWindowGraph(1, graph)
+    await expect(
+      runtime.resolveTerminalPaneWithAuthority(paneKey, TEST_WORKTREE_ID, undefined, handle)
+    ).resolves.toMatchObject({ handle, ptyId: 'pty-original' })
+  })
+
   it('emits one exact authority generation when the host graph rehydrates', () => {
     const runtime = new OrcaRuntimeService(store)
     const events: {

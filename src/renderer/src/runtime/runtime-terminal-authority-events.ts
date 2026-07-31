@@ -6,6 +6,7 @@ type AuthorityListener = () => void
 const listenersByEnvironmentAndPty = new Map<string, Set<AuthorityListener>>()
 const listenersByEnvironmentAndSshTarget = new Map<string, Set<AuthorityListener>>()
 const listenersByEnvironment = new Map<string, Set<AuthorityListener>>()
+const topologyListenersByEnvironment = new Map<string, Set<AuthorityListener>>()
 
 function authorityKey(environmentId: string, identity: string): string {
   return `${environmentId}\0${identity}`
@@ -67,12 +68,22 @@ export function subscribeRuntimeTerminalAuthority(
   }
 }
 
+export function subscribeRuntimeTerminalTopology(
+  environmentId: string,
+  listener: AuthorityListener
+): () => void {
+  const key = authorityKey(environmentId, '')
+  addListener(topologyListenersByEnvironment, key, listener)
+  return () => removeListener(topologyListenersByEnvironment, key, listener)
+}
+
 export function dispatchRuntimeTerminalAuthorityEvent(
   environmentId: string,
   event: RuntimeClientEvent
 ): void {
   if (event.type === 'terminalLivenessAuthorityChanged') {
     dispatch(listenersByEnvironmentAndPty, authorityKey(environmentId, event.ptyId))
+    dispatch(topologyListenersByEnvironment, authorityKey(environmentId, ''))
     return
   }
   if (event.type === 'sshStateChanged' && event.state.status === 'connected') {
@@ -82,4 +93,5 @@ export function dispatchRuntimeTerminalAuthorityEvent(
 
 export function dispatchRuntimeTerminalAuthorityReconnect(environmentId: string): void {
   dispatch(listenersByEnvironment, authorityKey(environmentId, ''))
+  dispatch(topologyListenersByEnvironment, authorityKey(environmentId, ''))
 }

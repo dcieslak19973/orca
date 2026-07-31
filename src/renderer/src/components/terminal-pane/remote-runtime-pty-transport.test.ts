@@ -1205,6 +1205,85 @@ describe('createRemoteRuntimePtyTransport', () => {
     transport.destroy?.()
   })
 
+  it('does not report stale missing evidence through a newer connect lifecycle', async () => {
+    const stalePtyId = 'ssh:hub-private@@pty-stale'
+    const currentPtyId = 'ssh:hub-private@@pty-current'
+    let releaseStaleResolution = (): void => {}
+    const staleResolution = new Promise<{
+      ok: false
+      error: { code: string; message: string }
+    }>((resolve) => {
+      releaseStaleResolution = () =>
+        resolve({
+          ok: false,
+          error: { code: 'terminal_not_found', message: 'terminal_not_found' }
+        })
+    })
+    runtimeCall.mockImplementation(
+      async (request: { method: string; params?: { expectedPtyId?: string } }) => {
+        if (request.method === 'status.get') {
+          return {
+            ok: true,
+            result: {
+              runtimeProtocolVersion: 3,
+              minCompatibleRuntimeClientVersion: 2,
+              capabilities: ['terminal.resolve-pane-authority.v1']
+            }
+          }
+        }
+        if (request.method !== 'terminal.resolvePane') {
+          throw new Error(`Unexpected method ${request.method}`)
+        }
+        if (request.params?.expectedPtyId === stalePtyId) {
+          return await staleResolution
+        }
+        return {
+          ok: false,
+          error: { code: 'internal_error', message: 'terminal_authority_unknown' }
+        }
+      }
+    )
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const staleMissing = vi.fn()
+    const currentMissing = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('hub-env', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+
+    const staleConnect = transport.connect({
+      url: '',
+      sessionId: stalePtyId,
+      requireExistingSession: true,
+      callbacks: { onAuthoritativeSessionMissing: staleMissing }
+    })
+    await vi.waitFor(() =>
+      expect(runtimeCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'terminal.resolvePane',
+          params: expect.objectContaining({ expectedPtyId: stalePtyId })
+        })
+      )
+    )
+    await transport.connect({
+      url: '',
+      sessionId: currentPtyId,
+      requireExistingSession: true,
+      callbacks: { onAuthoritativeSessionMissing: currentMissing }
+    })
+
+    releaseStaleResolution()
+    await staleConnect
+
+    expect(staleMissing).not.toHaveBeenCalled()
+    expect(currentMissing).not.toHaveBeenCalled()
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'terminal.create' })
+    )
+    transport.destroy?.()
+  })
+
   it.each([
     ['unknown', { code: 'method_not_found', message: 'Unknown method: terminal.resolvePane' }, 0],
     ['authority unknown', { code: 'internal_error', message: 'terminal_authority_unknown' }, 0],
@@ -1409,6 +1488,150 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     expect(resolveCount).toBe(5)
     expect(transport.getPtyId()).toBe('remote:hub-env@@original-terminal')
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'terminal.create' })
+    )
+    transport.destroy?.()
+  })
+
+  it('does not carry a prior connect PTY identity into a newer attach', async () => {
+    const stalePtyId = 'ssh:hub-private@@pty-stale'
+    let attaching = false
+    const attachResolveRequests: { method: string; params?: { expectedPtyId?: string } }[] = []
+    runtimeCall.mockImplementation(
+      async (request: { method: string; params?: { expectedPtyId?: string } }) => {
+        if (request.method !== 'terminal.resolvePane') {
+          throw new Error(`Unexpected method ${request.method}`)
+        }
+        if (!attaching) {
+          return {
+            ok: false,
+            error: { code: 'internal_error', message: 'terminal_authority_unknown' }
+          }
+        }
+        attachResolveRequests.push(request)
+        return {
+          ok: true,
+          result: {
+            terminal: {
+              handle: 'current-terminal',
+              tabId: 'tab-1',
+              leafId: 'pane:1',
+              ptyId: 'pty-current',
+              worktreeId: 'wt-1'
+            }
+          }
+        }
+      }
+    )
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const onAuthoritativeSessionMissing = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('hub-env', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+
+    await transport.connect({
+      url: '',
+      sessionId: stalePtyId,
+      requireExistingSession: true,
+      callbacks: { onAuthoritativeSessionMissing }
+    })
+    await vi.waitFor(() =>
+      expect(
+        runtimeCall.mock.calls.filter(([request]) => request.method === 'terminal.resolvePane')
+      ).toHaveLength(2)
+    )
+
+    attaching = true
+    transport.attach({
+      existingPtyId: 'remote:hub-env@@current-terminal',
+      callbacks: { onAuthoritativeSessionMissing }
+    })
+    await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(attachResolveRequests.some((request) => !request.params?.expectedPtyId)).toBe(true)
+    )
+
+    const attachResolve = attachResolveRequests.find((request) => !request.params?.expectedPtyId)
+    expect(attachResolve?.params).not.toHaveProperty('expectedPtyId')
+    expect(transport.getPtyId()).toBe('remote:hub-env@@current-terminal')
+    expect(onAuthoritativeSessionMissing).not.toHaveBeenCalled()
+    transport.destroy?.()
+  })
+
+  it('waits for exact persisted-handle topology instead of declaring it missing', async () => {
+    const hostPtyId = 'ssh:hub-private@@pty-original'
+    const persistedHandle = 'persisted-terminal'
+    let topologyHydrated = false
+    const resolveRequests: { params?: { expectedPtyId?: string; expectedTerminal?: string } }[] = []
+    runtimeCall.mockImplementation(
+      async (request: {
+        method: string
+        params?: { expectedPtyId?: string; expectedTerminal?: string }
+      }) => {
+        if (request.method !== 'terminal.resolvePane') {
+          throw new Error(`Unexpected method ${request.method}`)
+        }
+        resolveRequests.push(request)
+        if (request.params?.expectedTerminal !== persistedHandle) {
+          return {
+            ok: false,
+            error: { code: 'terminal_not_found', message: 'terminal_not_found' }
+          }
+        }
+        if (!topologyHydrated) {
+          return {
+            ok: false,
+            error: { code: 'internal_error', message: 'terminal_authority_unknown' }
+          }
+        }
+        return {
+          ok: true,
+          result: {
+            terminal: {
+              handle: persistedHandle,
+              tabId: 'tab-1',
+              leafId: 'pane:1',
+              ptyId: hostPtyId,
+              worktreeId: 'wt-1'
+            }
+          }
+        }
+      }
+    )
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const { dispatchRuntimeTerminalAuthorityEvent } =
+      await import('../../runtime/runtime-terminal-authority-events')
+    const onAuthoritativeSessionMissing = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('hub-env', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+
+    transport.attach({
+      existingPtyId: `remote:hub-env@@${persistedHandle}`,
+      callbacks: { onAuthoritativeSessionMissing }
+    })
+    await vi.waitFor(() => expect(resolveRequests.length).toBeGreaterThanOrEqual(2))
+
+    expect(resolveRequests[0]?.params).toMatchObject({ expectedTerminal: persistedHandle })
+    expect(resolveRequests[0]?.params).not.toHaveProperty('expectedPtyId')
+    expect(onAuthoritativeSessionMissing).not.toHaveBeenCalled()
+    expect(runtimeSubscribe).not.toHaveBeenCalled()
+
+    topologyHydrated = true
+    dispatchRuntimeTerminalAuthorityEvent('hub-env', {
+      type: 'terminalLivenessAuthorityChanged',
+      ptyId: hostPtyId,
+      generation: 1
+    })
+    await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
+
+    expect(transport.getPtyId()).toBe(`remote:hub-env@@${persistedHandle}`)
+    expect(onAuthoritativeSessionMissing).not.toHaveBeenCalled()
     expect(runtimeCall).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: 'terminal.create' })
     )
@@ -1869,6 +2092,16 @@ describe('createRemoteRuntimePtyTransport', () => {
 
   it('reports an authoritatively missing persisted host pane without treating errors as death', async () => {
     runtimeCall.mockImplementation(async (request: { method: string }) => {
+      if (request.method === 'status.get') {
+        return {
+          ok: true,
+          result: {
+            runtimeProtocolVersion: 3,
+            minCompatibleRuntimeClientVersion: 2,
+            capabilities: ['terminal.resolve-pane-handle-authority.v1']
+          }
+        }
+      }
       if (request.method === 'terminal.resolvePane') {
         return {
           ok: false,
@@ -1893,6 +2126,46 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     await vi.waitFor(() => expect(onAuthoritativeSessionMissing).toHaveBeenCalledOnce())
     expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('treats a missing persisted handle from an older runtime as unknown', async () => {
+    let resolveCount = 0
+    runtimeCall.mockImplementation(async (request: { method: string }) => {
+      if (request.method === 'status.get') {
+        return {
+          ok: true,
+          result: {
+            runtimeProtocolVersion: 3,
+            minCompatibleRuntimeClientVersion: 2,
+            capabilities: []
+          }
+        }
+      }
+      if (request.method === 'terminal.resolvePane') {
+        resolveCount += 1
+        return {
+          ok: false,
+          error: { code: 'terminal_not_found', message: 'terminal_not_found' }
+        }
+      }
+      return { ok: true, result: {} }
+    })
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const onAuthoritativeSessionMissing = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('legacy-env', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+
+    transport.attach({
+      existingPtyId: 'remote:legacy-env@@terminal-missing',
+      callbacks: { onAuthoritativeSessionMissing }
+    })
+
+    await vi.waitFor(() => expect(resolveCount).toBeGreaterThanOrEqual(2))
+    expect(onAuthoritativeSessionMissing).not.toHaveBeenCalled()
+    transport.destroy?.()
   })
 
   it('re-derives the host session handle after a transport close instead of resubscribing the stale one', async () => {
@@ -2857,6 +3130,7 @@ describe('createRemoteRuntimePtyTransport', () => {
       leafId: 'pane:1'
     })
 
+    resolvedPaneHandle = 'terminal-old'
     transport.attach({
       existingPtyId: 'remote:env-1@@terminal-old',
       cols: 80,
@@ -2891,6 +3165,7 @@ describe('createRemoteRuntimePtyTransport', () => {
       )
     } finally {
       vi.useRealTimers()
+      transport.destroy?.()
     }
   })
 
