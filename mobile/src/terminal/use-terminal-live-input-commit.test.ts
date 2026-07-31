@@ -455,6 +455,31 @@ describe('terminal live input commit hook', () => {
     harness.unmount()
   })
 
+  it('detaches a buffered terminal from the previous producer boundary queue', async () => {
+    const harness = createTerminalLiveInputCommitHarness({ liveInputEnabled: false })
+    let resolveStaleSend: (value: boolean) => void = () => undefined
+    const staleSend = new Promise<boolean>((resolve) => {
+      resolveStaleSend = resolve
+    })
+    const staleBoundary = harness.handlers.sendLiveInputExternalBoundary(
+      'terminal-a',
+      () => staleSend
+    )
+
+    harness.setActiveHandle('terminal-b')
+    const currentSend = vi.fn(async () => true)
+    const currentBoundary = harness.handlers.sendLiveInputExternalBoundary(
+      'terminal-b',
+      currentSend
+    )
+
+    await vi.waitFor(() => expect(currentSend).toHaveBeenCalledOnce())
+    await expect(currentBoundary).resolves.toBe(true)
+    resolveStaleSend(false)
+    await expect(staleBoundary).resolves.toBe(false)
+    harness.unmount()
+  })
+
   it('Given a held syllable during an outage When the disconnect is detected Then the settle timer cannot commit it later', async () => {
     // Given
     vi.useFakeTimers()

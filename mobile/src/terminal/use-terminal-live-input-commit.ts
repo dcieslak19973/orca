@@ -64,12 +64,13 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     (activeSessionTabType == null || activeSessionTabType === 'terminal')
       ? activeHandle
       : null
-  const liveInputGeneration = useMemo(
-    () => Symbol('terminal-live-input-generation'),
-    [liveInputOwner, liveInputScope]
-  )
   const liveInputProducerOwner =
     activeSessionTabType == null || activeSessionTabType === 'terminal' ? activeHandle : null
+  // Buffered producers share the boundary queue, so terminal changes must detach it even with live input off.
+  const liveInputGeneration = useMemo(
+    () => Symbol('terminal-live-input-generation'),
+    [liveInputOwner, liveInputProducerOwner, liveInputScope]
+  )
   const liveInputProducerGeneration = useMemo(
     () => Symbol('terminal-live-input-producer-generation'),
     [connected, liveInputGeneration, liveInputProducerOwner]
