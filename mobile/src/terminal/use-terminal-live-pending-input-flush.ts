@@ -79,6 +79,8 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   }, [])
 
   const reconcileLiveInputAfterDisconnect = useCallback(() => {
+    // Why: pre-disconnect sends must not release queued control bytes after recovery.
+    lifecycleEpochRef.current += 1
     const pendingHandle = pendingLiveInputHandleRef.current
     const heldCodePoint = Array.from(heldLiveInputTextRef.current).at(-1)?.codePointAt(0)
     const canPreserveUnsentKana =

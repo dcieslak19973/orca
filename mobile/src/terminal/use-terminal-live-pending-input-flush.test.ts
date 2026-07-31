@@ -209,3 +209,60 @@ it('cancels queued terminal sends when the hook unmounts', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(sent).toEqual(['か'])
 })
+
+it('cancels queued terminal boundaries when the connection drops', async () => {
+  const activeHandle = 'terminal-a'
+  const activeHandleRef: RefObject<string | null> = { current: activeHandle }
+  const activeSessionTabTypeRef: RefObject<string | null> = { current: 'terminal' }
+  const liveInputRef: RefObject<TextInput | null> = { current: null }
+  const liveInputTerminalHandlesRef: RefObject<Set<string>> = {
+    current: new Set([activeHandle])
+  }
+  const firstSend = createDeferredBoolean()
+  const sent: string[] = []
+  const sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender> = {
+    current: async (_handle, bytes) => {
+      sent.push(bytes)
+      return sent.length === 1 ? firstSend.promise : true
+    }
+  }
+  let handlers: ReturnType<typeof useTerminalLivePendingInputFlush<string>> | null = null
+  let renderer: ReactTestRenderer | null = null
+
+  function Harness(): null {
+    handlers = useTerminalLivePendingInputFlush({
+      activeHandleRef,
+      activeSessionTabTypeRef,
+      liveInputRef,
+      liveInputTerminalHandlesRef,
+      sendLiveTerminalInputRef,
+      setLiveInputCapture: () => undefined
+    })
+    return null
+  }
+
+  const restoreConsoleError = suppressReactTestRendererDeprecationWarning()
+  try {
+    act(() => {
+      renderer = create(createElement(Harness))
+    })
+  } finally {
+    restoreConsoleError()
+  }
+  if (!handlers || !renderer) {
+    throw new Error('terminal live pending-input hook did not render')
+  }
+
+  handlers.applyLiveInputMirror(activeHandle, 'か')
+  const boundary = handlers.runLiveInputBoundary(activeHandle, () =>
+    sendLiveTerminalInputRef.current(activeHandle, '\r')
+  )
+  await vi.waitFor(() => expect(sent).toEqual(['か']))
+
+  handlers.reconcileLiveInputAfterDisconnect()
+  firstSend.resolve(true)
+
+  await expect(boundary).resolves.toBe(false)
+  expect(sent).toEqual(['か'])
+  act(() => renderer?.unmount())
+})

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RpcClient } from '../transport/rpc-client'
+import type { RpcClient, SendRequestOptions } from '../transport/rpc-client'
 import type { RpcResponse, RpcSuccess } from '../transport/types'
 import { attachMobileImageToTerminal } from './mobile-image-attachment'
 
@@ -8,13 +8,13 @@ function ok(id: string, result: unknown): RpcSuccess {
 }
 
 function clientWithResponses(responses: RpcResponse[]): Pick<RpcClient, 'sendRequest'> & {
-  calls: { method: string; params: unknown }[]
+  calls: { method: string; params: unknown; options?: SendRequestOptions }[]
 } {
-  const calls: { method: string; params: unknown }[] = []
+  const calls: { method: string; params: unknown; options?: SendRequestOptions }[] = []
   return {
     calls,
-    sendRequest: vi.fn(async (method: string, params?: unknown) => {
-      calls.push({ method, params })
+    sendRequest: vi.fn(async (method: string, params?: unknown, options?: SendRequestOptions) => {
+      calls.push({ method, params, options })
       const response = responses.shift()
       if (!response) {
         throw new Error(`unexpected request: ${method}`)
@@ -54,6 +54,7 @@ describe('attachMobileImageToTerminal', () => {
       enter: false,
       client: { id: 'device-9', type: 'mobile' }
     })
+    expect(sendCall?.options).toEqual({ failWhenDisconnected: true })
   })
 
   it('passes the active worktree connectionId to the upload', async () => {

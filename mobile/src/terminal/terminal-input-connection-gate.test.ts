@@ -7,6 +7,10 @@ const sessionRouteSource = readFileSync(
   new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
   'utf8'
 )
+const terminalPasteSource = readFileSync(
+  new URL('../session/use-mobile-terminal-paste.ts', import.meta.url),
+  'utf8'
+)
 
 function routeSlice(anchorStart: string, anchorEnd: string): string {
   const start = sessionRouteSource.indexOf(anchorStart)
@@ -123,6 +127,12 @@ describe('session route offline-compose wiring', () => {
     const optOuts = sessionRouteSource.match(/TERMINAL_INPUT_SEND_OPTIONS/g)?.length ?? 0
     expect(optOuts).toBe(4)
     expect(TERMINAL_INPUT_SEND_OPTIONS).toEqual({ failWhenDisconnected: true })
+  })
+
+  it('keeps queued paste boundaries out of the reconnect wait', () => {
+    expect(terminalPasteSource).toMatch(
+      /sendRequest\([\s\S]*?'terminal\.send'[\s\S]*?TERMINAL_INPUT_SEND_OPTIONS[\s\S]*?\)/
+    )
   })
 
   it('tags terminal sends with the device presence lock only when a token exists', () => {
