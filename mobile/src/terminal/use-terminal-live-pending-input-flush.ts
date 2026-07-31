@@ -55,8 +55,6 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const currentLiveInputGenerationRef = useRef(liveInputGeneration)
   const currentLiveInputProducerGenerationRef = useRef(liveInputProducerGeneration)
   const disposedRef = useRef(false)
-  currentLiveInputGenerationRef.current = liveInputGeneration
-  currentLiveInputProducerGenerationRef.current = liveInputProducerGeneration
   const heldLiveInputTextRef = useRef('')
   const sentLiveInputTextRef = useRef('')
   const pendingLiveInputHandleRef = useRef<string | null>(null)
@@ -85,6 +83,8 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   }, [liveInputRef, resetMirrorState, setLiveInputCapture])
 
   useLayoutEffect(() => {
+    currentLiveInputGenerationRef.current = liveInputGeneration
+    currentLiveInputProducerGenerationRef.current = liveInputProducerGeneration
     if (appliedLiveInputGenerationRef.current === liveInputGeneration) {
       return
     }
@@ -92,7 +92,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
     lifecycleEpochRef.current += 1
     pendingLiveInputFlushRef.current = null
     clearPendingLiveInputCommit()
-  }, [clearPendingLiveInputCommit, liveInputGeneration])
+  }, [clearPendingLiveInputCommit, liveInputGeneration, liveInputProducerGeneration])
 
   const waitForPendingLiveInputFlush = useCallback(async (): Promise<boolean> => {
     return waitForTerminalLivePendingFlush(pendingLiveInputFlushRef)

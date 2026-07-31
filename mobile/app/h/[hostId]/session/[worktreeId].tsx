@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Animated,
   AppState,
@@ -1033,7 +1033,9 @@ export default function SessionScreen() {
   const activeSessionTabTypeRef = useRef<MobileSessionTabType | null>(null)
   const terminalInputScope = `${hostId}\0${worktreeId}`
   const terminalInputScopeRef = useRef(terminalInputScope)
-  terminalInputScopeRef.current = terminalInputScope
+  useLayoutEffect(() => {
+    terminalInputScopeRef.current = terminalInputScope
+  }, [terminalInputScope])
   const pendingActiveSessionTabIdRef = useRef<string | null>(null)
   const pendingActiveTerminalHandleRef = useRef<string | null>(null)
   // Why: remember the page id to activate its session tab once it syncs (bridge auto-activate flags only webContents, not the app-level active tab).

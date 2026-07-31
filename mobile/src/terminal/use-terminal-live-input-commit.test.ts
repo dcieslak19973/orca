@@ -438,16 +438,20 @@ describe('terminal live input commit hook', () => {
     )
   })
 
-  it('advances the producer generation across a buffered active-terminal ABA change', () => {
+  it('rejects a stale producer boundary across a buffered active-terminal ABA change', async () => {
     const harness = createTerminalLiveInputCommitHarness({ liveInputEnabled: false })
     const firstGeneration = harness.handlers.liveInputProducerGeneration
+    const staleBoundary = harness.handlers.sendLiveInputExternalBoundary
 
     harness.setActiveHandle('terminal-b')
     const secondGeneration = harness.handlers.liveInputProducerGeneration
     harness.setActiveHandle('terminal-a')
+    const producerSend = vi.fn(async () => true)
 
     expect(secondGeneration).not.toBe(firstGeneration)
     expect(harness.handlers.liveInputProducerGeneration).not.toBe(firstGeneration)
+    await expect(staleBoundary('terminal-a', producerSend)).resolves.toBe(false)
+    expect(producerSend).not.toHaveBeenCalled()
     harness.unmount()
   })
 

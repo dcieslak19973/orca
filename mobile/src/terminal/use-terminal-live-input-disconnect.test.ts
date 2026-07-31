@@ -5,12 +5,13 @@ import { expect, it, vi } from 'vitest'
 import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import { useTerminalLiveInputCommit } from './use-terminal-live-input-commit'
 
+const TERMINAL_A_LIVE_INPUT_HANDLES = new Set(['terminal-a'])
+
 it('preserves fully unsent kana across a disconnect', async () => {
   const activeHandle = 'terminal-a'
   const activeHandleRef: RefObject<string | null> = { current: activeHandle }
   const activeSessionTabTypeRef: RefObject<string | null> = { current: 'terminal' }
   const liveInputRef: RefObject<TextInput | null> = { current: null }
-  const liveInputTerminalHandles = new Set([activeHandle])
   const liveInputTerminalHandlesRef: RefObject<Set<string>> = {
     current: new Set([activeHandle])
   }
@@ -35,7 +36,7 @@ it('preserves fully unsent kana across a disconnect', async () => {
       connected,
       liveInputRef,
       liveInputScope: 'host-a\0worktree-a',
-      liveInputTerminalHandles,
+      liveInputTerminalHandles: TERMINAL_A_LIVE_INPUT_HANDLES,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
