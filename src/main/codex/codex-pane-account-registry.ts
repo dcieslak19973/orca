@@ -1,6 +1,10 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getOrcaUserDataPath } from './codex-home-paths'
+import type {
+  CodexEnvironmentHomeOverride,
+  CodexShellStartupHomeOverride
+} from './codex-real-home-path'
 
 /**
  * Remembers which Codex account each live PTY was launched under.
@@ -21,6 +25,10 @@ export type CodexPaneAccountRecord = {
   accountId: string | null
   /** Absent only on records written before route provenance was introduced. */
   homeRoute?: CodexPaneHomeRoute
+  /** Rechecked when CODEX_HOME came from process-global shell startup. */
+  shellStartupHomeOverride?: CodexShellStartupHomeOverride
+  /** Rechecked after restart when CODEX_HOME came from the process environment. */
+  environmentHomeOverride?: CodexEnvironmentHomeOverride
 }
 
 type RegistryFile = {
@@ -68,11 +76,39 @@ function parseRegistry(parsed: unknown): RegistryFile {
       empty.panes[ptyId] = {
         selectionKey: record.selectionKey,
         accountId: record.accountId,
-        ...(isPaneHomeRoute(record.homeRoute) ? { homeRoute: record.homeRoute } : {})
+        ...(isPaneHomeRoute(record.homeRoute) ? { homeRoute: record.homeRoute } : {}),
+        ...(isShellStartupHomeOverride(record.shellStartupHomeOverride)
+          ? { shellStartupHomeOverride: record.shellStartupHomeOverride }
+          : {}),
+        ...(isEnvironmentHomeOverride(record.environmentHomeOverride)
+          ? { environmentHomeOverride: record.environmentHomeOverride }
+          : {})
       }
     }
   }
   return empty
+}
+
+function isEnvironmentHomeOverride(value: unknown): value is CodexEnvironmentHomeOverride {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  const context = value as Partial<CodexEnvironmentHomeOverride>
+  return typeof context.codexHome === 'string' && context.codexHome.length > 0
+}
+
+function isShellStartupHomeOverride(value: unknown): value is CodexShellStartupHomeOverride {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  const context = value as Partial<CodexShellStartupHomeOverride>
+  return (
+    typeof context.home === 'string' &&
+    context.home.length > 0 &&
+    (context.shell === undefined || typeof context.shell === 'string') &&
+    typeof context.codexHome === 'string' &&
+    context.codexHome.length > 0
+  )
 }
 
 function isPaneAccountRecord(value: unknown): value is CodexPaneAccountRecord {
@@ -132,7 +168,12 @@ export function recordCodexPaneAccount(ptyId: string, record: CodexPaneAccountRe
   if (
     existing?.selectionKey === record.selectionKey &&
     existing.accountId === record.accountId &&
-    existing.homeRoute === record.homeRoute
+    existing.homeRoute === record.homeRoute &&
+    shellStartupHomeOverridesEqual(
+      existing.shellStartupHomeOverride,
+      record.shellStartupHomeOverride
+    ) &&
+    environmentHomeOverridesEqual(existing.environmentHomeOverride, record.environmentHomeOverride)
   ) {
     return
   }
@@ -144,6 +185,24 @@ export function recordCodexPaneAccount(ptyId: string, record: CodexPaneAccountRe
     }
   }
   writeRegistry(registry)
+}
+
+function environmentHomeOverridesEqual(
+  left: CodexEnvironmentHomeOverride | undefined,
+  right: CodexEnvironmentHomeOverride | undefined
+): boolean {
+  return left?.codexHome === right?.codexHome
+}
+
+function shellStartupHomeOverridesEqual(
+  left: CodexShellStartupHomeOverride | undefined,
+  right: CodexShellStartupHomeOverride | undefined
+): boolean {
+  return (
+    left?.home === right?.home &&
+    left?.shell === right?.shell &&
+    left?.codexHome === right?.codexHome
+  )
 }
 
 /**

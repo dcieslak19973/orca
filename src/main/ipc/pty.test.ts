@@ -248,6 +248,7 @@ import { resolveWindowsShellLaunchArgs } from '../providers/windows-shell-args'
 import { _resetWslCachesForTests, _setWslCachesForTests } from '../wsl'
 import { wslHookRelayManager } from '../agent-hooks/wsl-hook-relay-manager'
 import { acquireWatcherRemovalGate } from './watcher-removal-gate'
+import { __resetShellStartupEnvCache } from '../pty/shell-startup-env'
 import {
   acceptSshPtyOutputData,
   acceptSshPtyOutputExit,
@@ -376,6 +377,7 @@ describe('registerPtyHandlers', () => {
     mainWindow.webContents.removeListener.mockReset()
     // Why: hidden-delivery gate state is module-level (PTY-keyed), so tests must not leak hidden bits across cases.
     _resetHiddenRendererPtyDeliveryGateForTest()
+    __resetShellStartupEnvCache()
 
     // Why: mirror real Electron — ipcMain.handle throws on a duplicate channel, catching re-registration that forgot removeHandler.
     handleMock.mockImplementation((channel: string, handler: (...a: unknown[]) => unknown) => {
@@ -14567,6 +14569,120 @@ describe('registerPtyHandlers', () => {
     expect(recordCodexPaneAccountMock.mock.calls).toEqual([
       ['pty-fresh', { selectionKey: 'host', accountId: 'account-a', homeRoute: 'real-home' }]
     ])
+  })
+
+  posixOnlyIt(
+    'does not guess route provenance for a pane-local shell startup CODEX_HOME',
+    async () => {
+      setLocalPtyProvider({
+        spawn: vi.fn(async () => ({ id: 'pty-custom-home' })),
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        shutdown: vi.fn(),
+        onData: vi.fn(() => vi.fn()),
+        onExit: vi.fn(() => vi.fn()),
+        listProcesses: vi.fn(async () => []),
+        getForegroundProcess: vi.fn(async () => null)
+      } as never)
+      readFileSyncMock.mockImplementation((path: string) =>
+        path === '/pane-home/.zshrc' ? 'export CODEX_HOME="$HOME/custom-codex-home"\n' : ''
+      )
+      const getSettings = vi.fn().mockReturnValue({ activeCodexManagedAccountId: null })
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        () => TEST_CODEX_HOME,
+        getSettings as never
+      )
+
+      await handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        env: {
+          CODEX_HOME: '',
+          ORCA_CODEX_HOME: '',
+          HOME: '/pane-home',
+          SHELL: '/bin/zsh'
+        }
+      })
+
+      expect(recordCodexPaneAccountMock).toHaveBeenCalledWith('pty-custom-home', {
+        selectionKey: 'host',
+        accountId: null
+      })
+    }
+  )
+
+  it('records route provenance for a process-wide CODEX_HOME', async () => {
+    const previousCodexHome = process.env.CODEX_HOME
+    process.env.CODEX_HOME = '/process/custom-codex-home'
+    try {
+      setLocalPtyProvider({
+        spawn: vi.fn(async () => ({ id: 'pty-process-home' })),
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        shutdown: vi.fn(),
+        onData: vi.fn(() => vi.fn()),
+        onExit: vi.fn(() => vi.fn()),
+        listProcesses: vi.fn(async () => []),
+        getForegroundProcess: vi.fn(async () => null)
+      } as never)
+      const getSettings = vi.fn().mockReturnValue({ activeCodexManagedAccountId: null })
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        () => TEST_CODEX_HOME,
+        getSettings as never
+      )
+
+      await handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        env: { CODEX_HOME: '/process/custom-codex-home' }
+      })
+
+      expect(recordCodexPaneAccountMock).toHaveBeenCalledWith('pty-process-home', {
+        selectionKey: 'host',
+        accountId: null,
+        homeRoute: 'shared-home',
+        environmentHomeOverride: { codexHome: '/process/custom-codex-home' }
+      })
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME
+      } else {
+        process.env.CODEX_HOME = previousCodexHome
+      }
+    }
+  })
+
+  it('does not guess route provenance for a pane-local environment CODEX_HOME', async () => {
+    setLocalPtyProvider({
+      spawn: vi.fn(async () => ({ id: 'pty-pane-env-home' })),
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(),
+      shutdown: vi.fn(),
+      onData: vi.fn(() => vi.fn()),
+      onExit: vi.fn(() => vi.fn()),
+      listProcesses: vi.fn(async () => []),
+      getForegroundProcess: vi.fn(async () => null)
+    } as never)
+    const getSettings = vi.fn().mockReturnValue({ activeCodexManagedAccountId: null })
+    registerPtyHandlers(mainWindow as never, undefined, () => TEST_CODEX_HOME, getSettings as never)
+
+    await handlers.get('pty:spawn')!(null, {
+      cols: 80,
+      rows: 24,
+      env: { CODEX_HOME: '/pane/custom-codex-home' }
+    })
+
+    expect(recordCodexPaneAccountMock).toHaveBeenCalledWith('pty-pane-env-home', {
+      selectionKey: 'host',
+      accountId: null
+    })
   })
 
   it('records the origin account a resumed Codex pane is pinned to', async () => {

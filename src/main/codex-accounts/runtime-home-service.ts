@@ -31,7 +31,12 @@ import { app } from 'electron'
 import type { CodexManagedAccount } from '../../shared/types'
 import type { Store } from '../persistence'
 import { WSL_CODEX_RUNTIME_HOME_SEGMENTS } from '../pty/codex-home-wsl-env'
-import { writeFileAtomically } from './fs-utils'
+import {
+  recoverInterruptedGuardedFileOperation,
+  removeFileAtomicallyIfUnchanged,
+  writeFileAtomically,
+  writeFileAtomicallyIfUnchanged
+} from './fs-utils'
 import {
   getOrcaManagedCodexHomePath,
   getOrcaUserDataPath,
@@ -62,9 +67,8 @@ import {
 } from './runtime-selection'
 import { getDefaultWslDistro, getWslHome } from '../wsl'
 import { isCodexSystemDefaultRealHomeEnabled } from '../codex/codex-real-home-flag'
-import { hasCustomCodexHomeOverride } from '../codex/codex-real-home-path'
+import { hasCustomCodexHomeOverrideForLaunch } from '../codex/codex-real-home-path'
 import { invalidateCodexSessionBackfillMarker } from '../codex/codex-session-backfill-marker'
-import { readShellStartupEnvVar } from '../pty/shell-startup-env'
 import { assertOwnedHostCodexManagedHomePath } from './host-codex-managed-home-ownership'
 import {
   codexAuthIsFresher,
@@ -72,7 +76,7 @@ import {
   codexAuthMatchesSystemDefaultIdentity
 } from './codex-auth-identity'
 import { migrateLegacySharedAuthToPerAccountHome } from './legacy-shared-auth-migration'
-import { syncLegacySharedCodexHomeForRetainedPanes } from './legacy-shared-home-compatibility'
+import { syncLegacySharedCodexConfigForRetainedPanes } from './legacy-shared-config-compatibility'
 import type { CodexPaneHomeRoute } from '../codex/codex-pane-account-registry'
 
 type CodexSystemDefaultSnapshot = {
@@ -83,6 +87,26 @@ type CodexRuntimeLogoutMarker = {
   systemDefaultAuthJson: string | null
   loggedOutAt: number
 }
+
+type CodexSharedRuntimeAuthProvenance =
+  | { owner: 'system-default'; authJson: string | null }
+  | {
+      owner: 'managed'
+      accountId: string
+      systemDefaultBaseline?: { authJson: string | null }
+    }
+type CodexSharedRuntimeAuthPendingProvenance = {
+  owner: 'pending'
+  next: CodexSharedRuntimeAuthProvenance
+  runtimeAuthJson: string | null
+}
+type CodexSharedRuntimeAuthProvenanceFile =
+  | CodexSharedRuntimeAuthProvenance
+  | CodexSharedRuntimeAuthPendingProvenance
+  | { owner: 'fenced' }
+type CodexSharedRuntimeAuthProvenanceStatus =
+  | { kind: 'missing' | 'fenced' }
+  | { kind: 'committed'; provenance: CodexSharedRuntimeAuthProvenance }
 
 type CodexRuntimeLogoutMarkerStatus =
   | { kind: 'missing' }
@@ -99,20 +123,6 @@ type CodexReadBackMatch =
     }
   | { kind: 'none' | 'ambiguous' }
 
-function readLaunchEnvValue(
-  launchEnv: NodeJS.ProcessEnv,
-  key: 'CODEX_HOME' | 'ORCA_CODEX_HOME' | 'HOME' | 'SHELL'
-): string | undefined {
-  return Object.prototype.hasOwnProperty.call(launchEnv, key) ? launchEnv[key] : process.env[key]
-}
-
-function getEffectiveCodexHomeEnv(launchEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return {
-    CODEX_HOME: readLaunchEnvValue(launchEnv, 'CODEX_HOME'),
-    ORCA_CODEX_HOME: readLaunchEnvValue(launchEnv, 'ORCA_CODEX_HOME')
-  }
-}
-
 export class CodexRuntimeHomeService {
   // Which managed account runtime auth.json mirrors; null means it follows system-default ~/.codex instead of a managed account.
   private lastSyncedAccountId: string | null = null
@@ -126,8 +136,10 @@ export class CodexRuntimeHomeService {
   // Why: a flag-ON host account refreshes auth in its own home. Remember that
   // provenance so a later deselect/rollback never adopts stale shared bytes.
   private lastHostAccountUsedSelfContainedHome = false
+  private sharedAuthRefreshBlockedByManagedTransition = false
 
   constructor(private readonly store: Store) {
+    this.safeRecoverInterruptedRuntimeAuthOperation()
     this.safeMigrateLegacySharedAuth()
     this.safeMigrateLegacyManagedState()
     this.safeMigrateLegacyActiveHomePointer()
@@ -178,7 +190,8 @@ export class CodexRuntimeHomeService {
       // Why (flag ON, system default): run Codex on the user's own ~/.codex.
       // Returning null tells the PTY/env layer to inject no managed CODEX_HOME;
       // the retired mirror is refreshed only for pre-rollout PTYs.
-      syncLegacySharedCodexHomeForRetainedPanes()
+      this.syncLegacySharedSystemDefaultAuthForRetainedPanes()
+      syncLegacySharedCodexConfigForRetainedPanes()
       return null
     }
     this.invalidateBackfillAfterManagedSystemDefaultLaunch(launchEnv)
@@ -250,6 +263,8 @@ export class CodexRuntimeHomeService {
     // is a complete CODEX_HOME. Hooks/trust are installed by the launch caller.
     this.lastSyncedAccountId = account.id
     this.lastHostAccountUsedSelfContainedHome = true
+    this.sharedAuthRefreshBlockedByManagedTransition = true
+    this.markSharedRuntimeAuthManaged(account.id)
     syncSystemCodexResourcesIntoManagedHome(perAccountHome)
     syncSystemConfigIntoManagedCodexHome({
       runtimeHomePath: perAccountHome,
@@ -291,6 +306,8 @@ export class CodexRuntimeHomeService {
     if (perAccountHome && existsSync(join(perAccountHome, 'auth.json'))) {
       this.lastSyncedAccountId = account.id
       this.lastHostAccountUsedSelfContainedHome = true
+      this.sharedAuthRefreshBlockedByManagedTransition = true
+      this.markSharedRuntimeAuthManaged(account.id)
       // Why: selection runs well before the user restarts a pane, so history is
       // already linked in by the time the newly launched Codex opens /resume.
       this.startSelfContainedSessionBridgeForLaunch(perAccountHome)
@@ -423,9 +440,6 @@ export class CodexRuntimeHomeService {
 
   setRealHomeLaneGate(gate: () => boolean): void {
     this.realHomeLaneGate = gate
-    if (this.isHostSystemDefaultRealHome()) {
-      syncLegacySharedCodexHomeForRetainedPanes()
-    }
   }
 
   // Why: real-home routing applies only to the host system-default selection
@@ -439,20 +453,7 @@ export class CodexRuntimeHomeService {
     ) {
       return false
     }
-    // Why: PTY callers can overlay environment values that the Electron main
-    // process never inherited. Those custom homes must keep the managed lane.
-    const effectiveEnv = launchEnv ? getEffectiveCodexHomeEnv(launchEnv) : process.env
-    if (hasCustomCodexHomeOverride(effectiveEnv)) {
-      return false
-    }
-    // Why: Finder/Dock launches do not inherit shell exports, but the login
-    // shell can re-export a custom home after spawn and bypass the trusted lane.
-    const shellCodexHome = readShellStartupEnvVar(
-      'CODEX_HOME',
-      launchEnv ? readLaunchEnvValue(launchEnv, 'HOME') : process.env.HOME,
-      launchEnv ? readLaunchEnvValue(launchEnv, 'SHELL') : process.env.SHELL
-    )
-    return !hasCustomCodexHomeOverride({ CODEX_HOME: shellCodexHome })
+    return !hasCustomCodexHomeOverrideForLaunch(launchEnv)
   }
 
   isHostSystemDefaultRealHome(launchEnv?: NodeJS.ProcessEnv): boolean {
@@ -543,6 +544,7 @@ export class CodexRuntimeHomeService {
       // CODEX_HOME before ~/.codex. Nested Orca launches can inherit the
       // managed home, restarting the background OAuth conflict (#5370), so
       // pin this non-interactive lane to the native home explicitly.
+      this.syncLegacySharedSystemDefaultAuthForRetainedPanes()
       return getSystemCodexHomePath()
     }
     this.syncForCurrentSelection()
@@ -564,7 +566,6 @@ export class CodexRuntimeHomeService {
       this.syncSelfContainedManagedSelection(selfContainedAccount)
       return
     }
-
     const settings = this.store.getSettings()
     if (this.lastHostAccountUsedSelfContainedHome) {
       // Why: E auth is already canonical in the per-account home. Reset the
@@ -576,6 +577,16 @@ export class CodexRuntimeHomeService {
       if (this.isHostSystemDefaultRealHome()) {
         return
       }
+    }
+    if (this.isHostSystemDefaultRealHome()) {
+      // Why: retained daemon panes may own shared auth from a managed launch;
+      // compatibility reconciliation runs later with durable provenance.
+      if (this.lastSyncedAccountId !== null) {
+        this.sharedAuthRefreshBlockedByManagedTransition = true
+        this.lastSyncedAccountId = null
+        this.lastWrittenAuthJson = null
+      }
+      return
     }
     const runtimeAuthExistedBeforeSync = existsSync(this.getRuntimeAuthPath())
     if (this.lastSyncedAccountId === null) {
@@ -698,7 +709,10 @@ export class CodexRuntimeHomeService {
       this.skipNextReadBackForAccountId = null
     }
     this.lastSyncedAccountId = activeAccount.id
-    this.writeRuntimeAuth(readFileSync(activeAuthPath, 'utf-8'))
+    this.writeRuntimeAuth(readFileSync(activeAuthPath, 'utf-8'), {
+      owner: 'managed',
+      accountId: activeAccount.id
+    })
   }
 
   // Why: re-auth/add-account write fresh managed tokens, so skip the next read-back to avoid clobbering them with stale runtime tokens.
@@ -829,6 +843,14 @@ export class CodexRuntimeHomeService {
       this.syncForCurrentSelection()
     } catch (error) {
       console.warn('[codex-runtime-home] Failed to sync runtime auth state:', error)
+    }
+  }
+
+  private safeRecoverInterruptedRuntimeAuthOperation(): void {
+    try {
+      recoverInterruptedGuardedFileOperation(this.getRuntimeAuthPath())
+    } catch (error) {
+      console.warn('[codex-runtime-home] Failed to recover interrupted auth update:', error)
     }
   }
 
@@ -1241,6 +1263,10 @@ export class CodexRuntimeHomeService {
     return join(this.getRuntimeMetadataDir(), 'system-default-runtime-logout.json')
   }
 
+  private getSharedRuntimeAuthProvenancePath(): string {
+    return join(this.getRuntimeMetadataDir(), 'shared-runtime-auth-provenance.json')
+  }
+
   private getRuntimeMetadataDir(): string {
     const metadataDir = join(app.getPath('userData'), 'codex-runtime-home')
     mkdirSync(metadataDir, { recursive: true })
@@ -1531,14 +1557,33 @@ export class CodexRuntimeHomeService {
 
     try {
       const runtimeAuth = readFileSync(runtimeAuthPath, 'utf-8')
+      const provenanceStatus = this.resolveSharedRuntimeAuthProvenanceStatus()
+      const provenance = provenanceStatus.kind === 'committed' ? provenanceStatus.provenance : null
+      if (provenance?.owner === 'managed') {
+        this.captureSystemDefaultSnapshot({ force: true })
+        if (!existsSync(systemDefaultAuthPath)) {
+          this.clearRuntimeAuthAfterSystemDefaultLogout(runtimeAuthPath)
+          return
+        }
+        this.writeRuntimeAuth(readFileSync(systemDefaultAuthPath, 'utf-8'), {
+          owner: 'system-default'
+        })
+        return
+      }
+      const snapshot = this.readSystemDefaultSnapshot(this.getSystemDefaultSnapshotPath())
+      const mirroredSystemDefaultAuth =
+        provenance?.owner === 'system-default'
+          ? provenance.authJson
+          : provenanceStatus.kind === 'missing'
+            ? (this.lastWrittenAuthJson ?? snapshot?.authJson ?? null)
+            : null
       if (!existsSync(systemDefaultAuthPath)) {
-        const snapshot = this.readSystemDefaultSnapshot(this.getSystemDefaultSnapshotPath())
-        const mirroredSystemDefaultAuth = this.lastWrittenAuthJson ?? snapshot?.authJson ?? null
         if (mirroredSystemDefaultAuth !== null && runtimeAuth === mirroredSystemDefaultAuth) {
           this.clearRuntimeAuthAfterSystemDefaultLogout(runtimeAuthPath)
           return
         }
         if (
+          provenance?.owner === 'system-default' &&
           mirroredSystemDefaultAuth !== null &&
           this.runtimeAuthMatchesSystemDefaultIdentity(runtimeAuth, mirroredSystemDefaultAuth)
         ) {
@@ -1547,26 +1592,125 @@ export class CodexRuntimeHomeService {
         return
       }
       const systemDefaultAuth = readFileSync(systemDefaultAuthPath, 'utf-8')
-      if (runtimeAuth !== systemDefaultAuth) {
-        const snapshot = this.readSystemDefaultSnapshot(this.getSystemDefaultSnapshotPath())
-        const mirroredSystemDefaultAuth = this.lastWrittenAuthJson ?? snapshot?.authJson ?? null
-        if (
-          mirroredSystemDefaultAuth !== null &&
-          systemDefaultAuth === mirroredSystemDefaultAuth &&
-          this.runtimeAuthMatchesSystemDefaultIdentity(runtimeAuth, mirroredSystemDefaultAuth)
-        ) {
-          // Why: Codex refreshes tokens in the runtime CODEX_HOME; read that back to ~/.codex so the next sync won't clobber fresh creds with stale ones.
-          this.writeSystemDefaultAuth(runtimeAuth)
-          this.captureSystemDefaultSnapshot({ force: true })
-          this.lastWrittenAuthJson = runtimeAuth
-          return
-        }
-        // Why: mirror external logins/logouts into Orca's runtime home so unmanaged Codex sessions keep matching the current system-default state.
-        this.captureSystemDefaultSnapshot({ force: true })
-        this.writeRuntimeAuth(systemDefaultAuth)
+      if (runtimeAuth === systemDefaultAuth) {
+        this.writeRuntimeAuth(systemDefaultAuth, { owner: 'system-default' })
+        return
       }
+      if (
+        provenance?.owner === 'system-default' &&
+        mirroredSystemDefaultAuth !== null &&
+        systemDefaultAuth === mirroredSystemDefaultAuth &&
+        this.runtimeAuthMatchesSystemDefaultIdentity(runtimeAuth, mirroredSystemDefaultAuth)
+      ) {
+        // Why: Codex refreshes tokens in the runtime CODEX_HOME; read that back to ~/.codex so the next sync won't clobber fresh creds with stale ones.
+        this.writeSystemDefaultAuth(runtimeAuth)
+        this.captureSystemDefaultSnapshot({ force: true })
+        this.writeRuntimeAuth(runtimeAuth, { owner: 'system-default' })
+        return
+      }
+      // Why: mirror external logins/logouts into Orca's runtime home so unmanaged Codex sessions keep matching the current system-default state.
+      this.captureSystemDefaultSnapshot({ force: true })
+      this.writeRuntimeAuth(systemDefaultAuth, { owner: 'system-default' })
     } catch (error) {
       console.warn('[codex-runtime-home] Failed to sync system-default auth:', error)
+    }
+  }
+
+  private syncLegacySharedSystemDefaultAuthForRetainedPanes(): void {
+    if (this.sharedAuthRefreshBlockedByManagedTransition || this.lastSyncedAccountId !== null) {
+      this.sharedAuthRefreshBlockedByManagedTransition = false
+      return
+    }
+    const runtimeAuthPath = this.getRuntimeAuthPath()
+    try {
+      let provenanceStatus = this.resolveSharedRuntimeAuthProvenanceStatus()
+      if (
+        provenanceStatus.kind === 'committed' &&
+        provenanceStatus.provenance.owner === 'managed'
+      ) {
+        const restoredProvenance = this.restoreUntouchedSystemDefaultProvenance(
+          provenanceStatus.provenance
+        )
+        if (restoredProvenance) {
+          provenanceStatus = { kind: 'committed', provenance: restoredProvenance }
+        }
+      }
+      if (
+        provenanceStatus.kind === 'fenced' ||
+        (provenanceStatus.kind === 'committed' && provenanceStatus.provenance.owner === 'managed')
+      ) {
+        return
+      }
+      const systemAuth = this.readSystemDefaultAuth()
+      if (!existsSync(runtimeAuthPath)) {
+        const logoutMarkerStatus = this.getRuntimeLogoutMarkerStatus()
+        if (
+          logoutMarkerStatus.kind === 'system-default-changed' &&
+          logoutMarkerStatus.systemDefaultAuthJson !== null
+        ) {
+          const replaced = this.writeRuntimeAuth(
+            logoutMarkerStatus.systemDefaultAuthJson,
+            {
+              owner: 'system-default'
+            },
+            { expectedContents: null }
+          )
+          if (replaced) {
+            this.captureSystemDefaultSnapshot({ force: true })
+          }
+        }
+        return
+      }
+      const runtimeAuthBeforeSync = readFileSync(runtimeAuthPath, 'utf-8')
+      const snapshot = this.readSystemDefaultSnapshot(this.getSystemDefaultSnapshotPath())
+      const provenance = provenanceStatus.kind === 'committed' ? provenanceStatus.provenance : null
+      const knownSharedAuth =
+        provenance?.owner === 'system-default'
+          ? provenance.authJson
+          : provenanceStatus.kind === 'missing'
+            ? (this.lastWrittenAuthJson ?? snapshot?.authJson ?? null)
+            : null
+      // Why: only bytes Orca can prove it wrote belong to the compatibility
+      // mirror; retained Codex or a managed transition owns every other value.
+      if (knownSharedAuth === null) {
+        return
+      }
+      const sharedAuthOwnedBySystemDefault =
+        runtimeAuthBeforeSync === knownSharedAuth ||
+        (provenance?.owner === 'system-default' &&
+          systemAuth === null &&
+          this.runtimeAuthMatchesSystemDefaultIdentity(runtimeAuthBeforeSync, knownSharedAuth))
+      if (!sharedAuthOwnedBySystemDefault) {
+        return
+      }
+      if (systemAuth === null) {
+        removeFileAtomicallyIfUnchanged(runtimeAuthPath, runtimeAuthBeforeSync)
+        if (existsSync(runtimeAuthPath)) {
+          this.persistSharedRuntimeAuthProvenance({ owner: 'fenced' })
+          return
+        }
+        this.captureSystemDefaultSnapshot({ force: true })
+        this.persistRuntimeLogoutMarker(null)
+        this.lastWrittenAuthJson = null
+        this.persistSharedRuntimeAuthProvenance({
+          owner: 'system-default',
+          authJson: null
+        })
+        return
+      }
+      if (runtimeAuthBeforeSync !== knownSharedAuth) {
+        return
+      }
+      const replaced = this.writeRuntimeAuth(
+        systemAuth,
+        { owner: 'system-default' },
+        { expectedContents: runtimeAuthBeforeSync }
+      )
+      if (replaced) {
+        this.captureSystemDefaultSnapshot({ force: true })
+      }
+    } catch (error) {
+      console.warn('[codex-runtime-home] Failed to refresh retained-pane auth:', error)
     }
   }
 
@@ -1577,7 +1721,7 @@ export class CodexRuntimeHomeService {
     if (existsSync(systemDefaultAuthPath)) {
       const systemDefaultAuth = readFileSync(systemDefaultAuthPath, 'utf-8')
       this.captureSystemDefaultSnapshot({ force: true })
-      this.writeRuntimeAuth(systemDefaultAuth)
+      this.writeRuntimeAuth(systemDefaultAuth, { owner: 'system-default' })
       return
     }
 
@@ -1617,7 +1761,7 @@ export class CodexRuntimeHomeService {
         this.lastWrittenAuthJson = null
         return
       }
-      this.writeRuntimeAuth(refreshedSnapshot.authJson)
+      this.writeRuntimeAuth(refreshedSnapshot.authJson, { owner: 'system-default' })
       return
     }
     if (snapshot.authJson === null) {
@@ -1625,7 +1769,7 @@ export class CodexRuntimeHomeService {
       this.lastWrittenAuthJson = null
       return
     }
-    this.writeRuntimeAuth(snapshot.authJson)
+    this.writeRuntimeAuth(snapshot.authJson, { owner: 'system-default' })
   }
 
   private writeSystemDefaultAuth(contents: string): void {
@@ -1641,6 +1785,10 @@ export class CodexRuntimeHomeService {
     this.captureSystemDefaultSnapshot({ force: true })
     this.persistRuntimeLogoutMarker()
     this.lastWrittenAuthJson = null
+    this.persistSharedRuntimeAuthProvenance({
+      owner: 'system-default',
+      authJson: null
+    })
   }
 
   private readSystemDefaultAuth(): string | null {
@@ -1648,16 +1796,42 @@ export class CodexRuntimeHomeService {
     return existsSync(systemDefaultAuthPath) ? readFileSync(systemDefaultAuthPath, 'utf-8') : null
   }
 
-  private writeRuntimeAuth(contents: string): void {
+  private writeRuntimeAuth(
+    contents: string,
+    owner: { owner: 'system-default' } | { owner: 'managed'; accountId: string },
+    options?: { expectedContents: string | null }
+  ): boolean {
     // Why: auth.json holds credentials; restrict to owner-only so other users on a shared machine cannot read it.
-    this.clearRuntimeLogoutMarker()
-    if (this.fileContentsEqual(this.getRuntimeAuthPath(), contents)) {
-      this.ensureOwnerOnlyMode(this.getRuntimeAuthPath())
-      this.lastWrittenAuthJson = contents
-      return
+    const runtimeAuthPath = this.getRuntimeAuthPath()
+    if (options && !this.fileContentsMatchExpected(runtimeAuthPath, options.expectedContents)) {
+      return false
     }
-    writeFileAtomically(this.getRuntimeAuthPath(), contents, { mode: 0o600 })
+    const provenance: CodexSharedRuntimeAuthProvenance =
+      owner.owner === 'system-default' ? { owner: 'system-default', authJson: contents } : owner
+    this.persistSharedRuntimeAuthProvenance({
+      owner: 'pending',
+      next: provenance,
+      runtimeAuthJson: contents
+    })
+    if (this.fileContentsEqual(this.getRuntimeAuthPath(), contents)) {
+      this.ensureOwnerOnlyMode(runtimeAuthPath)
+      this.lastWrittenAuthJson = contents
+      this.persistSharedRuntimeAuthProvenance(provenance)
+      this.clearRuntimeLogoutMarker()
+      return true
+    }
+    const replaced = options
+      ? writeFileAtomicallyIfUnchanged(runtimeAuthPath, options.expectedContents, contents, {
+          mode: 0o600
+        })
+      : (writeFileAtomically(runtimeAuthPath, contents, { mode: 0o600 }), true)
+    if (!replaced) {
+      return false
+    }
     this.lastWrittenAuthJson = contents
+    this.persistSharedRuntimeAuthProvenance(provenance)
+    this.clearRuntimeLogoutMarker()
+    return true
   }
 
   private writeRuntimeAuthAtPath(authPath: string, contents: string): void {
@@ -1675,6 +1849,13 @@ export class CodexRuntimeHomeService {
     } catch {
       return false
     }
+  }
+
+  private fileContentsMatchExpected(targetPath: string, expectedContents: string | null): boolean {
+    if (expectedContents === null) {
+      return !existsSync(targetPath)
+    }
+    return this.fileContentsEqual(targetPath, expectedContents)
   }
 
   private ensureOwnerOnlyMode(targetPath: string): void {
@@ -1739,6 +1920,167 @@ export class CodexRuntimeHomeService {
 
   private clearRuntimeLogoutMarker(): void {
     rmSync(this.getRuntimeLogoutMarkerPath(), { force: true })
+  }
+
+  private persistSharedRuntimeAuthProvenance(
+    provenance: CodexSharedRuntimeAuthProvenanceFile
+  ): void {
+    writeFileAtomically(
+      this.getSharedRuntimeAuthProvenancePath(),
+      `${JSON.stringify(provenance, null, 2)}\n`,
+      { mode: 0o600 }
+    )
+  }
+
+  private markSharedRuntimeAuthManaged(accountId: string): void {
+    const status = this.resolveSharedRuntimeAuthProvenanceStatus()
+    if (
+      status.kind === 'committed' &&
+      status.provenance.owner === 'managed' &&
+      status.provenance.accountId === accountId
+    ) {
+      return
+    }
+    const runtimeAuthJson = this.readRuntimeAuthForProvenance()
+    const systemDefaultBaseline = this.getUntouchedSystemDefaultBaseline(status, runtimeAuthJson)
+    const provenance: CodexSharedRuntimeAuthProvenance = {
+      owner: 'managed',
+      accountId,
+      ...(systemDefaultBaseline ? { systemDefaultBaseline } : {})
+    }
+    this.persistSharedRuntimeAuthProvenance({
+      owner: 'pending',
+      next: provenance,
+      runtimeAuthJson
+    })
+    if (this.readRuntimeAuthForProvenance() === runtimeAuthJson) {
+      this.persistSharedRuntimeAuthProvenance(provenance)
+    }
+  }
+
+  private getUntouchedSystemDefaultBaseline(
+    status: CodexSharedRuntimeAuthProvenanceStatus,
+    runtimeAuthJson: string | null
+  ): { authJson: string | null } | null {
+    if (status.kind !== 'committed') {
+      return null
+    }
+    const baseline =
+      status.provenance.owner === 'system-default'
+        ? { authJson: status.provenance.authJson }
+        : status.provenance.systemDefaultBaseline
+    return baseline && runtimeAuthJson === baseline.authJson ? baseline : null
+  }
+
+  private restoreUntouchedSystemDefaultProvenance(
+    provenance: Extract<CodexSharedRuntimeAuthProvenance, { owner: 'managed' }>
+  ): Extract<CodexSharedRuntimeAuthProvenance, { owner: 'system-default' }> | null {
+    const baseline = provenance.systemDefaultBaseline
+    if (!baseline || this.readRuntimeAuthForProvenance() !== baseline.authJson) {
+      return null
+    }
+    const restored = { owner: 'system-default' as const, authJson: baseline.authJson }
+    this.persistSharedRuntimeAuthProvenance({
+      owner: 'pending',
+      next: restored,
+      runtimeAuthJson: baseline.authJson
+    })
+    if (this.readRuntimeAuthForProvenance() !== baseline.authJson) {
+      return null
+    }
+    this.persistSharedRuntimeAuthProvenance(restored)
+    return restored
+  }
+
+  private resolveSharedRuntimeAuthProvenanceStatus(): CodexSharedRuntimeAuthProvenanceStatus {
+    const provenancePath = this.getSharedRuntimeAuthProvenancePath()
+    if (!existsSync(provenancePath)) {
+      return { kind: 'missing' }
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(readFileSync(provenancePath, 'utf-8')) as unknown
+    } catch {
+      return { kind: 'fenced' }
+    }
+    const committed = this.parseSharedRuntimeAuthProvenance(parsed)
+    if (committed) {
+      return { kind: 'committed', provenance: committed }
+    }
+    const pending = this.parsePendingSharedRuntimeAuthProvenance(parsed)
+    if (!pending || this.readRuntimeAuthForProvenance() !== pending.runtimeAuthJson) {
+      return { kind: 'fenced' }
+    }
+    try {
+      this.persistSharedRuntimeAuthProvenance(pending.next)
+      return { kind: 'committed', provenance: pending.next }
+    } catch {
+      return { kind: 'fenced' }
+    }
+  }
+
+  private parseSharedRuntimeAuthProvenance(
+    value: unknown
+  ): CodexSharedRuntimeAuthProvenance | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null
+    }
+    const provenance = value as Record<string, unknown>
+    if (
+      provenance.owner === 'system-default' &&
+      (typeof provenance.authJson === 'string' || provenance.authJson === null)
+    ) {
+      return { owner: 'system-default', authJson: provenance.authJson }
+    }
+    if (
+      provenance.owner !== 'managed' ||
+      typeof provenance.accountId !== 'string' ||
+      provenance.accountId.length === 0
+    ) {
+      return null
+    }
+    const baseline = this.parseSystemDefaultBaseline(provenance.systemDefaultBaseline)
+    if ('systemDefaultBaseline' in provenance && !baseline) {
+      return null
+    }
+    return {
+      owner: 'managed',
+      accountId: provenance.accountId,
+      ...(baseline ? { systemDefaultBaseline: baseline } : {})
+    }
+  }
+
+  private parseSystemDefaultBaseline(value: unknown): { authJson: string | null } | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null
+    }
+    const baseline = value as Record<string, unknown>
+    return typeof baseline.authJson === 'string' || baseline.authJson === null
+      ? { authJson: baseline.authJson }
+      : null
+  }
+
+  private parsePendingSharedRuntimeAuthProvenance(
+    value: unknown
+  ): CodexSharedRuntimeAuthPendingProvenance | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null
+    }
+    const pending = value as Record<string, unknown>
+    const next = this.parseSharedRuntimeAuthProvenance(pending.next)
+    return pending.owner === 'pending' &&
+      next &&
+      (typeof pending.runtimeAuthJson === 'string' || pending.runtimeAuthJson === null)
+      ? { owner: 'pending', next, runtimeAuthJson: pending.runtimeAuthJson }
+      : null
+  }
+
+  private readRuntimeAuthForProvenance(): string | null {
+    try {
+      return readFileSync(this.getRuntimeAuthPath(), 'utf-8')
+    } catch {
+      return null
+    }
   }
 
   private readSystemDefaultSnapshot(snapshotPath: string): CodexSystemDefaultSnapshot | null {

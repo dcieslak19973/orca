@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { readAgentStateFileSync } from '../agent-state-file-reader'
-import { writeFileAtomically } from '../codex-accounts/fs-utils'
+import { writeFileAtomically, writeFileAtomicallyIfUnchanged } from '../codex-accounts/fs-utils'
 import { getOrcaManagedCodexHomePath, getSystemCodexHomePath } from './codex-home-paths'
 import { rewriteRelativePathConfigValues } from './codex-config-path-reference-rewrite'
 import { normalizeDeprecatedCodexHookFeatureFlag } from './config-toml-deprecated-hook-flag'
@@ -110,18 +110,22 @@ export function syncSystemConfigIntoLegacySharedCodexHome(
   }
 
   const sourceConfigDir = resolveCodexConfigMirrorSourceDirectory(homes.systemHomePath)
-  const nextRuntimeConfig = existsSync(runtimeConfigPath)
-    ? mergeSystemCodexConfigIntoRuntime(
-        readAgentStateFileSync(runtimeConfigPath),
-        prepareSystemConfigForRuntimeMirror(rawSystemConfig, sourceConfigDir)
-      )
-    : prepareSystemConfigForFreshRuntimeMirror(rawSystemConfig, sourceConfigDir)
-  if (
-    !existsSync(runtimeConfigPath) ||
-    readAgentStateFileSync(runtimeConfigPath) !== nextRuntimeConfig
-  ) {
-    writeFileAtomically(runtimeConfigPath, nextRuntimeConfig)
+  const runtimeConfigBeforeMirror = existsSync(runtimeConfigPath)
+    ? readAgentStateFileSync(runtimeConfigPath)
+    : null
+  const nextRuntimeConfig =
+    runtimeConfigBeforeMirror !== null
+      ? mergeSystemCodexConfigIntoRuntime(
+          runtimeConfigBeforeMirror,
+          prepareSystemConfigForRuntimeMirror(rawSystemConfig, sourceConfigDir)
+        )
+      : prepareSystemConfigForFreshRuntimeMirror(rawSystemConfig, sourceConfigDir)
+  if (runtimeConfigBeforeMirror === nextRuntimeConfig) {
+    return
   }
+  // Why: stage first, then compare immediately before replace so a retained
+  // Codex trust write during mirror preparation wins.
+  writeFileAtomicallyIfUnchanged(runtimeConfigPath, runtimeConfigBeforeMirror, nextRuntimeConfig)
 }
 
 type CodexConfigMirrorResult =

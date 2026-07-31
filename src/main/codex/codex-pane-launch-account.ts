@@ -7,6 +7,10 @@ import {
   type CodexAccountSelectionTarget
 } from '../codex-accounts/runtime-selection'
 import type { CodexPaneAccountRecord, CodexPaneHomeRoute } from './codex-pane-account-registry'
+import type {
+  CodexEnvironmentHomeOverride,
+  CodexShellStartupHomeOverride
+} from './codex-real-home-path'
 
 type CodexPaneLaunchAccountSettings = Pick<
   GlobalSettings,
@@ -29,6 +33,8 @@ export function resolveCodexPaneLaunchAccount(args: {
   pinnedByResume: boolean
   launchCodexHomePath: string | null
   recordHomeRoute?: boolean
+  shellStartupHomeOverride?: CodexShellStartupHomeOverride
+  environmentHomeOverride?: CodexEnvironmentHomeOverride
   systemCodexHomePath: string
   settings: CodexPaneLaunchAccountSettings
   target: CodexAccountSelectionTarget
@@ -39,13 +45,29 @@ export function resolveCodexPaneLaunchAccount(args: {
     return {
       selectionKey,
       accountId: getSelectedCodexAccountIdForTarget(args.settings, args.target),
-      ...(homeRoute ? { homeRoute } : {})
+      ...(homeRoute ? { homeRoute } : {}),
+      ...(args.shellStartupHomeOverride
+        ? { shellStartupHomeOverride: args.shellStartupHomeOverride }
+        : {}),
+      ...(args.environmentHomeOverride
+        ? { environmentHomeOverride: args.environmentHomeOverride }
+        : {})
     }
   }
   const accountId = resolveCodexHomeOwnerAccountId(args)
   return accountId === undefined
     ? null
-    : { selectionKey, accountId, ...(homeRoute ? { homeRoute } : {}) }
+    : {
+        selectionKey,
+        accountId,
+        ...(homeRoute ? { homeRoute } : {}),
+        ...(args.shellStartupHomeOverride
+          ? { shellStartupHomeOverride: args.shellStartupHomeOverride }
+          : {}),
+        ...(args.environmentHomeOverride
+          ? { environmentHomeOverride: args.environmentHomeOverride }
+          : {})
+      }
 }
 
 function resolveCodexPaneHomeRoute(args: {

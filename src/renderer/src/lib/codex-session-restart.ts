@@ -266,7 +266,8 @@ export async function markRestoredStaleCodexSessionsForRestart(args?: {
       // Why the ids: main decided staleness by id, and the labels can collide.
       // Passing only labels hands the store a question it cannot answer.
       previousAccountId: pane.launchAccountId,
-      nextAccountId: pane.activeAccountId
+      nextAccountId: pane.activeAccountId,
+      ...(pane.reason === 'home-route-change' ? { homeRouteChanged: true as const } : {})
     }))
   )
   // Why not every stale pane: the bind sweep suppresses a "notified" pane for the

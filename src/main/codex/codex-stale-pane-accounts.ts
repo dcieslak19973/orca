@@ -5,11 +5,20 @@ import {
   getCodexPaneAccount,
   type CodexPaneHomeRoute
 } from './codex-pane-account-registry'
+import {
+  environmentCodexHomeOverrideContextsEqual,
+  getCustomCodexHomeOverrideForLaunch,
+  shellStartupCodexHomeOverrideMatches,
+  type CustomCodexHomeOverrideForLaunch,
+  type CodexEnvironmentHomeOverride,
+  type CodexShellStartupHomeOverride
+} from './codex-real-home-path'
 
 export type StaleCodexPane = {
   ptyId: string
   launchAccountId: string | null
   activeAccountId: string | null
+  reason: 'account-change' | 'home-route-change'
 }
 
 /**
@@ -20,6 +29,7 @@ export function listStaleCodexPanes(args: {
   ptyIds: readonly string[]
   settings: GlobalSettings
   activeHostHomeRoute?: CodexPaneHomeRoute
+  activeHostCustomHomeOverride?: CustomCodexHomeOverrideForLaunch | null
 }): StaleCodexPane[] {
   const stalePanes: StaleCodexPane[] = []
   for (const ptyId of args.ptyIds) {
@@ -31,16 +41,71 @@ export function listStaleCodexPanes(args: {
       args.settings,
       parseSelectionLaneKey(record.selectionKey)
     )
+    const customHomeChanged = getCustomHomeChanged(record, args)
+    const hasCustomHomeProvenance =
+      record.shellStartupHomeOverride !== undefined || record.environmentHomeOverride !== undefined
     const homeRouteChanged =
       record.selectionKey === 'host' &&
       record.homeRoute !== undefined &&
-      args.activeHostHomeRoute !== undefined &&
-      record.homeRoute !== args.activeHostHomeRoute
-    if (record.accountId !== activeAccountId || homeRouteChanged) {
-      stalePanes.push({ ptyId, launchAccountId: record.accountId, activeAccountId })
+      (customHomeChanged ||
+        (!hasCustomHomeProvenance &&
+          args.activeHostHomeRoute !== undefined &&
+          record.homeRoute !== args.activeHostHomeRoute))
+    const accountChanged = record.accountId !== activeAccountId
+    if (accountChanged || homeRouteChanged) {
+      stalePanes.push({
+        ptyId,
+        launchAccountId: record.accountId,
+        activeAccountId,
+        reason: homeRouteChanged ? 'home-route-change' : 'account-change'
+      })
     }
   }
   return stalePanes
+}
+
+function getCustomHomeChanged(
+  record: {
+    shellStartupHomeOverride?: CodexShellStartupHomeOverride
+    environmentHomeOverride?: CodexEnvironmentHomeOverride
+  },
+  args: {
+    activeHostCustomHomeOverride?: CustomCodexHomeOverrideForLaunch | null
+  }
+): boolean {
+  if (record.shellStartupHomeOverride) {
+    if (!Object.prototype.hasOwnProperty.call(args, 'activeHostCustomHomeOverride')) {
+      const currentProcessOverride = getCustomCodexHomeOverrideForLaunch()
+      return currentProcessOverride
+        ? customHomeOverrideChanged(record.shellStartupHomeOverride.codexHome, {
+            activeHostCustomHomeOverride: currentProcessOverride
+          })
+        : !shellStartupCodexHomeOverrideMatches(record.shellStartupHomeOverride)
+    }
+    return customHomeOverrideChanged(record.shellStartupHomeOverride.codexHome, args)
+  }
+  if (!record.environmentHomeOverride) {
+    return false
+  }
+  return customHomeOverrideChanged(record.environmentHomeOverride.codexHome, args)
+}
+
+function customHomeOverrideChanged(
+  recordedCodexHome: string,
+  args: {
+    activeHostCustomHomeOverride?: CustomCodexHomeOverrideForLaunch | null
+  }
+): boolean {
+  const currentOverride = Object.prototype.hasOwnProperty.call(args, 'activeHostCustomHomeOverride')
+    ? args.activeHostCustomHomeOverride
+    : getCustomCodexHomeOverrideForLaunch()
+  return (
+    !currentOverride ||
+    !environmentCodexHomeOverrideContextsEqual(
+      { codexHome: recordedCodexHome },
+      { codexHome: currentOverride.context.codexHome }
+    )
+  )
 }
 
 /**
