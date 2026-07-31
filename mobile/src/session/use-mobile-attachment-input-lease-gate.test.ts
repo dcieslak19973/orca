@@ -3,7 +3,9 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useMobileAttachmentInputLeaseGate } from './use-mobile-attachment-input-lease-gate'
 
-type Gate = (targetHandle: string) => Promise<boolean>
+type Gate = (targetHandle: string, sendBoundary: () => Promise<boolean>) => Promise<boolean>
+
+const sendBoundary = async (): Promise<boolean> => true
 
 describe('useMobileAttachmentInputLeaseGate', () => {
   let renderer: ReactTestRenderer | null = null
@@ -37,7 +39,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     let gate: Gate = () => Promise.resolve(false)
     function Probe(): null {
       gate = useMobileAttachmentInputLeaseGate({
-        flushPendingLiveInputBeforeExternalSend: () => Promise.resolve(true),
+        sendLiveInputExternalBoundary: (_handle, send) => send(),
         connStateRef: args.connState,
         activeHandleRef: args.activeHandle,
         activeSessionTabTypeRef: args.tabType,
@@ -71,7 +73,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     const showToast = vi.fn()
     const { gate } = renderGate({ ...refs, showToast })
 
-    await expect(gate()('terminal-1')).resolves.toBe(true)
+    await expect(gate()('terminal-1', sendBoundary)).resolves.toBe(true)
     expect(showToast).not.toHaveBeenCalled()
   })
 
@@ -81,7 +83,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     const showToast = vi.fn()
     const { gate } = renderGate({ ...refs, showToast })
 
-    const result = gate()('terminal-1')
+    const result = gate()('terminal-1', sendBoundary)
     await vi.advanceTimersByTimeAsync(200)
     refs.leaseReady.current = true
     await vi.advanceTimersByTimeAsync(100)
@@ -95,7 +97,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     const showToast = vi.fn()
     const { gate } = renderGate({ ...refs, showToast })
 
-    const result = gate()('terminal-1')
+    const result = gate()('terminal-1', sendBoundary)
     await vi.advanceTimersByTimeAsync(3200)
     await expect(result).resolves.toBe(false)
     expect(showToast).toHaveBeenCalledWith('Attach failed (reconnecting)', 1500)
@@ -107,7 +109,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     const showToast = vi.fn()
     const { gate } = renderGate({ ...refs, showToast })
 
-    const result = gate()('terminal-1')
+    const result = gate()('terminal-1', sendBoundary)
     // Mid-wait the user switches tabs: the lease recovers, but for a different
     // target — the attach must not proceed against the stale handle.
     await vi.advanceTimersByTimeAsync(200)
@@ -124,7 +126,7 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     const showToast = vi.fn()
     const { gate } = renderGate({ ...refs, showToast })
 
-    const result = gate()('terminal-1')
+    const result = gate()('terminal-1', sendBoundary)
     await vi.advanceTimersByTimeAsync(200)
     refs.connState.current = 'reconnecting'
     await vi.advanceTimersByTimeAsync(3200)

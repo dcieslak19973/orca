@@ -4,6 +4,7 @@ import {
   saveMobileClipboardImageAsTempFile
 } from './mobile-clipboard-image'
 import type { MobileImageSource, PickedMobileImage } from './mobile-image-source-picker'
+import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
 import { isTerminalSendRpcAccepted } from '../terminal/terminal-send-rpc-response'
 
 export type AttachMobileImageDeps = {
@@ -17,7 +18,7 @@ export type AttachMobileImageDeps = {
   // start — lets the UI show a sending spinner only for the transfer, not the
   // (potentially long) time the picker is open.
   readonly onUploadStart?: () => void
-  readonly beforeTerminalSend?: (terminal: string) => Promise<boolean>
+  readonly sendTerminalBoundary?: TerminalLiveInputBoundarySender
 }
 
 // Uploads a picked image to the host and pastes the resulting file path into the
@@ -33,7 +34,7 @@ export async function attachMobileImageToTerminal(
     getConnectionId,
     pickImage,
     onUploadStart,
-    beforeTerminalSend
+    sendTerminalBoundary
   }: AttachMobileImageDeps
 ): Promise<boolean> {
   const picked = await pickImage(source)
@@ -48,14 +49,14 @@ export async function attachMobileImageToTerminal(
   // Why: a generated image path is terminal image injection, so it's always
   // bracketed (matching desktop paste) regardless of terminal mode.
   const payload = buildMobileImagePastePayload(imagePath)
-  if (beforeTerminalSend && !(await beforeTerminalSend(terminal))) {
-    return false
+  const send = async (): Promise<boolean> => {
+    const response = await client.sendRequest('terminal.send', {
+      terminal,
+      text: payload,
+      enter: false,
+      ...(deviceToken ? { client: { id: deviceToken, type: 'mobile' as const } } : {})
+    })
+    return isTerminalSendRpcAccepted(response)
   }
-  const response = await client.sendRequest('terminal.send', {
-    terminal,
-    text: payload,
-    enter: false,
-    ...(deviceToken ? { client: { id: deviceToken, type: 'mobile' as const } } : {})
-  })
-  return isTerminalSendRpcAccepted(response)
+  return sendTerminalBoundary ? sendTerminalBoundary(terminal, send) : send()
 }

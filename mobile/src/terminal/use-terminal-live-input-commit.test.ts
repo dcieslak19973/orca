@@ -246,7 +246,7 @@ describe('terminal live input commit hook', () => {
     handlers.handleLiveInputChange('한')
 
     // When
-    const flushed = await handlers.flushPendingLiveInputBeforeExternalSend('terminal-a')
+    const flushed = await handlers.sendLiveInputExternalBoundary('terminal-a', async () => true)
 
     // Then
     expect(flushed).toBe(true)
@@ -259,11 +259,13 @@ describe('terminal live input commit hook', () => {
     handlers.handleLiveInputChange('한')
 
     // When
-    const flushed = await handlers.flushPendingLiveInputBeforeExternalSend('terminal-a')
+    const sendBoundary = vi.fn(async () => true)
+    const flushed = await handlers.sendLiveInputExternalBoundary('terminal-a', sendBoundary)
 
     // Then
     expect(flushed).toBe(false)
     expect(sent).toEqual(['한'])
+    expect(sendBoundary).not.toHaveBeenCalled()
   })
 
   it('Given non-Hangul IME text When changes arrive Then mirrors immediately without a settle window', async () => {
@@ -304,6 +306,20 @@ describe('terminal live input commit hook', () => {
 
     // Then: no stale 'つ' and no DEL repair — the base kana never left the app
     await vi.waitFor(() => expect(sent).toEqual(['っ', '\r']))
+  })
+
+  it('Given decomposed kana normalizes When submitted Then no provisional base or DEL reaches the terminal', async () => {
+    vi.useFakeTimers()
+    const { handlers, sent } = createTerminalLiveInputCommitHarness()
+    handlers.handleLiveInputChange('か')
+    handlers.handleLiveInputChange('か\u3099')
+    await vi.advanceTimersByTimeAsync(TERMINAL_LIVE_HELD_SYLLABLE_COMMIT_DELAY_MS * 10)
+    expect(sent).toEqual([])
+
+    handlers.handleLiveInputChange('が')
+    handlers.handleLiveInputSubmit()
+
+    await vi.waitFor(() => expect(sent).toEqual(['が', '\r']))
   })
 
   it('Given a held syllable When the hook unmounts Then cancels the settle timer', async () => {

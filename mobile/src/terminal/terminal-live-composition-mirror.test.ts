@@ -199,6 +199,40 @@ describe('terminal live kana composition mirror', () => {
     }
   )
 
+  it.each([
+    ['combining marks', ['は', 'は\u3099', 'は\u309a', 'は']],
+    ['spacing marks', ['は', 'は\u309b', 'は\u309c', 'は']],
+    ['halfwidth marks', ['ﾊ', 'ﾊﾞ', 'ﾊﾟ', 'ﾊ']]
+  ])('Given %s cycle When it settles Then no provisional base or DEL is sent', (_label, states) => {
+    const run = runMirrorSequence(states, { commitAtEnd: true })
+
+    expect(run.payloads).toEqual([states.at(-1)])
+    expect(run.sentText).toBe(states.at(-1))
+  })
+
+  it.each([
+    ['combining mark', ['は', 'は\u3099', 'は\u3099な'], 'は\u3099'],
+    ['spacing mark', ['は', 'は\u309b', 'は\u309bな'], 'は\u309b'],
+    ['halfwidth mark', ['ﾊ', 'ﾊﾞ', 'ﾊﾞﾅ'], 'ﾊﾞ']
+  ])(
+    'Given a %s cluster When the next kana arrives Then sends the complete stable cluster',
+    (_label, states, stableCluster) => {
+      const run = runMirrorSequence(states)
+
+      expect(run.payloads).toEqual([stableCluster])
+      expect(run.sentText).toBe(stableCluster)
+      expect(run.heldText).toBe(states.at(-1)?.at(-1))
+    }
+  )
+
+  it('Given a combining mark after ASCII When mirrored Then does not retract the sent ASCII', () => {
+    const run = runMirrorSequence(['a', 'a\u3099'])
+
+    expect(run.payloads).toEqual(['a'])
+    expect(run.sentText).toBe('a')
+    expect(run.heldText).toBe('\u3099')
+  })
+
   it('Given flick kana composition When syllables accumulate Then streams the stable prefix and holds the trailing kana', () => {
     // Given / When
     const run = runMirrorSequence(['こ', 'こん', 'こんに', 'こんにち', 'こんにちは'])

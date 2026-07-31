@@ -1,9 +1,10 @@
 import { useCallback } from 'react'
+import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
 
 type CurrentRef<T> = { readonly current: T }
 
 type AttachmentInputLeaseGateArgs = {
-  readonly flushPendingLiveInputBeforeExternalSend: (handle: string) => Promise<boolean>
+  readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
   readonly connStateRef: CurrentRef<string>
   readonly activeHandleRef: CurrentRef<string | null>
   readonly activeSessionTabTypeRef: CurrentRef<string | null>
@@ -16,26 +17,19 @@ type AttachmentInputLeaseGateArgs = {
 const LEASE_READY_POLL_MS = 100
 const LEASE_READY_TIMEOUT_MS = 3000
 
-/** Gates an image attachment's terminal.send on a ready input lease. Flushes any
- *  pending IME/live input, confirms the send still targets the connected terminal
- *  tab, then waits out a short lease-not-ready window so a finished upload isn't
- *  dropped as if the picker were cancelled. Returns false only when the lease
- *  never recovers — surfacing a toast, since the caller treats a bare false as a
- *  silent picker-cancel (no error path). */
+/** Waits for the terminal lease, then reserves the attachment behind live input. */
 export function useMobileAttachmentInputLeaseGate({
-  flushPendingLiveInputBeforeExternalSend,
+  sendLiveInputExternalBoundary,
   connStateRef,
   activeHandleRef,
   activeSessionTabTypeRef,
   nativeChatInputLeaseReadyRef,
   showToast
-}: AttachmentInputLeaseGateArgs): (targetHandle: string) => Promise<boolean> {
+}: AttachmentInputLeaseGateArgs): TerminalLiveInputBoundarySender {
   return useCallback(
-    async (targetHandle: string): Promise<boolean> => {
-      const flushedPendingInput = await flushPendingLiveInputBeforeExternalSend(targetHandle)
-      // Why: image picking/upload and IME flushing can outlive the original tab.
+    async (targetHandle, sendBoundary): Promise<boolean> => {
+      // Why: image picking/upload can outlive the original tab.
       if (
-        !flushedPendingInput ||
         connStateRef.current !== 'connected' ||
         targetHandle !== activeHandleRef.current ||
         activeSessionTabTypeRef.current !== 'terminal'
@@ -58,7 +52,7 @@ export function useMobileAttachmentInputLeaseGate({
         return false
       }
       if (nativeChatInputLeaseReadyRef.current) {
-        return true
+        return sendLiveInputExternalBoundary(targetHandle, sendBoundary)
       }
       showToast('Attach failed (reconnecting)', 1500)
       return false
@@ -67,8 +61,8 @@ export function useMobileAttachmentInputLeaseGate({
       activeHandleRef,
       activeSessionTabTypeRef,
       connStateRef,
-      flushPendingLiveInputBeforeExternalSend,
       nativeChatInputLeaseReadyRef,
+      sendLiveInputExternalBoundary,
       showToast
     ]
   )

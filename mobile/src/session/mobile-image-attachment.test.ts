@@ -131,7 +131,7 @@ describe('attachMobileImageToTerminal', () => {
     ])
     // Why: upload can outlive the stream subscription whose acknowledgement
     // originally enabled the composer.
-    const beforeTerminalSend = vi.fn(async () => false)
+    const sendTerminalBoundary = vi.fn(async () => false)
 
     const sent = await attachMobileImageToTerminal('library', {
       client,
@@ -139,11 +139,11 @@ describe('attachMobileImageToTerminal', () => {
       deviceToken: null,
       getConnectionId: async () => null,
       pickImage: vi.fn().mockResolvedValue({ base64: 'DDDD' }),
-      beforeTerminalSend
+      sendTerminalBoundary
     })
 
     expect(sent).toBe(false)
-    expect(beforeTerminalSend).toHaveBeenCalledWith('term-pending')
+    expect(sendTerminalBoundary).toHaveBeenCalledWith('term-pending', expect.any(Function))
     expect(client.calls.some((call) => call.method === 'terminal.send')).toBe(false)
   })
 

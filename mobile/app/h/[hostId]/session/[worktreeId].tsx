@@ -1048,11 +1048,11 @@ export default function SessionScreen() {
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
   const {
     clearPendingLiveInputCommit,
-    flushPendingLiveInputBeforeExternalSend,
     handleLiveInputAccessoryBytes,
     handleLiveInputChange,
     handleLiveInputKeyPress,
-    handleLiveInputSubmit
+    handleLiveInputSubmit,
+    sendLiveInputExternalBoundary
   } = useTerminalLiveInputCommit({
     activeHandle,
     activeHandleRef,
@@ -1209,11 +1209,9 @@ export default function SessionScreen() {
           return
         }
         void (async () => {
-          const flushedPendingInput = await flushPendingLiveInputBeforeExternalSend(insertHandle)
-          if (!flushedPendingInput) {
-            return
-          }
-          const sent = await sendLiveTerminalInput(insertHandle, route.text)
+          const sent = await sendLiveInputExternalBoundary(insertHandle, () =>
+            sendLiveTerminalInput(insertHandle, route.text)
+          )
           if (sent) {
             showToast('Dictation inserted')
           }
@@ -3643,7 +3641,7 @@ export default function SessionScreen() {
     connStateRef,
     clientRef,
     deviceTokenRef,
-    flushPendingLiveInputBeforeExternalSend,
+    sendLiveInputExternalBoundary,
     getActiveWorktreeConnectionId,
     onError: triggerError,
     onSuccess: triggerSelection,
@@ -3652,8 +3650,8 @@ export default function SessionScreen() {
     showToast
   })
 
-  const flushPendingLiveInputBeforeAttachmentSend = useMobileAttachmentInputLeaseGate({
-    flushPendingLiveInputBeforeExternalSend,
+  const sendLiveInputAttachmentBoundary = useMobileAttachmentInputLeaseGate({
+    sendLiveInputExternalBoundary,
     connStateRef,
     activeHandleRef,
     activeSessionTabTypeRef,
@@ -3673,7 +3671,7 @@ export default function SessionScreen() {
     nativeChatScopeKey,
     nativeChatInputLeaseReady,
     getActiveWorktreeConnectionId,
-    beforeTerminalSend: flushPendingLiveInputBeforeAttachmentSend,
+    sendTerminalBoundary: sendLiveInputAttachmentBoundary,
     nativeChatBaseSend: nativeChatController.handleNativeChatSendWithOutcome,
     showToast,
     onNativeChatSendError: nativeChatSendError.show,

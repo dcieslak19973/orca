@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { sendTerminalLiveControlAfterPendingFlush } from './terminal-live-control-send-order'
 import {
+  queueTerminalLiveBoundarySend,
   queueTerminalLiveMirrorSend,
   waitForTerminalLivePendingFlush,
   type TerminalLivePendingFlushState
@@ -63,6 +64,56 @@ describe('terminal live pending flush state', () => {
     // Then
     await expect(controlSend).resolves.toBe(false)
     expect(events).toEqual([])
+  })
+})
+
+describe('terminal live boundary send queue', () => {
+  it('reserves the boundary ahead of a later mirror generation', async () => {
+    const state: TerminalLivePendingFlushState = { current: null }
+    const order: string[] = []
+    let resolveCommit: (value: boolean) => void = () => {}
+    const commit = queueTerminalLiveMirrorSend(
+      state,
+      () =>
+        new Promise<boolean>((resolve) => {
+          order.push('commit')
+          resolveCommit = resolve
+        })
+    )
+
+    const boundary = queueTerminalLiveBoundarySend(state, async () => {
+      order.push('boundary')
+      return true
+    })
+    const nextMirror = queueTerminalLiveMirrorSend(state, async () => {
+      order.push('next')
+      return true
+    })
+    expect(order).toEqual(['commit'])
+
+    resolveCommit(true)
+    await expect(Promise.all([commit, boundary, nextMirror])).resolves.toEqual([true, true, true])
+    expect(order).toEqual(['commit', 'boundary', 'next'])
+  })
+
+  it('suppresses the boundary when the preceding mirror send fails', async () => {
+    const state: TerminalLivePendingFlushState = { current: null }
+    const sendBoundary = vi.fn(async () => true)
+    queueTerminalLiveMirrorSend(state, async () => false)
+
+    await expect(queueTerminalLiveBoundarySend(state, sendBoundary)).resolves.toBe(false)
+    expect(sendBoundary).not.toHaveBeenCalled()
+  })
+
+  it('propagates a boundary error while keeping later mirror sends usable', async () => {
+    const state: TerminalLivePendingFlushState = { current: null }
+    const boundary = queueTerminalLiveBoundarySend(state, async () => {
+      throw new Error('boundary failed')
+    })
+    const nextMirror = queueTerminalLiveMirrorSend(state, async () => true)
+
+    await expect(boundary).rejects.toThrow('boundary failed')
+    await expect(nextMirror).resolves.toBe(true)
   })
 })
 

@@ -2,6 +2,7 @@ import { useCallback, type RefObject } from 'react'
 import * as Clipboard from 'expo-clipboard'
 import { File as FsFile, Paths } from 'expo-file-system'
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator'
+import type { TerminalLiveInputBoundarySender } from '../terminal/terminal-live-input-sender'
 import type { TerminalModes } from '../terminal/terminal-webview-contract'
 import type { RpcClient } from '../transport/rpc-client'
 import type { ConnectionState } from '../transport/types'
@@ -79,7 +80,7 @@ type UseMobileTerminalPasteOptions = {
   readonly connState: ConnectionState
   readonly connStateRef: RefObject<ConnectionState>
   readonly deviceTokenRef: RefObject<string | null>
-  readonly flushPendingLiveInputBeforeExternalSend: (handle: string) => Promise<boolean>
+  readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
   readonly getActiveWorktreeConnectionId: () => Promise<string | null>
   readonly onError: () => void
   readonly onSuccess: () => void
@@ -98,7 +99,7 @@ export function useMobileTerminalPaste({
   connState,
   connStateRef,
   deviceTokenRef,
-  flushPendingLiveInputBeforeExternalSend,
+  sendLiveInputExternalBoundary,
   getActiveWorktreeConnectionId,
   onError,
   onSuccess,
@@ -142,27 +143,29 @@ export function useMobileTerminalPaste({
         return
       }
       // Why: paste lives in the accessory row and must not overtake pending IME text.
-      const flushedPendingInput = await flushPendingLiveInputBeforeExternalSend(targetHandle)
-      if (!flushedPendingInput) {
-        return
-      }
-      const currentClient = clientRef.current
-      if (
-        !currentClient ||
-        connStateRef.current !== 'connected' ||
-        targetHandle !== activeHandleRef.current ||
-        activeSessionTabTypeRef.current !== 'terminal'
-      ) {
-        return
-      }
-      await currentClient.sendRequest('terminal.send', {
-        terminal: targetHandle,
-        text: payload,
-        enter: false,
-        ...(deviceTokenRef.current
-          ? { client: { id: deviceTokenRef.current, type: 'mobile' as const } }
-          : {})
+      const sent = await sendLiveInputExternalBoundary(targetHandle, async () => {
+        const currentClient = clientRef.current
+        if (
+          !currentClient ||
+          connStateRef.current !== 'connected' ||
+          targetHandle !== activeHandleRef.current ||
+          activeSessionTabTypeRef.current !== 'terminal'
+        ) {
+          return false
+        }
+        await currentClient.sendRequest('terminal.send', {
+          terminal: targetHandle,
+          text: payload,
+          enter: false,
+          ...(deviceTokenRef.current
+            ? { client: { id: deviceTokenRef.current, type: 'mobile' as const } }
+            : {})
+        })
+        return true
       })
+      if (!sent) {
+        return
+      }
       onSuccess()
       refreshCanPaste()
     } catch (e) {
@@ -189,12 +192,12 @@ export function useMobileTerminalPaste({
     connState,
     connStateRef,
     deviceTokenRef,
-    flushPendingLiveInputBeforeExternalSend,
     getActiveWorktreeConnectionId,
     onError,
     onSuccess,
     ptyModesRef,
     refreshCanPaste,
+    sendLiveInputExternalBoundary,
     showToast
   ])
 }

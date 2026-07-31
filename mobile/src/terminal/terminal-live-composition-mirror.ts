@@ -22,6 +22,12 @@ export function isTerminalLiveKanaCodePoint(codePoint: number): boolean {
   )
 }
 
+function isTerminalLiveKanaModifierCodePoint(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x3099 && codePoint <= 0x309c) || (codePoint >= 0xff9e && codePoint <= 0xff9f)
+  )
+}
+
 // 'timer' may commit on a settle delay; 'boundary' commits only on a later
 // keystroke or an explicit flush, so its outcome never depends on timing.
 export type TerminalLiveHeldCommitPolicy = 'none' | 'boundary' | 'timer'
@@ -48,10 +54,30 @@ export type TerminalLiveMirrorStep = {
   readonly heldCommitPolicy: TerminalLiveHeldCommitPolicy
 }
 
-// Why: React Native exposes no composition events, but Hangul and kana
-// composition only mutate the trailing code point. Holding just that one keeps
-// the PTY echo live while preedit never leaks; DEL corrections repair any commit
-// that later turns out to be premature.
+function getTerminalLiveHeldSuffixLength(
+  fieldCodePoints: readonly string[],
+  heldCommitPolicy: TerminalLiveHeldCommitPolicy
+): number {
+  if (heldCommitPolicy === 'none') {
+    return 0
+  }
+  const lastCodePoint = fieldCodePoints.at(-1)?.codePointAt(0)
+  const precedingCodePoint = fieldCodePoints.at(-2)?.codePointAt(0)
+  if (
+    heldCommitPolicy === 'boundary' &&
+    lastCodePoint !== undefined &&
+    precedingCodePoint !== undefined &&
+    isTerminalLiveKanaModifierCodePoint(lastCodePoint) &&
+    isTerminalLiveKanaCodePoint(precedingCodePoint) &&
+    !isTerminalLiveKanaModifierCodePoint(precedingCodePoint)
+  ) {
+    return 2
+  }
+  return 1
+}
+
+// Why: React Native exposes no composition events, but Hangul and kana mutate
+// only the trailing cluster. Holding it keeps provisional bytes off the PTY.
 export function computeTerminalLiveMirrorStep(
   sentText: string,
   fieldText: string,
@@ -63,9 +89,10 @@ export function computeTerminalLiveMirrorStep(
     options.commitHeld || lastCodePoint === undefined
       ? 'none'
       : getTerminalLiveHeldCommitPolicy(lastCodePoint.codePointAt(0) ?? 0)
-  const holdLast = heldCommitPolicy !== 'none'
-  const heldText = holdLast && lastCodePoint !== undefined ? lastCodePoint : ''
-  const targetCodePoints = holdLast ? fieldCodePoints.slice(0, -1) : fieldCodePoints
+  const heldSuffixLength = getTerminalLiveHeldSuffixLength(fieldCodePoints, heldCommitPolicy)
+  const heldText = heldSuffixLength > 0 ? fieldCodePoints.slice(-heldSuffixLength).join('') : ''
+  const targetCodePoints =
+    heldSuffixLength > 0 ? fieldCodePoints.slice(0, -heldSuffixLength) : fieldCodePoints
   const sentCodePoints = Array.from(sentText)
 
   let commonPrefixLength = 0

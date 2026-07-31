@@ -7,6 +7,7 @@ import {
   TERMINAL_LIVE_HELD_SYLLABLE_COMMIT_DELAY_MS
 } from './terminal-live-composition-mirror'
 import {
+  queueTerminalLiveBoundarySend,
   queueTerminalLiveMirrorSend,
   waitForTerminalLivePendingFlush
 } from './terminal-live-pending-flush-state'
@@ -23,9 +24,12 @@ type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
 type TerminalLivePendingInputFlush = {
   readonly applyLiveInputMirror: (handle: string, fieldText: string) => void
   readonly clearPendingLiveInputCommit: () => void
-  readonly flushPendingLiveInputText: (expectedHandle: string | null) => Promise<boolean>
   readonly heldLiveInputTextRef: RefObject<string>
   readonly pendingLiveInputHandleRef: RefObject<string | null>
+  readonly runLiveInputBoundary: (
+    expectedHandle: string | null,
+    sendBoundary: () => Promise<boolean>
+  ) => Promise<boolean>
   readonly sentLiveInputTextRef: RefObject<string>
   readonly waitForPendingLiveInputFlush: () => Promise<boolean>
 }
@@ -133,29 +137,42 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
     [runMirrorStep]
   )
 
-  const flushPendingLiveInputText = useCallback(
-    async (expectedHandle: string | null): Promise<boolean> => {
+  const runLiveInputBoundary = useCallback(
+    (expectedHandle: string | null, sendBoundary: () => Promise<boolean>): Promise<boolean> => {
       const handle = pendingLiveInputHandleRef.current
       if (!handle) {
-        return waitForPendingLiveInputFlush()
+        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
       }
       if (expectedHandle !== null && handle !== expectedHandle) {
         clearPendingLiveInputCommit()
-        return waitForPendingLiveInputFlush()
+        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
+      }
+      if (
+        handle !== activeHandleRef.current ||
+        (activeSessionTabTypeRef.current != null &&
+          activeSessionTabTypeRef.current !== 'terminal') ||
+        !liveInputTerminalHandlesRef.current.has(handle)
+      ) {
+        clearPendingLiveInputCommit()
+        return queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, async () => false)
       }
 
-      const heldText = heldLiveInputTextRef.current
-      const result =
-        heldText.length > 0
-          ? await runMirrorStep(handle, sentLiveInputTextRef.current + heldText, true)
-          : await waitForPendingLiveInputFlush()
-
-      // Why: an explicit flush ends the field's editing session; the echoed PTY
-      // text stays, so local mirror state must restart from empty.
+      const heldField = sentLiveInputTextRef.current + heldLiveInputTextRef.current
+      if (heldLiveInputTextRef.current.length > 0) {
+        void runMirrorStep(handle, heldField, true)
+      }
+      const boundaryPromise = queueTerminalLiveBoundarySend(pendingLiveInputFlushRef, sendBoundary)
+      // Why: reserve the old field's boundary before a new generation can queue.
       clearPendingLiveInputCommit()
-      return result
+      return boundaryPromise
     },
-    [clearPendingLiveInputCommit, runMirrorStep, waitForPendingLiveInputFlush]
+    [
+      activeHandleRef,
+      activeSessionTabTypeRef,
+      clearPendingLiveInputCommit,
+      liveInputTerminalHandlesRef,
+      runMirrorStep
+    ]
   )
 
   useEffect(() => {
@@ -174,9 +191,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   return {
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
-    flushPendingLiveInputText,
     heldLiveInputTextRef,
     pendingLiveInputHandleRef,
+    runLiveInputBoundary,
     sentLiveInputTextRef,
     waitForPendingLiveInputFlush
   }

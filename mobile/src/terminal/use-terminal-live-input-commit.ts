@@ -1,9 +1,11 @@
 import { useCallback, useEffect, type RefObject } from 'react'
 import type { TextInput } from 'react-native'
 import { getTerminalLiveSpecialKeyDecision } from './terminal-live-text-commit'
-import { sendTerminalLiveControlAfterPendingFlush } from './terminal-live-control-send-order'
 import type { TerminalLiveAccessoryInput } from './terminal-live-accessory-input'
-import type { TerminalLiveInputSender } from './terminal-live-input-sender'
+import type {
+  TerminalLiveInputBoundarySender,
+  TerminalLiveInputSender
+} from './terminal-live-input-sender'
 import { normalizeTerminalTextInput } from './terminal-text-input-normalization'
 import { useTerminalLivePendingInputFlush } from './use-terminal-live-pending-input-flush'
 import {
@@ -31,13 +33,13 @@ type TerminalLiveInputCommitOptions<TTabType extends string> = {
 
 type TerminalLiveInputCommitHandlers = {
   readonly clearPendingLiveInputCommit: () => void
-  readonly flushPendingLiveInputBeforeExternalSend: (handle: string) => Promise<boolean>
   readonly handleLiveInputAccessoryBytes: (
     input: TerminalLiveAccessoryInput
   ) => Promise<TerminalLiveAccessoryInputCommitResult>
   readonly handleLiveInputChange: (text: string) => void
   readonly handleLiveInputKeyPress: (event: TerminalLiveInputKeyPressEvent) => void
   readonly handleLiveInputSubmit: () => void
+  readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
 }
 
 export function useTerminalLiveInputCommit<TTabType extends string>({
@@ -54,9 +56,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   const {
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
-    flushPendingLiveInputText,
     heldLiveInputTextRef,
     pendingLiveInputHandleRef,
+    runLiveInputBoundary,
     sentLiveInputTextRef,
     waitForPendingLiveInputFlush
   } = useTerminalLivePendingInputFlush({
@@ -86,21 +88,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     }
   }, [activeHandle, activeSessionTabType, clearPendingLiveInputCommit, liveInputTerminalHandles])
 
-  const flushPendingLiveInputBeforeExternalSend = useCallback(
-    async (handle: string): Promise<boolean> => {
-      const pendingHandle = pendingLiveInputHandleRef.current
-      if (pendingHandle && pendingHandle !== handle) {
-        clearPendingLiveInputCommit()
-        return waitForPendingLiveInputFlush()
-      }
-      // Why: external bytes (dictation/paste) land after the field's echo on the
-      // PTY; the field session must fully end or later diffs would erase them.
-      if (pendingHandle === handle) {
-        return flushPendingLiveInputText(handle)
-      }
-      return waitForPendingLiveInputFlush()
-    },
-    [clearPendingLiveInputCommit, flushPendingLiveInputText, waitForPendingLiveInputFlush]
+  const sendLiveInputExternalBoundary = useCallback<TerminalLiveInputBoundarySender>(
+    (handle, sendBoundary) => runLiveInputBoundary(handle, sendBoundary),
+    [runLiveInputBoundary]
   )
 
   const handleLiveInputChange = useCallback(
@@ -143,14 +133,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
         case 'local-edit':
           return
         case 'send-now':
-          void sendTerminalLiveControlAfterPendingFlush(waitForPendingLiveInputFlush, () =>
-            sendLiveTerminalInputRef.current(activeHandle, decision.bytes)
-          )
-          return
         case 'commit-held-then-send':
-          void sendTerminalLiveControlAfterPendingFlush(
-            () => flushPendingLiveInputText(activeHandle),
-            () => sendLiveTerminalInputRef.current(activeHandle, decision.bytes)
+          void runLiveInputBoundary(activeHandle, () =>
+            sendLiveTerminalInputRef.current(activeHandle, decision.bytes)
           )
           return
         default:
@@ -160,10 +145,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     [
       activeHandle,
       clearPendingLiveInputCommit,
-      flushPendingLiveInputText,
       liveInputTerminalHandles,
-      sendLiveTerminalInputRef,
-      waitForPendingLiveInputFlush
+      runLiveInputBoundary,
+      sendLiveTerminalInputRef
     ]
   )
 
@@ -171,11 +155,11 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     activeHandle,
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
-    flushPendingLiveInputText,
     heldLiveInputTextRef,
     liveInputRef,
     liveInputTerminalHandles,
     pendingLiveInputHandleRef,
+    runLiveInputBoundary,
     sentLiveInputTextRef,
     sendLiveTerminalInputRef,
     setLiveInputCapture,
@@ -186,18 +170,17 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     if (!activeHandle || !liveInputTerminalHandles.has(activeHandle)) {
       return
     }
-    void sendTerminalLiveControlAfterPendingFlush(
-      () => flushPendingLiveInputText(activeHandle),
-      () => sendLiveTerminalInputRef.current(activeHandle, '\r')
+    void runLiveInputBoundary(activeHandle, () =>
+      sendLiveTerminalInputRef.current(activeHandle, '\r')
     )
-  }, [activeHandle, flushPendingLiveInputText, liveInputTerminalHandles, sendLiveTerminalInputRef])
+  }, [activeHandle, liveInputTerminalHandles, runLiveInputBoundary, sendLiveTerminalInputRef])
 
   return {
     clearPendingLiveInputCommit,
-    flushPendingLiveInputBeforeExternalSend,
     handleLiveInputAccessoryBytes,
     handleLiveInputChange,
     handleLiveInputKeyPress,
-    handleLiveInputSubmit
+    handleLiveInputSubmit,
+    sendLiveInputExternalBoundary
   }
 }

@@ -31,3 +31,24 @@ export function queueTerminalLiveMirrorSend(
   })
   return sendPromise
 }
+
+export function queueTerminalLiveBoundarySend(
+  state: TerminalLivePendingFlushState,
+  sendBoundary: () => Promise<boolean>
+): Promise<boolean> {
+  const previousSend = state.current
+  const boundaryResult = (async () => {
+    if (previousSend && !(await previousSend.catch(() => false))) {
+      return false
+    }
+    return sendBoundary()
+  })()
+  const trackedBoundary = boundaryResult.catch(() => false)
+  state.current = trackedBoundary
+  void trackedBoundary.then(() => {
+    if (state.current === trackedBoundary) {
+      state.current = null
+    }
+  })
+  return boundaryResult
+}

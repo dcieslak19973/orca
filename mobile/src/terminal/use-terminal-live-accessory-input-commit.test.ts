@@ -52,7 +52,7 @@ type AccessoryInputCommitHarness = {
   ) => Promise<TerminalLiveAccessoryInputCommitResult>
   readonly sent: readonly string[]
   readonly applyLiveInputMirror: ReturnType<typeof vi.fn>
-  readonly flushPendingLiveInputText: ReturnType<typeof vi.fn>
+  readonly runLiveInputBoundary: ReturnType<typeof vi.fn>
   readonly waitForPendingLiveInputFlush: ReturnType<typeof vi.fn>
   readonly unmount: () => void
 }
@@ -80,7 +80,10 @@ function createAccessoryInputCommitHarness({
   }
   const applyLiveInputMirror = vi.fn((_handle: string, _fieldText: string) => {})
   const clearPendingLiveInputCommit = vi.fn(() => {})
-  const flushPendingLiveInputText = vi.fn(async (_expectedHandle: string | null) => flushResult)
+  const runLiveInputBoundary = vi.fn(
+    async (_expectedHandle: string, sendBoundary: () => Promise<boolean>) =>
+      flushResult ? sendBoundary() : false
+  )
   const waitForPendingLiveInputFlush = vi.fn(async () => waitResult)
   const setLiveInputCapture = vi.fn((_text: string) => {})
 
@@ -92,11 +95,11 @@ function createAccessoryInputCommitHarness({
       activeHandle,
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
-      flushPendingLiveInputText,
       heldLiveInputTextRef,
       liveInputRef,
       liveInputTerminalHandles,
       pendingLiveInputHandleRef,
+      runLiveInputBoundary,
       sentLiveInputTextRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture,
@@ -121,7 +124,7 @@ function createAccessoryInputCommitHarness({
     commit,
     sent,
     applyLiveInputMirror,
-    flushPendingLiveInputText,
+    runLiveInputBoundary,
     waitForPendingLiveInputFlush,
     unmount: () => {
       act(() => renderer?.unmount())
@@ -177,12 +180,12 @@ describe('terminal live accessory input commit hook', () => {
     const result = await harness.commit({ bytes: '\x1b' })
 
     // Then
-    expect(harness.flushPendingLiveInputText).toHaveBeenCalledWith('terminal-a')
+    expect(harness.runLiveInputBoundary).toHaveBeenCalledWith('terminal-a', expect.any(Function))
     expect(harness.sent).toEqual(['\x1b'])
     expect(result).toEqual({ kind: 'handled' })
   })
 
-  it('Given raw accessory bytes with no held text When committed Then allows the raw send without flushing', async () => {
+  it('Given raw accessory bytes with no held text When committed Then reserves and handles the send', async () => {
     // Given
     const harness = createAccessoryInputCommitHarness({ pendingHandle: null })
 
@@ -190,9 +193,9 @@ describe('terminal live accessory input commit hook', () => {
     const result = await harness.commit({ bytes: '\x1b' })
 
     // Then
-    expect(result).toEqual({ kind: 'allow-raw' })
-    expect(harness.flushPendingLiveInputText).not.toHaveBeenCalled()
-    expect(harness.sent).toEqual([])
+    expect(result).toEqual({ kind: 'handled' })
+    expect(harness.runLiveInputBoundary).toHaveBeenCalledWith('terminal-a', expect.any(Function))
+    expect(harness.sent).toEqual(['\x1b'])
   })
 
   it('Given accessory backspace with a held syllable When committed Then mirrors the emptied field without terminal bytes', async () => {

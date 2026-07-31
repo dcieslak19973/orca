@@ -5,8 +5,10 @@ import {
   getTerminalLiveAccessoryLocalEditText
 } from './terminal-live-text-commit'
 import type { TerminalLiveAccessoryInput } from './terminal-live-accessory-input'
-import { sendTerminalLiveControlAfterPendingFlush } from './terminal-live-control-send-order'
-import type { TerminalLiveInputSender } from './terminal-live-input-sender'
+import type {
+  TerminalLiveInputBoundarySender,
+  TerminalLiveInputSender
+} from './terminal-live-input-sender'
 
 export type TerminalLiveAccessoryInputCommitResult =
   | { readonly kind: 'allow-raw' }
@@ -23,11 +25,11 @@ type TerminalLiveAccessoryInputCommitOptions = {
   readonly activeHandle: string | null
   readonly applyLiveInputMirror: (handle: string, fieldText: string) => void
   readonly clearPendingLiveInputCommit: () => void
-  readonly flushPendingLiveInputText: (expectedHandle: string | null) => Promise<boolean>
   readonly heldLiveInputTextRef: RefObject<string>
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputTerminalHandles: ReadonlySet<string>
   readonly pendingLiveInputHandleRef: RefObject<string | null>
+  readonly runLiveInputBoundary: TerminalLiveInputBoundarySender
   readonly sentLiveInputTextRef: RefObject<string>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
   readonly setLiveInputCapture: (text: string) => void
@@ -38,11 +40,11 @@ export function useTerminalLiveAccessoryInputCommit({
   activeHandle,
   applyLiveInputMirror,
   clearPendingLiveInputCommit,
-  flushPendingLiveInputText,
   heldLiveInputTextRef,
   liveInputRef,
   liveInputTerminalHandles,
   pendingLiveInputHandleRef,
+  runLiveInputBoundary,
   sentLiveInputTextRef,
   sendLiveTerminalInputRef,
   setLiveInputCapture,
@@ -67,11 +69,11 @@ export function useTerminalLiveAccessoryInputCommit({
       const decision = getTerminalLiveAccessoryBytesDecision({ ...input, heldText, sentText })
       switch (decision.kind) {
         case 'send-now':
-          // Why: raw accessory bytes must wait behind any in-flight mirror send
-          // so composed Hangul reaches the PTY before follow-up controls.
-          return (await waitForPendingLiveInputFlush())
-            ? { kind: 'allow-raw' }
-            : { kind: 'suppress-raw' }
+        case 'commit-held-then-send':
+          await runLiveInputBoundary(activeHandle, () =>
+            sendLiveTerminalInputRef.current(activeHandle, decision.bytes)
+          )
+          return { kind: 'handled' }
         case 'local-edit': {
           const editedText = getTerminalLiveAccessoryLocalEditText({
             localEdit: decision.localEdit,
@@ -84,12 +86,6 @@ export function useTerminalLiveAccessoryInputCommit({
           applyLiveInputMirror(activeHandle, editedText)
           return { kind: 'handled' }
         }
-        case 'commit-held-then-send':
-          await sendTerminalLiveControlAfterPendingFlush(
-            () => flushPendingLiveInputText(activeHandle),
-            () => sendLiveTerminalInputRef.current(activeHandle, decision.bytes)
-          )
-          return { kind: 'handled' }
         default:
           decision satisfies never
           return { kind: 'handled' }
@@ -99,11 +95,11 @@ export function useTerminalLiveAccessoryInputCommit({
       activeHandle,
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
-      flushPendingLiveInputText,
       heldLiveInputTextRef,
       liveInputRef,
       liveInputTerminalHandles,
       pendingLiveInputHandleRef,
+      runLiveInputBoundary,
       sentLiveInputTextRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture,
