@@ -38,7 +38,10 @@ import {
   useForceReconnect
 } from '../../../src/transport/client-context'
 import { useWorktreeResync } from '../../../src/transport/use-worktree-resync'
-import { startHostWorktreeRefresh } from '../../../src/worktree/host-worktree-refresh'
+import {
+  HostWorktreeRequestGate,
+  startHostWorktreeRefresh
+} from '../../../src/worktree/host-worktree-refresh'
 import {
   useLastConnectedAt,
   useReconnectAttempt
@@ -140,7 +143,7 @@ export function HostScreen({
   const reconnectAttempts = useReconnectAttempt(hostId)
   const lastConnectedAt = useLastConnectedAt(hostId)
   const clientRef = useRef<RpcClient | null>(null)
-  const fetchWorktreesInFlightRef = useRef(false)
+  const fetchWorktreeRequestGateRef = useRef(new HostWorktreeRequestGate())
   const fetchRepoMetadataInFlightRef = useRef(new WeakSet<RpcClient>())
   const fetchRepoMetadataPendingRef = useRef(new WeakSet<RpcClient>())
   const repoMetadataFetchedAtRef = useRef(0)
@@ -407,7 +410,7 @@ export function HostScreen({
   )
 
   const fetchWorktrees = useCallback(
-    async (options: { allowDuringModal?: boolean } = {}) => {
+    async (options: { allowDuringModal?: boolean; queueIfInFlight?: boolean } = {}) => {
       if (!client || connState !== 'connected') {
         return
       }
@@ -415,10 +418,9 @@ export function HostScreen({
         return
       }
       // Why: prevent slow remote hosts from stacking overlapping worktree.ps requests during polling.
-      if (fetchWorktreesInFlightRef.current) {
+      if (!fetchWorktreeRequestGateRef.current.begin(client, options.queueIfInFlight === true)) {
         return
       }
-      fetchWorktreesInFlightRef.current = true
       const requestClient = client
       const requestHostId = hostId
 
@@ -431,7 +433,8 @@ export function HostScreen({
         if (!options.allowDuringModal && newWorktreeModalVisibleRef.current) {
           return
         }
-        if (response.ok) {
+        // Why: a mutation-triggered follow-up owns a newer generation than this response.
+        if (response.ok && !fetchWorktreeRequestGateRef.current.isSuperseded(requestClient)) {
           const result = (response as RpcSuccess).result as { worktrees: Worktree[] }
           // Why: reuse the existing array on identical snapshots to keep SectionList/sort rebuilds off the tap path.
           setWorktrees((current) =>
@@ -484,7 +487,10 @@ export function HostScreen({
       } catch {
         // Will retry on reconnect
       } finally {
-        fetchWorktreesInFlightRef.current = false
+        const refreshQueued = fetchWorktreeRequestGateRef.current.finish(requestClient)
+        if (refreshQueued && clientRef.current === requestClient && hostId === requestHostId) {
+          void fetchWorktrees({ allowDuringModal: true, queueIfInFlight: true })
+        }
       }
     },
     [client, connState, hostId]

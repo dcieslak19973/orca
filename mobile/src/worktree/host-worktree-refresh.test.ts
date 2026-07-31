@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcClient } from '../transport/rpc-client'
-import { startHostWorktreeRefresh } from './host-worktree-refresh'
+import { HostWorktreeRequestGate, startHostWorktreeRefresh } from './host-worktree-refresh'
 
 const appState = vi.hoisted(() => ({
   currentState: 'active',
@@ -77,7 +77,10 @@ describe('startHostWorktreeRefresh', () => {
     appState.currentState = 'active'
     appState.listener?.('active')
 
-    expect(fetchWorktrees).toHaveBeenCalledWith({ allowDuringModal: true })
+    expect(fetchWorktrees).toHaveBeenCalledWith({
+      allowDuringModal: true,
+      queueIfInFlight: true
+    })
     expect(fetchRepoMetadata).toHaveBeenCalledWith({ queueIfInFlight: true })
   })
 
@@ -109,6 +112,10 @@ describe('startHostWorktreeRefresh', () => {
     eventListener?.({ type: 'reposChanged' })
 
     expect(fetchWorktrees).toHaveBeenCalledOnce()
+    expect(fetchWorktrees).toHaveBeenCalledWith({
+      allowDuringModal: true,
+      queueIfInFlight: true
+    })
     expect(fetchRepoMetadata).toHaveBeenCalledOnce()
     expect(fetchRepoMetadata).toHaveBeenCalledWith({ force: true, queueIfInFlight: true })
   })
@@ -120,10 +127,32 @@ describe('startHostWorktreeRefresh', () => {
 
     eventListener?.({ type: 'worktreesChanged', repoId: 'repo-1' })
     expect(fetchWorktrees).toHaveBeenCalledTimes(1)
+    expect(fetchWorktrees).toHaveBeenLastCalledWith({ queueIfInFlight: true })
 
     eventListener?.({ type: 'ready', subscriptionId: 'events-1' })
     eventListener?.({ type: 'ready', subscriptionId: 'events-2' })
     expect(fetchWorktrees).toHaveBeenCalledTimes(2)
+    expect(fetchWorktrees).toHaveBeenLastCalledWith({ queueIfInFlight: true })
     expect(fetchRepoMetadata).toHaveBeenCalledWith({ force: true, queueIfInFlight: true })
+  })
+})
+
+describe('HostWorktreeRequestGate', () => {
+  it('coalesces a trailing refresh without sharing state across hosts', () => {
+    const gate = new HostWorktreeRequestGate()
+    const firstClient = {} as RpcClient
+    const secondClient = {} as RpcClient
+
+    expect(gate.begin(firstClient, false)).toBe(true)
+    expect(gate.begin(firstClient, false)).toBe(false)
+    expect(gate.isSuperseded(firstClient)).toBe(false)
+
+    expect(gate.begin(firstClient, true)).toBe(false)
+    expect(gate.isSuperseded(firstClient)).toBe(true)
+    expect(gate.begin(secondClient, false)).toBe(true)
+
+    expect(gate.finish(secondClient)).toBe(false)
+    expect(gate.finish(firstClient)).toBe(true)
+    expect(gate.begin(firstClient, false)).toBe(true)
   })
 })

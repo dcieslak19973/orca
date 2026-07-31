@@ -4,13 +4,39 @@ import type { RpcClient } from '../transport/rpc-client'
 
 const WORKTREE_REFRESH_MS = 3000
 
-type WorktreeRefreshOptions = { allowDuringModal?: boolean }
+type WorktreeRefreshOptions = { allowDuringModal?: boolean; queueIfInFlight?: boolean }
 type RepoRefreshOptions = { force?: boolean; queueIfInFlight?: boolean }
 
 type HostWorktreeRefreshArgs = {
   client: RpcClient
   fetchWorktrees: (options?: WorktreeRefreshOptions) => Promise<void>
   fetchRepoMetadata: (options?: RepoRefreshOptions) => Promise<void>
+}
+
+export class HostWorktreeRequestGate {
+  private readonly inFlight = new WeakSet<RpcClient>()
+  private readonly pending = new WeakSet<RpcClient>()
+
+  begin(client: RpcClient, queueIfInFlight: boolean): boolean {
+    if (this.inFlight.has(client)) {
+      if (queueIfInFlight) {
+        this.pending.add(client)
+      }
+      return false
+    }
+    this.inFlight.add(client)
+    return true
+  }
+
+  isSuperseded(client: RpcClient): boolean {
+    return this.pending.has(client)
+  }
+
+  finish(client: RpcClient): boolean {
+    const refreshQueued = this.pending.delete(client)
+    this.inFlight.delete(client)
+    return refreshQueued
+  }
 }
 
 export function startHostWorktreeRefresh({
@@ -25,7 +51,7 @@ export function startHostWorktreeRefresh({
     if (AppState.currentState !== 'active') {
       return
     }
-    void fetchWorktrees({ allowDuringModal: true })
+    void fetchWorktrees({ allowDuringModal: true, queueIfInFlight: true })
     void fetchRepoMetadata({ queueIfInFlight: true })
   }
 
@@ -59,7 +85,7 @@ export function startHostWorktreeRefresh({
         eventStreamReady = true
         if (replayedAfterReconnect) {
           // Why: client events are not queued while disconnected, so re-read both snapshots after replay.
-          void fetchWorktrees()
+          void fetchWorktrees({ queueIfInFlight: true })
           void fetchRepoMetadata({ force: true, queueIfInFlight: true })
         }
         return
@@ -70,10 +96,10 @@ export function startHostWorktreeRefresh({
       }
       if (event.type === 'reposChanged') {
         // Why: folder workspace mutations publish reposChanged, and worktree.ps owns this catalog.
-        void fetchWorktrees()
+        void fetchWorktrees({ allowDuringModal: true, queueIfInFlight: true })
         void fetchRepoMetadata({ force: true, queueIfInFlight: true })
       } else if (event.type === 'worktreesChanged') {
-        void fetchWorktrees()
+        void fetchWorktrees({ queueIfInFlight: true })
       }
     }
   )
