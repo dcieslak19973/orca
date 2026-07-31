@@ -195,4 +195,40 @@ describe('useMobileAttachmentInputLeaseGate', () => {
     expect(sendBoundary).not.toHaveBeenCalled()
     expect(showToast).not.toHaveBeenCalled()
   })
+
+  it('revalidates the route scope when a queued attachment boundary executes', async () => {
+    const refs = baseRefs()
+    const inputScopeRef = { current: 'host-a\0worktree-a' }
+    let runQueuedBoundary = async (): Promise<boolean> => {
+      throw new Error('attachment boundary was not queued')
+    }
+    let resolveQueuedResult: (value: boolean) => void = () => {
+      throw new Error('attachment boundary result was not initialized')
+    }
+    const queuedResult = new Promise<boolean>((resolve) => {
+      resolveQueuedResult = resolve
+    })
+    const sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender = (_handle, send) => {
+      runQueuedBoundary = async () => {
+        const result = await send()
+        resolveQueuedResult(result)
+        return result
+      }
+      return queuedResult
+    }
+    const { gate } = renderGate({
+      ...refs,
+      inputScopeRef,
+      showToast: vi.fn(),
+      sendLiveInputExternalBoundary
+    })
+    const sendBoundary = vi.fn(async () => true)
+
+    const result = gate()('terminal-1', sendBoundary)
+    inputScopeRef.current = 'host-a\0worktree-b'
+
+    await expect(runQueuedBoundary()).resolves.toBe(false)
+    await expect(result).resolves.toBe(false)
+    expect(sendBoundary).not.toHaveBeenCalled()
+  })
 })

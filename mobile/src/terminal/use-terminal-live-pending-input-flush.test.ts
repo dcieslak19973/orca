@@ -5,6 +5,9 @@ import { expect, it, vi } from 'vitest'
 import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import { useTerminalLivePendingInputFlush } from './use-terminal-live-pending-input-flush'
 
+const LIVE_INPUT_GENERATION = Symbol('live-input-generation')
+const LIVE_INPUT_PRODUCER_GENERATION = Symbol('live-input-producer-generation')
+
 type DeferredBoolean = {
   readonly promise: Promise<boolean>
   readonly resolve: (value: boolean) => void
@@ -58,8 +61,8 @@ it('reserves a slow kana boundary before a newer live-input generation', async (
       activeHandleRef,
       activeSessionTabTypeRef,
       liveInputRef,
-      liveInputOwner: activeHandle,
-      liveInputScope: 'host-a\0worktree-a',
+      liveInputGeneration: LIVE_INPUT_GENERATION,
+      liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -119,8 +122,8 @@ it('preserves new kana when an old terminal boundary arrives late', async () => 
       activeHandleRef,
       activeSessionTabTypeRef,
       liveInputRef,
-      liveInputOwner: 'terminal-b',
-      liveInputScope: 'host-a\0worktree-a',
+      liveInputGeneration: LIVE_INPUT_GENERATION,
+      liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -179,8 +182,8 @@ it('cancels queued terminal sends when the hook unmounts', async () => {
       activeHandleRef,
       activeSessionTabTypeRef,
       liveInputRef,
-      liveInputOwner: activeHandle,
-      liveInputScope: 'host-a\0worktree-a',
+      liveInputGeneration: LIVE_INPUT_GENERATION,
+      liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined
@@ -240,8 +243,8 @@ it('cancels queued terminal boundaries when the connection drops', async () => {
       activeHandleRef,
       activeSessionTabTypeRef,
       liveInputRef,
-      liveInputOwner: activeHandle,
-      liveInputScope: 'host-a\0worktree-a',
+      liveInputGeneration: LIVE_INPUT_GENERATION,
+      liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined

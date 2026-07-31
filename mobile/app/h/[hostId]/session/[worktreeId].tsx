@@ -94,6 +94,7 @@ import { MOBILE_AI_VAULT_CAPABILITY } from '../../../../src/agent-history/agent-
 import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import { headlessActivationNeedsHostRenderer } from '../../../../src/worktree/worktree-activation-result'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
+import { useMobileDictationRouteContext } from '../../../../src/session/mobile-dictation-route-context'
 import {
   triggerMediumImpact,
   triggerSelection,
@@ -1022,10 +1023,6 @@ export default function SessionScreen() {
     typeof Keyboard.addListener
   > | null>(null)
   const sessionTabActionSheetRequestSeqRef = useRef(0)
-  const dictationRouteContextRef = useRef<{
-    readonly handle: string | null
-    readonly liveInputEnabled: boolean
-  } | null>(null)
   const terminalUnsubsRef = useRef<Map<string, () => void>>(new Map())
   const subscribingHandlesRef = useRef<Set<string>>(new Set())
   const initializedHandlesRef = useRef<Set<string>>(new Set())
@@ -1066,6 +1063,7 @@ export default function SessionScreen() {
     handleLiveInputChange,
     handleLiveInputKeyPress,
     handleLiveInputSubmit,
+    liveInputProducerGeneration,
     sendLiveInputExternalBoundary
   } = useTerminalLiveInputCommit({
     activeHandle,
@@ -1197,14 +1195,22 @@ export default function SessionScreen() {
     onSendResolved: nativeChatSendError.clear
   })
   const { toggleTabChatView, showNativeChat, showNativeChatRef } = nativeChatController
+  const dictationRouteContext = useMobileDictationRouteContext(
+    liveInputProducerGeneration,
+    showNativeChat
+  )
   nativeChatSendError.bannerMountedRef.current = showNativeChat
 
   const dictation = useMobileDictation({
     client,
     enabled: canSend,
     onTranscript: (text) => {
+      const routeContext = dictationRouteContext.consume()
+      if (!routeContext) {
+        return
+      }
       // Why: dictation belongs to the visible composer — native chat consumes it locally, terminal mode keeps live-input routing.
-      if (showNativeChatRef.current) {
+      if (routeContext.showNativeChat) {
         nativeChatController.setChatComposerText((current) =>
           appendBufferedDictation(current, text)
         )
@@ -1212,14 +1218,9 @@ export default function SessionScreen() {
         return
       }
       // Live mode inserts the transcript into its PTY as text (no Return); buffered mode appends to the command field.
-      const routeContext = dictationRouteContextRef.current
-      dictationRouteContextRef.current = null
-      const route = routeDictationTranscript(
-        text,
-        routeContext?.liveInputEnabled ?? liveInputEnabled
-      )
+      const route = routeDictationTranscript(text, routeContext.liveInputEnabled)
       if (route.kind === 'live-insert') {
-        const insertHandle = routeContext?.handle ?? activeHandleRef.current
+        const insertHandle = routeContext.handle
         if (!insertHandle) {
           return
         }
@@ -1237,7 +1238,7 @@ export default function SessionScreen() {
       showToast('Dictation inserted')
     },
     onError: (err) => {
-      dictationRouteContextRef.current = null
+      dictationRouteContext.clear()
       // Dictation not set up on desktop → open the setup sheet instead of a dead-end toast.
       if (isDictationSetupRequiredError(err.message)) {
         setShowDictationSetup(true)
@@ -1249,23 +1250,25 @@ export default function SessionScreen() {
   })
 
   const startDictation = useCallback(() => {
-    const routeContext = activeHandle
-      ? { handle: activeHandle, liveInputEnabled: liveInputTerminalHandles.has(activeHandle) }
-      : null
-    dictationRouteContextRef.current = routeContext
+    const routeContext = dictationRouteContext.capture(activeHandle, liveInputTerminalHandles)
     void dictation.start().catch((err) => {
-      if (dictationRouteContextRef.current === routeContext) {
-        dictationRouteContextRef.current = null
-      }
+      dictationRouteContext.clear(routeContext)
       triggerError()
       showToast(err instanceof Error ? err.message : String(err))
     })
-  }, [activeHandle, dictation, liveInputTerminalHandles, triggerError, showToast])
+  }, [
+    activeHandle,
+    dictation,
+    dictationRouteContext,
+    liveInputTerminalHandles,
+    triggerError,
+    showToast
+  ])
 
   const cancelDictation = useCallback(() => {
-    dictationRouteContextRef.current = null
+    dictationRouteContext.clear()
     void dictation.cancel()
-  }, [dictation])
+  }, [dictation, dictationRouteContext])
 
   // Toggle mode: one tap starts, the next stops; long-press cancels mid-record.
   const handleDictationToggle = useCallback(() => {

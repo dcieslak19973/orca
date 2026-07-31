@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, type RefObject } from 'react'
 import type { TextInput } from 'react-native'
 import { getTerminalLiveSpecialKeyDecision } from './terminal-live-text-commit'
 import type { TerminalLiveAccessoryInput } from './terminal-live-accessory-input'
@@ -41,6 +41,7 @@ type TerminalLiveInputCommitHandlers = {
   readonly handleLiveInputChange: (text: string) => void
   readonly handleLiveInputKeyPress: (event: TerminalLiveInputKeyPressEvent) => void
   readonly handleLiveInputSubmit: () => void
+  readonly liveInputProducerGeneration: symbol
   readonly sendLiveInputExternalBoundary: TerminalLiveInputBoundarySender
 }
 
@@ -63,6 +64,16 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     (activeSessionTabType == null || activeSessionTabType === 'terminal')
       ? activeHandle
       : null
+  const liveInputGeneration = useMemo(
+    () => Symbol('terminal-live-input-generation'),
+    [liveInputOwner, liveInputScope]
+  )
+  const liveInputProducerOwner =
+    activeSessionTabType == null || activeSessionTabType === 'terminal' ? activeHandle : null
+  const liveInputProducerGeneration = useMemo(
+    () => Symbol('terminal-live-input-producer-generation'),
+    [connected, liveInputGeneration, liveInputProducerOwner]
+  )
   const {
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
@@ -76,8 +87,8 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     activeHandleRef,
     activeSessionTabTypeRef,
     liveInputRef,
-    liveInputOwner,
-    liveInputScope,
+    liveInputGeneration,
+    liveInputProducerGeneration,
     liveInputTerminalHandlesRef,
     sendLiveTerminalInputRef,
     setLiveInputCapture
@@ -201,6 +212,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     handleLiveInputChange,
     handleLiveInputKeyPress,
     handleLiveInputSubmit,
+    liveInputProducerGeneration,
     sendLiveInputExternalBoundary
   }
 }

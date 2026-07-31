@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
+import { useCallback, useLayoutEffect, useRef, type RefObject } from 'react'
 import type { TextInput } from 'react-native'
 import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import {
@@ -17,8 +17,8 @@ type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly activeHandleRef: RefObject<string | null>
   readonly activeSessionTabTypeRef: RefObject<TTabType | null>
   readonly liveInputRef: RefObject<TextInput | null>
-  readonly liveInputOwner: string | null
-  readonly liveInputScope: string
+  readonly liveInputGeneration: symbol
+  readonly liveInputProducerGeneration: symbol
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
   readonly setLiveInputCapture: (text: string) => void
@@ -42,8 +42,8 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   activeHandleRef,
   activeSessionTabTypeRef,
   liveInputRef,
-  liveInputOwner,
-  liveInputScope,
+  liveInputGeneration,
+  liveInputProducerGeneration,
   liveInputTerminalHandlesRef,
   sendLiveTerminalInputRef,
   setLiveInputCapture
@@ -51,10 +51,12 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
   const lifecycleEpochRef = useRef(0)
-  const liveInputGeneration = `${liveInputScope}\0${liveInputOwner ?? ''}`
-  const liveInputGenerationRef = useRef(liveInputGeneration)
-  const liveInputScopeRef = useRef(liveInputScope)
-  liveInputScopeRef.current = liveInputScope
+  const appliedLiveInputGenerationRef = useRef(liveInputGeneration)
+  const currentLiveInputGenerationRef = useRef(liveInputGeneration)
+  const currentLiveInputProducerGenerationRef = useRef(liveInputProducerGeneration)
+  const disposedRef = useRef(false)
+  currentLiveInputGenerationRef.current = liveInputGeneration
+  currentLiveInputProducerGenerationRef.current = liveInputProducerGeneration
   const heldLiveInputTextRef = useRef('')
   const sentLiveInputTextRef = useRef('')
   const pendingLiveInputHandleRef = useRef<string | null>(null)
@@ -83,10 +85,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   }, [liveInputRef, resetMirrorState, setLiveInputCapture])
 
   useLayoutEffect(() => {
-    if (liveInputGenerationRef.current === liveInputGeneration) {
+    if (appliedLiveInputGenerationRef.current === liveInputGeneration) {
       return
     }
-    liveInputGenerationRef.current = liveInputGeneration
+    appliedLiveInputGenerationRef.current = liveInputGeneration
     lifecycleEpochRef.current += 1
     pendingLiveInputFlushRef.current = null
     clearPendingLiveInputCommit()
@@ -128,7 +130,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runMirrorStep = useCallback(
     async (handle: string, fieldText: string, commitHeld: boolean): Promise<boolean> => {
-      if (liveInputScope !== liveInputScopeRef.current) {
+      if (disposedRef.current || liveInputGeneration !== currentLiveInputGenerationRef.current) {
         return false
       }
       if (
@@ -161,8 +163,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
         heldCommitTimerRef.current = setTimeout(() => {
           heldCommitTimerRef.current = null
           if (
+            disposedRef.current ||
             lifecycleEpoch !== lifecycleEpochRef.current ||
-            liveInputScope !== liveInputScopeRef.current
+            liveInputGeneration !== currentLiveInputGenerationRef.current
           ) {
             return
           }
@@ -178,8 +181,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       const lifecycleEpoch = lifecycleEpochRef.current
       return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () => {
         if (
+          disposedRef.current ||
           lifecycleEpoch !== lifecycleEpochRef.current ||
-          liveInputScope !== liveInputScopeRef.current
+          liveInputGeneration !== currentLiveInputGenerationRef.current
         ) {
           return Promise.resolve(false)
         }
@@ -190,8 +194,8 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeHandleRef,
       activeSessionTabTypeRef,
       clearHeldCommitTimer,
+      liveInputGeneration,
       liveInputTerminalHandlesRef,
-      liveInputScope,
       resetMirrorState,
       sendLiveTerminalInputRef,
       waitForPendingLiveInputFlush
@@ -208,7 +212,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
 
   const runLiveInputBoundary = useCallback(
     (expectedHandle: string | null, sendBoundary: () => Promise<boolean>): Promise<boolean> => {
-      if (liveInputScope !== liveInputScopeRef.current) {
+      if (
+        disposedRef.current ||
+        liveInputProducerGeneration !== currentLiveInputProducerGenerationRef.current
+      ) {
         return Promise.resolve(false)
       }
       if (expectedHandle !== null && expectedHandle !== activeHandleRef.current) {
@@ -216,8 +223,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       }
       const lifecycleEpoch = lifecycleEpochRef.current
       const sendCurrentBoundary = (): Promise<boolean> => {
-        return lifecycleEpoch === lifecycleEpochRef.current &&
-          liveInputScope === liveInputScopeRef.current
+        return !disposedRef.current &&
+          lifecycleEpoch === lifecycleEpochRef.current &&
+          liveInputProducerGeneration === currentLiveInputProducerGenerationRef.current
           ? sendBoundary()
           : Promise.resolve(false)
       }
@@ -256,13 +264,15 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       activeSessionTabTypeRef,
       clearPendingLiveInputCommit,
       liveInputTerminalHandlesRef,
-      liveInputScope,
+      liveInputProducerGeneration,
       runMirrorStep
     ]
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    disposedRef.current = false
     return () => {
+      disposedRef.current = true
       lifecycleEpochRef.current += 1
       if (heldCommitTimerRef.current) {
         clearTimeout(heldCommitTimerRef.current)
