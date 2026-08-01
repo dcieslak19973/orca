@@ -230,6 +230,15 @@ export const JIRA_HANDLERS: Record<string, CommandHandler> = {
     await applyUpdate(ctx, { priorityId: null })
   },
   'jira label set': async (ctx) => {
-    await applyUpdate(ctx, { labels: getRepeatedStringFlag(ctx.flags, 'label') })
+    const labels = getRepeatedStringFlag(ctx.flags, 'label')
+    // Why: label set replaces the whole set, so an omitted --label would
+    // silently strip every label rather than update nothing.
+    if (labels.length === 0) {
+      throw new RuntimeClientError(
+        'invalid_argument',
+        '--label is required; pass every label the issue should keep.'
+      )
+    }
+    await applyUpdate(ctx, { labels })
   }
 }

@@ -193,6 +193,16 @@ describe('orca jira CLI handlers', () => {
     })
   })
 
+  // Why: label set is a full replacement, so a missing --label would silently
+  // wipe every label on the issue instead of updating nothing.
+  it('refuses label set without at least one --label', async () => {
+    await main(['jira', 'label', 'set', 'ENG-1'], '/tmp/repo')
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(vi.mocked(console.error).mock.calls[0][0]).toContain('--label is required')
+    expect(process.exitCode).toBe(1)
+  })
+
   // Why: Jira reports write failures in a 200 body, so an ok:false result has to
   // become a CLI error instead of printing a success line.
   it('surfaces an ok:false mutation body as a CLI failure', async () => {
