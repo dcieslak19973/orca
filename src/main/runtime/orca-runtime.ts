@@ -9011,6 +9011,10 @@ export class OrcaRuntimeService {
     this.gitCommands.stageRuntimeGitPath.bind(this.gitCommands)
   unstageRuntimeGitPath: RuntimeGitCommands['unstageRuntimeGitPath'] =
     this.gitCommands.unstageRuntimeGitPath.bind(this.gitCommands)
+  stageRuntimeGitHunk: RuntimeGitCommands['stageRuntimeGitHunk'] =
+    this.gitCommands.stageRuntimeGitHunk.bind(this.gitCommands)
+  unstageRuntimeGitHunk: RuntimeGitCommands['unstageRuntimeGitHunk'] =
+    this.gitCommands.unstageRuntimeGitHunk.bind(this.gitCommands)
   bulkStageRuntimeGitPaths: RuntimeGitCommands['bulkStageRuntimeGitPaths'] =
     this.gitCommands.bulkStageRuntimeGitPaths.bind(this.gitCommands)
   bulkUnstageRuntimeGitPaths: RuntimeGitCommands['bulkUnstageRuntimeGitPaths'] =

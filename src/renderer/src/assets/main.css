@@ -3252,13 +3252,13 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
 
 /* ── Diff comment decorations ────────────────────────────────────── */
 
-/* Why: the "+" button is appended into Monaco's editor DOM node by
-   useDiffCommentDecorator. Keep it visually subtle until hovered so it does
-   not distract from the diff itself. Left position overlaps the glyph margin
-   so the affordance reads as "add comment on this line". */
-.orca-diff-comment-add-btn {
+/* Why: these buttons are appended into Monaco's editor DOM node by
+   useDiffCommentDecorator and useDiffHunkStaging. Keep them visually subtle
+   until hovered so they do not distract from the diff itself. Left positions
+   overlap the glyph margin so each affordance reads as acting on that line. */
+.orca-diff-comment-add-btn,
+.orca-diff-hunk-stage-btn {
   position: absolute;
-  left: 4px;
   width: 18px;
   height: 18px;
   display: none;
@@ -3280,16 +3280,33 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
     box-shadow 100ms ease;
 }
 
-.orca-diff-comment-add-btn:hover {
+/* "Add comment on this line". */
+.orca-diff-comment-add-btn {
+  left: 4px;
+}
+
+/* Stage/unstage this hunk; sits one button-width right of the comment "+". */
+.orca-diff-hunk-stage-btn {
+  left: 26px;
+}
+
+.orca-diff-comment-add-btn:hover,
+.orca-diff-hunk-stage-btn:hover {
   color: var(--primary);
   border-color: color-mix(in srgb, var(--primary) 52%, var(--border));
   background: color-mix(in srgb, var(--primary) 12%, var(--background));
   box-shadow: 0 1px 4px color-mix(in srgb, var(--foreground) 16%, transparent);
 }
 
-.orca-diff-comment-add-btn:focus-visible {
+.orca-diff-comment-add-btn:focus-visible,
+.orca-diff-hunk-stage-btn:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
+}
+
+.orca-diff-hunk-stage-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .orca-diff-comment-range-highlight {

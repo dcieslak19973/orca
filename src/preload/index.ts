@@ -3432,6 +3432,18 @@ const api = {
       filePath: string
       connectionId?: string
     }): Promise<void> => ipcRenderer.invoke('git:unstage', args),
+    stageHunk: (args: {
+      worktreePath: string
+      filePath: string
+      range: { oldStart: number; oldCount: number; newStart: number; newCount: number }
+      connectionId?: string
+    }): Promise<void> => ipcRenderer.invoke('git:stageHunk', args),
+    unstageHunk: (args: {
+      worktreePath: string
+      filePath: string
+      range: { oldStart: number; oldCount: number; newStart: number; newCount: number }
+      connectionId?: string
+    }): Promise<void> => ipcRenderer.invoke('git:unstageHunk', args),
     bulkUnstage: (args: {
       worktreePath: string
       filePaths: string[]

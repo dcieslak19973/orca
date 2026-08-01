@@ -42,6 +42,15 @@ export const GitFilePath = WorktreeSelector.extend({
     .pipe(z.string().min(1, 'Missing file path'))
 })
 
+export const GitHunkRangeParams = GitFilePath.extend({
+  range: z.object({
+    oldStart: z.number().int().min(0),
+    oldCount: z.number().int().min(0),
+    newStart: z.number().int().min(0),
+    newCount: z.number().int().min(0)
+  })
+})
+
 export const GitDiff = GitFilePath.extend({
   staged: z.boolean(),
   compareAgainstHead: z.boolean().optional()

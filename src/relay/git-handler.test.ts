@@ -574,6 +574,121 @@ describe('GitHandler', () => {
     })
   })
 
+  describe('stage and unstage hunks', () => {
+    const numberedLines = (count: number): string[] =>
+      Array.from({ length: count }, (_, i) => `line${String(i + 1).padStart(2, '0')}`)
+
+    function writeLines(filePath: string, lines: string[], trailingNewline = true): void {
+      writeFileSync(filePath, lines.join('\n') + (trailingNewline ? '\n' : ''))
+    }
+
+    function indexContent(cwd: string, filePath: string): string {
+      return normalizeGitFileText(
+        execFileSync('git', ['show', `:${filePath}`], { cwd, encoding: 'utf-8' })
+      )
+    }
+
+    it('stages only the hunk matching the requested range', async () => {
+      gitInit(tmpDir)
+      const filePath = path.join(tmpDir, 'code.txt')
+      const lines = numberedLines(30)
+      writeLines(filePath, lines)
+      gitCommit(tmpDir, 'initial')
+      const modified = [...lines]
+      modified[4] = 'changed05'
+      modified[19] = 'changed20'
+      writeLines(filePath, modified)
+
+      await dispatcher.callRequest('git.stageHunk', {
+        worktreePath: tmpDir,
+        filePath: 'code.txt',
+        range: { oldStart: 20, oldCount: 1, newStart: 20, newCount: 1 }
+      })
+
+      const staged = [...lines]
+      staged[19] = 'changed20'
+      expect(indexContent(tmpDir, 'code.txt')).toBe(`${staged.join('\n')}\n`)
+      const unstagedDiff = execFileSync('git', ['diff'], { cwd: tmpDir, encoding: 'utf-8' })
+      expect(unstagedDiff).toContain('changed05')
+      expect(unstagedDiff).not.toContain('changed20')
+    })
+
+    it('unstages only the hunk matching the requested range', async () => {
+      gitInit(tmpDir)
+      const filePath = path.join(tmpDir, 'code.txt')
+      const lines = numberedLines(30)
+      writeLines(filePath, lines)
+      gitCommit(tmpDir, 'initial')
+      const modified = [...lines]
+      modified[4] = 'changed05'
+      modified[19] = 'changed20'
+      writeLines(filePath, modified)
+      execFileSync('git', ['add', 'code.txt'], { cwd: tmpDir, stdio: 'pipe' })
+
+      await dispatcher.callRequest('git.unstageHunk', {
+        worktreePath: tmpDir,
+        filePath: 'code.txt',
+        range: { oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 }
+      })
+
+      const staged = [...lines]
+      staged[19] = 'changed20'
+      expect(indexContent(tmpDir, 'code.txt')).toBe(`${staged.join('\n')}\n`)
+      const unstagedDiff = execFileSync('git', ['diff'], { cwd: tmpDir, encoding: 'utf-8' })
+      expect(unstagedDiff).toContain('changed05')
+    })
+
+    it('stages an insertion hunk and an EOF hunk of a file without trailing newline', async () => {
+      gitInit(tmpDir)
+      const filePath = path.join(tmpDir, 'code.txt')
+      const lines = numberedLines(10)
+      writeLines(filePath, lines, false)
+      gitCommit(tmpDir, 'initial')
+      const modified = [...lines]
+      modified[9] = 'changedEnd'
+      modified.splice(3, 0, 'insertedA', 'insertedB')
+      writeLines(filePath, modified, false)
+
+      // Insertion after old line 3 → new lines 4-5.
+      await dispatcher.callRequest('git.stageHunk', {
+        worktreePath: tmpDir,
+        filePath: 'code.txt',
+        range: { oldStart: 3, oldCount: 0, newStart: 4, newCount: 2 }
+      })
+      const afterInsert = [...lines]
+      afterInsert.splice(3, 0, 'insertedA', 'insertedB')
+      expect(indexContent(tmpDir, 'code.txt')).toBe(afterInsert.join('\n'))
+
+      // EOF modification on a file with no trailing newline (old line 10, new line 12).
+      await dispatcher.callRequest('git.stageHunk', {
+        worktreePath: tmpDir,
+        filePath: 'code.txt',
+        range: { oldStart: 10, oldCount: 1, newStart: 12, newCount: 1 }
+      })
+      expect(indexContent(tmpDir, 'code.txt')).toBe(modified.join('\n'))
+      const unstagedDiff = execFileSync('git', ['diff'], { cwd: tmpDir, encoding: 'utf-8' })
+      expect(unstagedDiff.trim()).toBe('')
+    })
+
+    it('rejects a range that no longer matches any hunk', async () => {
+      gitInit(tmpDir)
+      const filePath = path.join(tmpDir, 'code.txt')
+      writeLines(filePath, numberedLines(5))
+      gitCommit(tmpDir, 'initial')
+      const modified = numberedLines(5)
+      modified[0] = 'changed01'
+      writeLines(filePath, modified)
+
+      await expect(
+        dispatcher.callRequest('git.stageHunk', {
+          worktreePath: tmpDir,
+          filePath: 'code.txt',
+          range: { oldStart: 40, oldCount: 1, newStart: 40, newCount: 1 }
+        })
+      ).rejects.toThrow(/no longer matches/)
+    })
+  })
+
   describe('diff', () => {
     it('returns text diff for modified file', async () => {
       gitInit(tmpDir)
