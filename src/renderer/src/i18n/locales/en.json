@@ -6034,7 +6034,9 @@
           "compareAgainstUpstreamTitle": "Default Compare Base",
           "compareAgainstUpstreamDescription": "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change.",
           "compareBaseRepositoryDefault": "Repository default",
-          "compareBaseBranchUpstream": "Branch upstream"
+          "compareBaseBranchUpstream": "Branch upstream",
+          "openDiffsInSideSplitTitle": "Open Diffs in a Side Split",
+          "openDiffsInSideSplitDescription": "Source Control diff previews open in a dedicated split beside your current tabs instead of covering the active tab group. Clicking through changed files keeps recycling the preview in that split."
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "Placeholder toggle",
@@ -8311,7 +8313,9 @@
             "upstream": "upstream",
             "localChanges": "local changes",
             "originMaster": "origin/master",
-            "committedChanges": "committed changes"
+            "committedChanges": "committed changes",
+            "openDiffsInSideSplitTitle": "Open Diffs in a Side Split",
+            "openDiffsInSideSplitDescription": "Source Control diff previews open in a dedicated split beside your current tabs instead of covering the active tab group. Clicking through changed files keeps recycling the preview in that split."
           }
         },
         "input": {
