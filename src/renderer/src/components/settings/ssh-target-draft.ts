@@ -16,6 +16,7 @@ export type EditingTarget = {
   proxyCommand: string
   jumpHost: string
   systemSshConnectionReuse: boolean
+  runGitLabCliOnHost: boolean
   relayGracePeriodSeconds: string
   relayKeepAliveUntilReset: boolean
 }
@@ -30,6 +31,7 @@ export const EMPTY_FORM: EditingTarget = {
   proxyCommand: '',
   jumpHost: '',
   systemSshConnectionReuse: true,
+  runGitLabCliOnHost: false,
   relayGracePeriodSeconds: String(DEFAULT_BOUNDED_SSH_RELAY_GRACE_PERIOD_SECONDS),
   relayKeepAliveUntilReset: DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS === 0
 }
@@ -48,6 +50,7 @@ export function getEditingTargetForSshTarget(target: SshTarget): EditingTarget {
     proxyCommand: target.proxyCommand ?? '',
     jumpHost: target.jumpHost ?? '',
     systemSshConnectionReuse: target.systemSshConnectionReuse !== false,
+    runGitLabCliOnHost: target.runGitLabCliOnHost === true,
     relayGracePeriodSeconds: String(
       target.relayGracePeriodSeconds === 0
         ? DEFAULT_BOUNDED_SSH_RELAY_GRACE_PERIOD_SECONDS
@@ -141,7 +144,8 @@ export function hasAdvancedConnectionValues(form: EditingTarget): boolean {
   return (
     form.proxyCommand.trim().length > 0 ||
     form.jumpHost.trim().length > 0 ||
-    !form.systemSshConnectionReuse
+    !form.systemSshConnectionReuse ||
+    form.runGitLabCliOnHost
   )
 }
 

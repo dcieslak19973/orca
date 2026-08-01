@@ -117,6 +117,7 @@ export function AddRemoteHostDialog({
     const proxyCommand = sshForm.proxyCommand.trim() || undefined
     const jumpHost = sshForm.jumpHost.trim() || undefined
     const systemSshConnectionReuse = sshForm.systemSshConnectionReuse ? undefined : false
+    const runGitLabCliOnHost = sshForm.runGitLabCliOnHost ? true : undefined
     const target = {
       label: sshForm.label.trim() || (username ? `${username}@${host}` : configHost),
       configHost,
@@ -127,7 +128,8 @@ export function AddRemoteHostDialog({
       ...(identityFile ? { identityFile } : {}),
       ...(proxyCommand ? { proxyCommand } : {}),
       ...(jumpHost ? { jumpHost } : {}),
-      ...(systemSshConnectionReuse === false ? { systemSshConnectionReuse } : {})
+      ...(systemSshConnectionReuse === false ? { systemSshConnectionReuse } : {}),
+      ...(runGitLabCliOnHost ? { runGitLabCliOnHost } : {})
     }
 
     setIsSaving(true)
