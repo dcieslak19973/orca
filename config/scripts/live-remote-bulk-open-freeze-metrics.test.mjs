@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applySwitchTargetCap,
   evaluateFreezeSignals,
+  evaluateFullAppFreeze,
   evaluatePermanentLockup,
   evaluateRealisticFreezeSignals,
   extractTerminalHandle,
@@ -74,6 +75,35 @@ describe('live-remote-bulk-open-freeze-metrics', () => {
     })
     expect(hardFromReconnect.hardFreeze).toBe(true)
     expect(hardFromReconnect.peakLatencyMs).toBe(6200)
+  })
+
+  it('flags full-app freeze only for continuous unhealthy status window ≥30s', () => {
+    const healthy = evaluateFullAppFreeze({
+      statusSamples: [
+        { tMs: 0, ms: 150, ok: true },
+        { tMs: 2000, ms: 180, ok: true },
+        { tMs: 4000, ms: 140, ok: true }
+      ],
+      foreverWindowMs: 30_000,
+      statusSlowMs: 15_000
+    })
+    expect(healthy.foreverUiLockupObserved).toBe(false)
+
+    const forever = evaluateFullAppFreeze({
+      statusSamples: [
+        { tMs: 0, ms: 16_000, ok: true },
+        { tMs: 16_000, ms: 16_000, ok: true },
+        { tMs: 32_000, ms: 16_000, ok: false, hang: true }
+      ],
+      foreverWindowMs: 30_000,
+      statusSlowMs: 15_000
+    })
+    expect(forever.foreverUiLockupObserved).toBe(true)
+    expect(forever.longestUnhealthyWindowMs).toBeGreaterThanOrEqual(30_000)
+
+    expect(
+      evaluateFullAppFreeze({ statusSamples: [], killOnlyRecovery: true }).foreverUiLockupObserved
+    ).toBe(true)
   })
 
   it('distinguishes recovered hard stall from permanent lockup', () => {

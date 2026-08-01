@@ -22,9 +22,13 @@ import { spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createOrcaRpc } from './live-remote-realistic-freeze-rpc.mjs'
+import { startStatusWatchdog } from './live-remote-status-watchdog.mjs'
 import {
+  DEFAULT_FOREVER_WINDOW_MS,
   DEFAULT_HARD_MS,
   DEFAULT_SOFT_MS,
+  DEFAULT_STATUS_SLOW_MS,
+  evaluateFullAppFreeze,
   evaluatePermanentLockup,
   evaluateRealisticFreezeSignals,
   extractTerminalHandle,
@@ -50,6 +54,18 @@ const stormParallel = Math.max(1, Number(process.env.ORCA_FREEZE_STORM_PARALLEL 
 /** Kill a switch if it exceeds this — counts toward permanent lockup. */
 const opTimeoutMs = Math.max(10_000, Number(process.env.ORCA_FREEZE_OP_TIMEOUT_MS || '60000'))
 const permanentTimeoutMs = Math.max(15_000, Number(process.env.ORCA_FREEZE_PERMANENT_MS || '60000'))
+const foreverWindowMs = Math.max(
+  10_000,
+  Number(process.env.ORCA_FREEZE_FOREVER_WINDOW_MS || DEFAULT_FOREVER_WINDOW_MS)
+)
+const statusSlowMs = Math.max(
+  5_000,
+  Number(process.env.ORCA_FREEZE_STATUS_SLOW_MS || DEFAULT_STATUS_SLOW_MS)
+)
+const watchdogIntervalMs = Math.max(
+  500,
+  Number(process.env.ORCA_FREEZE_WATCHDOG_INTERVAL_MS || '1500')
+)
 const scratchDir = process.env.ORCA_FREEZE_SCRATCH || ''
 
 function sleep(ms) {
@@ -264,10 +280,15 @@ async function main() {
   let maxBatchWallMs = 0
   const openStarted = performance.now()
 
+  let statusWatch = null
   if (scenario === 'lockup-storm') {
     console.log(
-      `[realistic-freeze] LOCKUP STORM: concurrent open parallel=${stormParallel} + overlapping reconnect refresh (timeout=${opTimeoutMs}ms)`
+      `[realistic-freeze] LOCKUP STORM: concurrent open parallel=${stormParallel} + overlapping reconnect refresh (timeout=${opTimeoutMs}ms); mid-storm status watchdog every ${watchdogIntervalMs}ms`
     )
+    statusWatch = startStatusWatchdog({
+      intervalMs: watchdogIntervalMs,
+      timeoutMs: Math.min(permanentTimeoutMs, foreverWindowMs)
+    })
     // Fire reconnect storm again concurrently with first open wave.
     const overlapStormPromise = runReconnectRefreshStorm(notes)
     for (let offset = 0; offset < openList.length; offset += stormParallel) {
@@ -414,7 +435,21 @@ async function main() {
 
   const openWallMs = performance.now() - openStarted
 
-  // Post-storm health: does local status still answer? Hang => permanent lockup proxy.
+  let midStormWatch = { samples: [], durationMs: 0 }
+  if (statusWatch) {
+    midStormWatch = await statusWatch.stop()
+    notes.push(
+      `mid-storm status samples=${midStormWatch.samples.length} durationMs=${midStormWatch.durationMs.toFixed(0)}`
+    )
+    phases.push({
+      phase: 'mid-storm-status-watchdog',
+      samples: midStormWatch.samples.length,
+      durationMs: midStormWatch.durationMs,
+      maxStatusMs: Math.max(0, ...midStormWatch.samples.map((s) => s.ms || 0), 0)
+    })
+  }
+
+  // Post-storm health: does local status still answer?
   let statusProbeMs = null
   let statusHangMs = 0
   const statusStarted = performance.now()
@@ -464,11 +499,21 @@ async function main() {
     permanentTimeoutMs
   })
 
-  // Recovered hard stall: multi-second peak but host still answers and most opens finish.
-  const recoveredHardStall = signals.hardFreeze && !lockup.permanentLockup && openOk > 0
+  const fullApp = evaluateFullAppFreeze({
+    statusSamples: midStormWatch.samples,
+    foreverWindowMs,
+    statusSlowMs
+  })
+  if (statusHangMs >= foreverWindowMs) {
+    fullApp.foreverUiLockupObserved = true
+    fullApp.longestUnhealthyWindowMs = Math.max(fullApp.longestUnhealthyWindowMs, statusHangMs)
+    fullApp.reason = `post-storm status hang ${statusHangMs.toFixed(0)}ms`
+  }
+
+  const recoveredHardStall = signals.hardFreeze && !fullApp.foreverUiLockupObserved && openOk > 0
 
   let samplePath = null
-  if (signals.softFreeze || signals.hardFreeze || lockup.permanentLockup) {
+  if (signals.softFreeze || signals.hardFreeze || fullApp.foreverUiLockupObserved) {
     samplePath = sampleOrcaIfPossible()
     if (samplePath) {
       notes.push(`sample=${samplePath}`)
@@ -484,7 +529,7 @@ async function main() {
       'User away; wake-like reconnect metadata storm; then opens sessions (Brandon/Tim wake).',
     'restart-proxy': 'User away; restart-proxy discovery; then opens sessions.',
     'lockup-storm':
-      'Idle flood + reconnect refresh overlapped with concurrent open fan-out — push for permanent lockup.'
+      'Idle flood + reconnect refresh + concurrent open + mid-storm status watchdog (full-app freeze bar).'
   }
 
   const report = {
@@ -515,14 +560,17 @@ async function main() {
     memoryProbeMs,
     softFreeze: signals.softFreeze,
     hardFreeze: signals.hardFreeze,
-    /** Multi-second stall that still completed all opens. */
     recoveredHardStall,
-    /** Work never finished / host status dead — Force-Quit class. */
     permanentLockup: lockup.permanentLockup,
+    foreverUiLockupObserved: fullApp.foreverUiLockupObserved,
+    foreverFreeze: fullApp,
+    midStormStatusSamples: midStormWatch.samples,
     timedOutOps,
     maxConsecutiveSwitchFailures,
     softMs,
     hardMs,
+    foreverWindowMs,
+    statusSlowMs,
     permanentTimeoutMs,
     opTimeoutMs,
     phases,
@@ -549,13 +597,18 @@ async function main() {
     }
   }
 
-  if (lockup.permanentLockup) {
+  if (fullApp.foreverUiLockupObserved) {
+    process.exitCode = 5
+    console.error('[realistic-freeze] FULL-APP FOREVER FREEZE (status unhealthy ≥ forever window)')
+  } else if (lockup.permanentLockup) {
     process.exitCode = 4
-    console.error('[realistic-freeze] PERMANENT LOCKUP SIGNAL (timeouts / status hang)')
+    console.error(
+      '[realistic-freeze] PERMANENT LOCKUP HEURISTIC (timeouts/fail-rate) — check foreverUiLockupObserved'
+    )
   } else if (signals.hardFreeze) {
     process.exitCode = 2
     console.error(
-      '[realistic-freeze] HARD FREEZE SIGNAL (recovered multi-second stall — not permanent lockup)'
+      '[realistic-freeze] HARD FREEZE SIGNAL (recovered multi-second stall — not forever lockup)'
     )
   } else if (signals.softFreeze) {
     process.exitCode = 1

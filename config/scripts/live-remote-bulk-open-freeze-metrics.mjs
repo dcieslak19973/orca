@@ -157,3 +157,76 @@ export function humanPaceDelayMs(baseMs, jitterMs = 0) {
   }
   return base + Math.floor(Math.random() * (jitter + 1))
 }
+
+/** Full-app forever freeze: host RPC dead for a continuous window, not a recovered stall. */
+export const DEFAULT_FOREVER_WINDOW_MS = 30_000
+export const DEFAULT_STATUS_SLOW_MS = 15_000
+
+/**
+ * Analyze mid-storm status samples for a continuous unhealthy window.
+ * Sample: { tMs, ms, ok, hang }
+ */
+export function evaluateFullAppFreeze({
+  statusSamples = [],
+  foreverWindowMs = DEFAULT_FOREVER_WINDOW_MS,
+  statusSlowMs = DEFAULT_STATUS_SLOW_MS,
+  killOnlyRecovery = false
+}) {
+  if (killOnlyRecovery) {
+    return {
+      foreverUiLockupObserved: true,
+      longestUnhealthyWindowMs: foreverWindowMs,
+      maxStatusMs: Math.max(0, ...statusSamples.map((s) => s.ms || 0)),
+      unhealthySampleCount: statusSamples.length,
+      reason: 'kill-only recovery documented'
+    }
+  }
+
+  const unhealthy = statusSamples.map((s) => {
+    const hang = Boolean(s.hang) || s.ok === false
+    const slow = (s.ms || 0) >= statusSlowMs
+    return { ...s, unhealthy: hang || slow }
+  })
+
+  let longest = 0
+  let runStart = null
+  for (const s of unhealthy) {
+    if (s.unhealthy) {
+      runStart ??= s.tMs ?? 0
+      const end = (s.tMs ?? 0) + (s.ms || 0)
+      longest = Math.max(longest, end - runStart)
+    } else {
+      runStart = null
+    }
+  }
+
+  // If timestamps missing, fall back to consecutive unhealthy count * assumed interval.
+  if (longest === 0 && unhealthy.some((s) => s.unhealthy)) {
+    let run = 0
+    for (const s of unhealthy) {
+      if (s.unhealthy) {
+        run += 1
+        longest = Math.max(longest, run)
+      } else {
+        run = 0
+      }
+    }
+    // Without wall clock, consecutive count alone is not a ms window.
+    longest = 0
+  }
+
+  const maxStatusMs = Math.max(0, ...statusSamples.map((s) => s.ms || 0), 0)
+  const foreverUiLockupObserved = longest >= foreverWindowMs
+
+  return {
+    foreverUiLockupObserved,
+    longestUnhealthyWindowMs: longest,
+    maxStatusMs,
+    unhealthySampleCount: unhealthy.filter((s) => s.unhealthy).length,
+    reason: foreverUiLockupObserved
+      ? `status unhealthy ≥${foreverWindowMs}ms continuous`
+      : maxStatusMs >= statusSlowMs
+        ? `status slow peak ${maxStatusMs}ms but no ≥${foreverWindowMs}ms window`
+        : 'status remained healthy through storm'
+  }
+}

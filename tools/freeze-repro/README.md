@@ -60,6 +60,7 @@ Or: `node config/scripts/live-remote-realistic-freeze-repro.mjs`
 | `idle-backlog-open` | User away while agents stream; returns and opens sessions (Tim) |
 | `idle-backlog-reconnect-open` | Same + parallel status/worktree/terminal refresh (wake/reconnect client storm) |
 | `restart-proxy` | `orca open` + refresh storm + open (post-restart discovery; no process kill) |
+| `lockup-storm` | Idle + flood + reconnect + **concurrent** open fan-out + **mid-storm `orca status` watchdog** |
 
 ### Realistic knobs
 
@@ -83,24 +84,43 @@ Or: `node config/scripts/live-remote-realistic-freeze-repro.mjs`
 | **restart-proxy** | 0 | 20s | 30 | **11.2s** max open | **HARD (recovered)** |
 | **lockup-storm** (parallel open + overlap refresh) | 12–16 | 45–60s | 64–80 @ p20–32 | **27–35s** batches; some `Terminal reveal timed out` | **HARD stalls + reveal timeouts; app still answers `orca status` ~150ms** |
 
-### Forever lockup?
+### Full-app forever freeze?
 
-**Not yet.** Across storms:
+**Not observed** under CLI-driven escalation (including mid-storm status watchdog).
 
-- Opens that finish can take **10–35s** (bad UX; feels frozen).
-- Some opens fail with **`Terminal reveal timed out`** (real under load).
-- **`orca status` stayed ~120–200ms** even mid concurrent storm (18 probes, 0 hangs).
-- Process never needed Force Quit in lab; desktop stayed `running`.
+Latest lockup-storm with watchdog (2026-07-31):
 
-So this is **severe multi-second / multi-tens-of-seconds stall + flaky reveal**, not “UI dead forever until Force Quit” (the classic Brandon report). That class may need **real OS sleep/wake**, **renderer React #185**, or another path not hit by CLI switch alone.
+| Field | Value |
+|-------|--------|
+| `foreverUiLockupObserved` | **false** |
+| Mid-storm status samples | **95**, max **~631ms**, **0 hangs** |
+| Peak open/batch | **~34s** (recovered hard stall) |
+| `Terminal reveal timed out` | yes (under fan-out) |
+| Post-storm `orca status` | **~113ms** |
+| Force Quit required | **no** |
+
+Bar for full-app freeze in the harness: continuous **≥30s** window where `orca status` hangs/fails or stays ≥15s slow (`evaluateFullAppFreeze` / `foreverUiLockupObserved`).
+
+What we **do** reproduce: severe multi-second / multi-tens-of-seconds stalls + flaky reveal.  
+What we **do not**: UI dead forever until Force Quit. That likely needs **real OS sleep/wake**, **renderer React #185**, or a path status RPC does not share with the frozen surface.
 
 | Exit | Meaning |
 |------|---------|
 | 0 | no freeze |
 | 1 | soft (≥2s recovered) |
 | 2 | hard stall ≥5s **but recovered** |
-| 4 | permanentLockup heuristic (status hang / many timeouts / high fail rate) |
+| 4 | permanentLockup heuristic (timeouts/fail-rate; check `foreverUiLockupObserved`) |
+| 5 | **full-app forever freeze** (status unhealthy ≥ forever window) |
 | 3 | harness error |
+
+```bash
+# Full-app freeze attempt (watchdog on)
+ORCA_FREEZE_ENV=awin ORCA_FREEZE_SCENARIO=lockup-storm \
+  ORCA_FREEZE_CREATE=12 ORCA_FREEZE_IDLE_MS=30000 ORCA_FREEZE_OPEN_COUNT=80 \
+  ORCA_FREEZE_STORM_PARALLEL=28 ORCA_FREEZE_FOREVER_WINDOW_MS=30000 \
+  pnpm run repro:live-remote-realistic-freeze
+# Expect exit 2 (recovered hard) unless foreverUiLockupObserved becomes true
+```
 
 **Interpretation:** Pure sequential open after idle stays under 2s. **Wake/reconnect-style refresh + open** (or concurrent fan-out) produces **recovered hard stalls**. True permanent lockup remains unproven with CLI-only levers.
 
