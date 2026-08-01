@@ -61,9 +61,14 @@ export function findSideSplitDiffTargetGroupId(
   tabs: readonly SideSplitCandidateTab[],
   activeGroupId: string | undefined
 ): string | undefined {
+  // Why: any editor-family preview counts, not just a diff. The returned group is pinned by the
+  // caller, which makes preview replacement group-scoped — so skipping a parked non-diff preview
+  // would pin a different group, find no preview there, and orphan the parked one (#11839).
   const previewTab = tabs.find((tab) => tab.isPreview && isEditorContentTab(tab))
   if (previewTab) {
     return previewTab.groupId
   }
+  // Why: deliberately narrower than the branch above. With no preview to recycle, the question is
+  // "which column already looks like the diff column", and only a diff tab answers that.
   return tabs.find((tab) => tab.contentType === 'diff' && tab.groupId !== activeGroupId)?.groupId
 }
