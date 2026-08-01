@@ -1,0 +1,222 @@
+name: PR Testbed Build
+
+# Why: the canonical release pipeline (release-cut.yml) is gated to
+# stablyai/orca and depends on SignPath / Apple secrets a fork does not have.
+# This workflow exists only on integration branches in a fork so an unsigned,
+# self-contained build of a stack of PRs can be produced and downloaded on
+# another machine. It never publishes to the upstream repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - win
+          - linux
+          - mac
+      tag:
+        description: Release tag to publish assets under (default pr-testbed-<run number>)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr-testbed-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    # Why: unsigned testbed artifacts must never appear as releases on the
+    # canonical repo.
+    if: github.repository != 'stablyai/orca'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve tag and build version
+        id: plan
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-pr-testbed-${RUN_NUMBER}}"
+          base="$(node -p "require('./package.json').version")"
+          # electron-builder requires semver; keep the prerelease id alnum.
+          version="${base}-prtestbed.${RUN_NUMBER}"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; reusing."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --title "PR testbed $VERSION" \
+            --prerelease \
+            --notes "Unsigned test build of the PR integration branch at \`$SHA\`. Not an official Orca release: no code signing, no telemetry identity, no auto-update channel."
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-2022: windows-latest moved to VS 2026, which node-gyp
+          # cannot detect for the native dependency rebuild.
+          - os: windows-2022
+            platform: win
+            pack: pnpm exec electron-builder --config config/electron-builder.config.cjs --win nsis zip --publish never
+            eb_cache_path: |
+              ~\AppData\Local\electron\Cache
+              ~\AppData\Local\electron-builder\Cache
+          - os: ubuntu-latest
+            platform: linux
+            pack: pnpm exec electron-builder --config config/electron-builder.config.cjs --linux AppImage deb --x64 --publish never
+            eb_cache_path: |
+              ~/.cache/electron
+              ~/.cache/electron-builder
+          # arm64 only: cross-building the x64 slice on an arm64 runner would
+          # have to rebuild every native module for the other arch.
+          - os: macos-latest
+            platform: mac
+            pack: pnpm exec electron-builder --config config/electron-builder.config.cjs --mac dmg zip --arm64 --publish never
+            eb_cache_path: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      ORCA_LOCAL_BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      # Unsigned build: never let electron-builder pick up a keychain identity.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - name: Skip unselected platform
+        id: gate
+        shell: bash
+        env:
+          SELECTED: ${{ inputs.platforms }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [[ "$SELECTED" == "all" || "$SELECTED" == "$PLATFORM" ]]; then
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.gate.outputs.run == 'true'
+
+      # pnpm must precede setup-node so the store cache can be located.
+      - name: Setup pnpm
+        if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Use external node-gyp to avoid pnpm's bundled copy (Linux only)
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
+        run: |
+          npm install -g node-gyp@11.5.0
+          echo "npm_config_node_gyp=$(npm root -g)/node-gyp/bin/node-gyp.js" >> "$GITHUB_ENV"
+
+      - name: Cache electron-builder downloads
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.eb_cache_path }}
+          key: electron-builder-${{ matrix.platform }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            electron-builder-${{ matrix.platform }}-
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: pnpm install --frozen-lockfile
+
+      # build:release verifies the Linux computer-use provider through AT-SPI
+      # bindings that stock Ubuntu runners do not ship.
+      - name: Install Linux computer-use provider dependencies
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-atspi-2.0 at-spi2-core xclip xdotool
+
+      # No ORCA_BUILD_IDENTITY / PostHog key: testbed builds must stay
+      # unofficial so telemetry stays disabled at the transport gate.
+      - name: Build app
+        if: steps.gate.outputs.run == 'true'
+        run: pnpm build:release
+
+      - name: Package installers
+        if: steps.gate.outputs.run == 'true'
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 40
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: node config/scripts/ensure-native-runtime.mjs --runtime=electron && ${{ matrix.pack }}
+
+      - name: Collect artifacts
+        if: steps.gate.outputs.run == 'true'
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          shopt -s nullglob
+          for f in dist/*.exe dist/*.zip dist/*.dmg dist/*.AppImage dist/*.deb; do
+            cp "$f" upload/
+          done
+          ls -la upload
+          test -n "$(ls -A upload)"
+
+      - name: Upload workflow artifact
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-testbed-${{ matrix.platform }}
+          path: upload/*
+          retention-days: 14
+
+      - name: Attach artifacts to the prerelease
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" upload/* --clobber
