@@ -61,6 +61,7 @@ export function useDiffHunkStagingAction(
         return
       }
       const state = useAppStore.getState()
+      let statusRefreshed = false
       try {
         await refreshGitStatusForWorktree({
           settings,
@@ -74,14 +75,17 @@ export function useDiffHunkStagingAction(
             fetchUpstreamStatus: state.fetchUpstreamStatus
           }
         })
+        statusRefreshed = true
       } catch (err) {
         // Why: polling reconciles status soon anyway; the hunk itself already applied.
         console.warn('[diff-hunk] git status refresh after hunk apply failed', err)
       }
-      // Why: the status-change auto-reload skips tabs whose row left their area,
-      // but staging the last hunk must still visibly empty this diff.
+      // Why: the status-change auto-reload skips tabs whose row left their area, but staging the
+      // last hunk must still visibly empty this diff. A failed refresh leaves pre-apply entries in
+      // the store, which would read as "still reloadable" and suppress the explicit reload while no
+      // status change ever fires — so force it whenever the refresh did not land.
       const entries = useAppStore.getState().gitStatusByWorktree[activeFile.worktreeId]?.entries
-      if (!shouldReloadDiffOnGitStatusChange(activeFile, entries)) {
+      if (!statusRefreshed || !shouldReloadDiffOnGitStatusChange(activeFile, entries)) {
         reloadContent(activeFile)
       }
     },
