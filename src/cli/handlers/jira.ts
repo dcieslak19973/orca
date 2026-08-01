@@ -151,10 +151,11 @@ export const JIRA_HANDLERS: Record<string, CommandHandler> = {
       title: getRequiredStringFlag(ctx.flags, 'title'),
       description: getOptionalStringFlag(ctx.flags, 'description')
     })
-    if (!response.result.ok) {
-      throw new RuntimeClientError('invalid_argument', response.result.error)
+    const created = response.result
+    if (!created.ok) {
+      throw new RuntimeClientError('invalid_argument', created.error)
     }
-    printResult(response, ctx.json, formatJiraCreate)
+    printResult({ ...response, result: created }, ctx.json, formatJiraCreate)
   },
   'jira project list': async (ctx) => {
     const response = await ctx.client.call<JiraProject[]>('jira.listProjects', {

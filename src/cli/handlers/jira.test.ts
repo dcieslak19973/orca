@@ -214,6 +214,28 @@ describe('orca jira CLI handlers', () => {
     expect(process.exitCode).toBe(1)
   })
 
+  it('prints the created key and URL on success', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        ok: true,
+        id: '10042',
+        key: 'ENG-9',
+        url: 'https://example.atlassian.net/browse/ENG-9'
+      })
+    )
+
+    await main(
+      ['jira', 'create', '--project', 'ENG', '--type', '10001', '--title', 'Broken login'],
+      '/tmp/repo'
+    )
+
+    expect(vi.mocked(console.log).mock.calls[0][0]).toBe(
+      'Created ENG-9\nURL: https://example.atlassian.net/browse/ENG-9'
+    )
+    expect(process.exitCode).toBeUndefined()
+  })
+
   it('surfaces an ok:false create body as a CLI failure', async () => {
     queueFixtures(callMock, okFixture('req_create', { ok: false, error: 'Project not found' }))
 
