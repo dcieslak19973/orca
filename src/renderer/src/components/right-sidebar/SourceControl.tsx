@@ -234,6 +234,7 @@ import {
 } from '@/lib/source-control-commit-draft-session'
 import { hasExpandedCommitFailureDetails, summarizeCommitFailure } from './commit-failure-summary'
 import {
+  findSideSplitDiffTargetGroupId,
   isSourceControlSplitOpenModifier,
   shouldOpenSourceControlRowAsPreview,
   toPermanentSourceControlRowOpenEvent,
@@ -4410,6 +4411,51 @@ function SourceControlInner(): React.JSX.Element {
     [activeGroupIdByWorktree, activeWorktreeId, createEmptySplitGroup, groupsByWorktree, isMac]
   )
 
+  const openDiffsInSideSplit = settings?.sourceControlOpenDiffsInSideSplit ?? false
+
+  // Why: with the side-split setting on, diff opens target the worktree's diff column (parked
+  // preview's group, else an existing diff group, else a fresh right split) instead of covering
+  // the active group; modifier-click still forces a brand-new split with a permanent tab.
+  const resolveDiffOpenPlacement = useCallback(
+    (
+      event?: SourceControlRowOpenEvent
+    ): { targetGroupId: string | undefined; preview: boolean } => {
+      const modifierGroupId = resolveSplitTargetGroupId(event)
+      if (modifierGroupId) {
+        return {
+          targetGroupId: modifierGroupId,
+          preview: shouldOpenSourceControlRowAsPreview(event, modifierGroupId)
+        }
+      }
+      const preview = shouldOpenSourceControlRowAsPreview(event, undefined)
+      if (!openDiffsInSideSplit || !activeWorktreeId) {
+        return { targetGroupId: undefined, preview }
+      }
+      const tabs = useAppStore.getState().unifiedTabsByWorktree[activeWorktreeId] ?? []
+      const activeGroupId =
+        activeGroupIdByWorktree[activeWorktreeId] ?? groupsByWorktree[activeWorktreeId]?.[0]?.id
+      const existingGroupId = findSideSplitDiffTargetGroupId(tabs, activeGroupId)
+      if (existingGroupId) {
+        return { targetGroupId: existingGroupId, preview }
+      }
+      if (!activeGroupId) {
+        return { targetGroupId: undefined, preview }
+      }
+      return {
+        targetGroupId: createEmptySplitGroup(activeWorktreeId, activeGroupId, 'right') ?? undefined,
+        preview
+      }
+    },
+    [
+      activeGroupIdByWorktree,
+      activeWorktreeId,
+      createEmptySplitGroup,
+      groupsByWorktree,
+      openDiffsInSideSplit,
+      resolveSplitTargetGroupId
+    ]
+  )
+
   // Why: a stable string signature keeps this selector referentially stable so the panel re-renders only when the active editor file changes; null when the tab isn't an editor.
   const activeOpenFileSignature = useAppStore((s) => {
     if (!activeWorktreeId) {
@@ -4449,8 +4495,7 @@ function SourceControlInner(): React.JSX.Element {
       if (!activeWorktreeId || !worktreePath) {
         return
       }
-      const targetGroupId = resolveSplitTargetGroupId(event)
-      const openAsPreview = shouldOpenSourceControlRowAsPreview(event, targetGroupId)
+      const { targetGroupId, preview: openAsPreview } = resolveDiffOpenPlacement(event)
       if (entry.conflictKind && entry.conflictStatus) {
         if (entry.conflictStatus === 'unresolved') {
           trackConflictPath(activeWorktreeId, entry.path, entry.conflictKind)
@@ -4486,7 +4531,7 @@ function SourceControlInner(): React.JSX.Element {
     [
       activeWorktreeId,
       worktreePath,
-      resolveSplitTargetGroupId,
+      resolveDiffOpenPlacement,
       trackConflictPath,
       openConflictFile,
       openDiff,
@@ -5099,17 +5144,17 @@ function SourceControlInner(): React.JSX.Element {
       ) {
         return
       }
-      const targetGroupId = resolveSplitTargetGroupId(event)
+      const { targetGroupId, preview } = resolveDiffOpenPlacement(event)
       openBranchDiff(
         activeWorktreeId,
         worktreePath,
         entry,
         branchSummary,
         detectLanguage(entry.path),
-        { targetGroupId, preview: shouldOpenSourceControlRowAsPreview(event, targetGroupId) }
+        { targetGroupId, preview }
       )
     },
-    [activeWorktreeId, branchSummary, openBranchDiff, resolveSplitTargetGroupId, worktreePath]
+    [activeWorktreeId, branchSummary, openBranchDiff, resolveDiffOpenPlacement, worktreePath]
   )
 
   const { loadCommitFiles, openHistoryCommitDiff, openCommitFile, handleCommitAction } =
