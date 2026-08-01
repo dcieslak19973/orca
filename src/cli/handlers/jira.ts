@@ -80,18 +80,30 @@ async function resolveTransitionId(ctx: HandlerContext, key: string): Promise<st
     siteId: siteId(ctx.flags)
   })
   const target = wanted.trim().toLowerCase()
-  const match = response.result.find(
+  const matches = response.result.filter(
     (transition) =>
       transition.name.toLowerCase() === target || transition.to.name.toLowerCase() === target
   )
-  if (!match) {
+  if (matches.length === 0) {
     const available = response.result.map((transition) => transition.name).join(', ')
     throw new RuntimeClientError(
       'invalid_argument',
       `No transition matching "${wanted}". Available: ${available || 'none'}`
     )
   }
-  return match.id
+  // Why: one transition's name can equal another's destination status, so a
+  // silent first-match would move the issue somewhere the caller did not name.
+  // Refuse and hand back the ids so `--to-id` can disambiguate.
+  if (matches.length > 1) {
+    const candidates = matches
+      .map((transition) => `${transition.id} (${transition.name} → ${transition.to.name})`)
+      .join(', ')
+    throw new RuntimeClientError(
+      'invalid_argument',
+      `Ambiguous transition "${wanted}". Retry with --to-id: ${candidates}`
+    )
+  }
+  return matches[0].id
 }
 
 async function applyUpdate(ctx: HandlerContext, updates: JiraUpdates): Promise<void> {

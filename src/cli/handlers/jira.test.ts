@@ -132,6 +132,27 @@ describe('orca jira CLI handlers', () => {
     expect(process.exitCode).toBe(1)
   })
 
+  // Why: a transition name can collide with another transition's destination
+  // status, and silently taking the first match would move the issue somewhere
+  // the caller never named.
+  it('refuses an ambiguous --to instead of taking the first match', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_transitions', [
+        { id: '21', name: 'In Review', to: { id: '3', name: 'Reviewing' } },
+        { id: '31', name: 'Send Back', to: { id: '4', name: 'In Review' } }
+      ])
+    )
+
+    await main(['jira', 'status', 'set', 'ENG-1', '--to', 'In Review'], '/tmp/repo')
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(console.error).mock.calls[0][0]).toContain(
+      'Ambiguous transition "In Review". Retry with --to-id: 21 (In Review → Reviewing), 31 (Send Back → In Review)'
+    )
+    expect(process.exitCode).toBe(1)
+  })
+
   it('skips the transition lookup when --to-id is given', async () => {
     queueFixtures(callMock, okFixture('req_update', { ok: true }))
 
