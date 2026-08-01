@@ -101,6 +101,12 @@ jobs:
         env:
           ORCA_LOCAL_BUILD_VERSION: ${{ steps.plan.outputs.version }}
 
+      # Why: a packed asar can carry correct offsets but wrong bytes (a stray
+      # file still being written at pack time shifts every entry after it).
+      # Electron then exits 1 with no output. Never publish that.
+      - name: Verify packaged asar integrity
+        run: node config/scripts/verify-packaged-asar.mjs dist/win-unpacked/resources/app.asar
+
       - name: Verify Windows node-pty ConPTY runtime
         shell: pwsh
         run: |
