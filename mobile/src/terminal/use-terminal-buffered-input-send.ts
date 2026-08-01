@@ -1,12 +1,13 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
+import type { MobileTerminalBufferedInputSendOutcome } from './mobile-terminal-buffered-input-send'
 
 type TerminalBufferedInputSend = (
-  send: () => Promise<unknown>,
-  onRejected: () => void
+  send: () => Promise<MobileTerminalBufferedInputSendOutcome>,
+  onRejected: () => void,
+  onUnknown: () => void
 ) => Promise<boolean>
 
-export function useTerminalBufferedInputSend(inputScope: string): TerminalBufferedInputSend {
-  const inputGeneration = useMemo(() => Symbol('terminal-buffered-input-generation'), [inputScope])
+export function useTerminalBufferedInputSend(inputGeneration: symbol): TerminalBufferedInputSend {
   const committedInputGenerationRef = useRef(inputGeneration)
   const sendingInputGenerationRef = useRef<symbol | null>(null)
 
@@ -18,7 +19,7 @@ export function useTerminalBufferedInputSend(inputScope: string): TerminalBuffer
   }, [inputGeneration])
 
   return useCallback(
-    async (send, onRejected): Promise<boolean> => {
+    async (send, onRejected, onUnknown): Promise<boolean> => {
       if (
         committedInputGenerationRef.current !== inputGeneration ||
         sendingInputGenerationRef.current === inputGeneration
@@ -26,16 +27,20 @@ export function useTerminalBufferedInputSend(inputScope: string): TerminalBuffer
         return false
       }
       sendingInputGenerationRef.current = inputGeneration
+      let outcome: MobileTerminalBufferedInputSendOutcome = 'unknown'
       try {
-        await send()
+        outcome = await send()
       } catch {
-        if (
+        outcome = 'unknown'
+      } finally {
+        const isCurrent =
           committedInputGenerationRef.current === inputGeneration &&
           sendingInputGenerationRef.current === inputGeneration
-        ) {
+        if (isCurrent && outcome === 'rejected') {
           onRejected()
+        } else if (isCurrent && outcome === 'unknown') {
+          onUnknown()
         }
-      } finally {
         if (sendingInputGenerationRef.current === inputGeneration) {
           sendingInputGenerationRef.current = null
         }

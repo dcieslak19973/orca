@@ -10,9 +10,9 @@ import {
 import {
   queueTerminalLiveHandleSend,
   queueTerminalLiveBoundarySend,
-  queueTerminalLiveMirrorSend,
   waitForTerminalLivePendingFlush
 } from './terminal-live-pending-flush-state'
+import { queueTerminalLiveMirrorPayloadSend } from './terminal-live-mirror-payload-send'
 
 type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly activeHandleRef: RefObject<string | null>
@@ -21,6 +21,7 @@ type TerminalLivePendingInputFlushOptions<TTabType extends string> = {
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputGeneration: symbol
   readonly liveInputProducerGeneration: symbol
+  readonly liveInputScope: string
   readonly liveInputTerminalHandlesRef: RefObject<Set<string>>
   readonly sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender>
   readonly setLiveInputCapture: (text: string) => void
@@ -48,12 +49,12 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   liveInputRef,
   liveInputGeneration,
   liveInputProducerGeneration,
+  liveInputScope,
   liveInputTerminalHandlesRef,
   sendLiveTerminalInputRef,
   setLiveInputCapture
 }: TerminalLivePendingInputFlushOptions<TTabType>): TerminalLivePendingInputFlush {
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleSendTailsRef = useRef(new Map<string, Promise<boolean>>())
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
   const lifecycleEpochRef = useRef(0)
   const appliedLiveInputGenerationRef = useRef(liveInputGeneration)
@@ -184,22 +185,20 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       }
 
       const payload = buildTerminalLiveMirrorPayload(step)
-      if (payload.length === 0) {
-        return waitForPendingLiveInputFlush()
-      }
-      const lifecycleEpoch = lifecycleEpochRef.current
-      return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () =>
-        queueTerminalLiveHandleSend(handleSendTailsRef, handle, () => {
-          if (
-            disposedRef.current ||
-            lifecycleEpoch !== lifecycleEpochRef.current ||
-            liveInputGeneration !== currentLiveInputGenerationRef.current
-          ) {
-            return Promise.resolve(false)
-          }
-          return sendLiveTerminalInputRef.current(handle, payload)
-        })
-      )
+      return queueTerminalLiveMirrorPayloadSend({
+        clearPendingLiveInputCommit,
+        currentLiveInputGenerationRef,
+        disposedRef,
+        handle,
+        inputScope: liveInputScope,
+        lifecycleEpoch: lifecycleEpochRef.current,
+        lifecycleEpochRef,
+        liveInputGeneration,
+        payload,
+        pendingLiveInputFlushRef,
+        sendLiveTerminalInputRef,
+        waitForPendingLiveInputFlush
+      })
     },
     [
       activeHandleRef,
@@ -207,6 +206,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       clearHeldCommitTimer,
       inputStateReady,
       liveInputGeneration,
+      liveInputScope,
       liveInputTerminalHandlesRef,
       resetMirrorState,
       sendLiveTerminalInputRef,
@@ -242,7 +242,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
         if (!targetHandle) {
           return Promise.resolve(false)
         }
-        return queueTerminalLiveHandleSend(handleSendTailsRef, targetHandle, () =>
+        return queueTerminalLiveHandleSend(liveInputScope, targetHandle, () =>
           inputStateReady &&
           !disposedRef.current &&
           lifecycleEpoch === lifecycleEpochRef.current &&
@@ -288,6 +288,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       inputStateReady,
       liveInputTerminalHandlesRef,
       liveInputProducerGeneration,
+      liveInputScope,
       runMirrorStep
     ]
   )

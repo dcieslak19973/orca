@@ -94,6 +94,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     liveInputRef,
     liveInputGeneration,
     liveInputProducerGeneration,
+    liveInputScope,
     liveInputTerminalHandlesRef,
     sendLiveTerminalInputRef,
     setLiveInputCapture

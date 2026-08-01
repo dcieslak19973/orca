@@ -145,21 +145,36 @@ describe('session route offline-compose wiring', () => {
     expect(hookCall).toContain('inputStateReady: terminalInputStateReady')
   })
 
-  it('keeps every keystroke-grade terminal send now-or-never so nothing replays after reconnect', () => {
+  it('routes buffered, raw accessory, and gesture sends through the live-input boundary', () => {
     const bufferedSend = routeSlice(
       'async function handleSend()',
       'async function handleAccessoryKey'
     )
-    expect(bufferedSend).toContain("'terminal.send'")
-    expect(bufferedSend).toContain('TERMINAL_INPUT_SEND_OPTIONS')
+    expect(bufferedSend).toContain('sendLiveInputExternalBoundary(targetHandle')
+    expect(bufferedSend).toContain('sendMobileTerminalBufferedInput({')
+
+    const rawAccessorySend = routeSlice(
+      'async function handleAccessoryKey',
+      'const sendLiveTerminalInput = useCallback'
+    )
+    expect(rawAccessorySend).toContain('sendLiveInputExternalBoundary(targetHandle')
+    expect(rawAccessorySend).toContain('sendTerminalLiveAccessoryRawBytes({')
 
     const gestureSend = routeSlice(
       'const flushTerminalGestureInput = useCallback',
       'const enqueueTerminalGestureInput = useCallback'
     )
-    expect(gestureSend).toContain("'terminal.send'")
-    expect(gestureSend).toContain('TERMINAL_INPUT_SEND_OPTIONS')
+    expect(gestureSend).toContain('sendLiveInputExternalBoundary(handle')
+    expect(gestureSend).toContain('sendMobileTerminalLiveInput({')
     expect(TERMINAL_INPUT_SEND_OPTIONS).toEqual({ failWhenDisconnected: true })
+  })
+
+  it('stops accessory repeats when the reused route resets or unmounts', () => {
+    const routeReset = routeSlice(
+      '// Why: Expo reuses this screen across worktrees;',
+      "useEffect(() => {\n    if (connState !== 'connected')"
+    )
+    expect(routeReset.match(/stopAccessoryRepeat\(\)/g)).toHaveLength(2)
   })
 
   it('tags terminal sends with the device presence lock only when a token exists', () => {

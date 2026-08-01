@@ -125,16 +125,19 @@ import {
 import { dismissTerminalKeyboard } from '../../../../src/terminal/terminal-keyboard-dismiss'
 import type { TerminalLiveInputSender } from '../../../../src/terminal/terminal-live-input-sender'
 import { sendMobileTerminalLiveInput } from '../../../../src/terminal/mobile-terminal-live-input-send'
+import {
+  mergeRejectedTerminalBufferedInput,
+  sendMobileTerminalBufferedInput,
+  type MobileTerminalBufferedInputSendOutcome
+} from '../../../../src/terminal/mobile-terminal-buffered-input-send'
 import { sendMobileTerminalQueryReply } from '../../../../src/terminal/mobile-terminal-query-reply'
 import { TERMINAL_QUERY_REPLY_INPUT_RUNTIME_CAPABILITY } from '../../../../../src/shared/protocol-version'
 import { useTerminalLiveInputCommit } from '../../../../src/terminal/use-terminal-live-input-commit'
 import { useTerminalInputCommittedSnapshot } from '../../../../src/terminal/use-terminal-input-committed-snapshot'
 import { useTerminalBufferedInputSend } from '../../../../src/terminal/use-terminal-buffered-input-send'
+import { useTerminalAccessoryRepeat } from '../../../../src/terminal/use-terminal-accessory-repeat'
 import { resolveMobileTerminalInputGate } from '../../../../src/terminal/terminal-input-connection-gate'
-import {
-  buildTerminalSendParams,
-  TERMINAL_INPUT_SEND_OPTIONS
-} from '../../../../src/terminal/terminal-send-request'
+import { buildTerminalSendParams } from '../../../../src/terminal/terminal-send-request'
 import {
   getTerminalCommandKeyboardType,
   getTerminalLiveInputKeyboardType
@@ -1001,7 +1004,7 @@ export default function SessionScreen() {
   const ptyModesRef = useRef<Map<string, TerminalModes>>(new Map())
   const terminalGestureInputBucketsRef = useRef<Map<string, TerminalGestureInputBucket>>(new Map())
   const terminalGestureInputQueuesRef = useRef<Map<string, TerminalGestureInputQueue>>(new Map())
-  const terminalGestureInputInFlightRef = useRef<Set<string>>(new Set())
+  const terminalGestureInputInFlightRef = useRef<Map<string, symbol>>(new Map())
   const terminalCwdRef = useRef<Map<string, string>>(new Map())
   const initialModesSeenRef = useRef<Set<string>>(new Set())
   const deviceTokenRef = useRef<string | null>(null)
@@ -1060,7 +1063,6 @@ export default function SessionScreen() {
     client,
     connState
   })
-  const runTerminalBufferedInputSend = useTerminalBufferedInputSend(terminalInputScope)
   const {
     clearPendingLiveInputCommit,
     handleLiveInputAccessoryBytes,
@@ -1083,6 +1085,9 @@ export default function SessionScreen() {
     sendLiveTerminalInputRef,
     setLiveInputCapture
   })
+  const runTerminalBufferedInputSend = useTerminalBufferedInputSend(liveInputProducerGeneration)
+  const { startAccessoryRepeat, stopAccessoryRepeat } =
+    useTerminalAccessoryRepeat(handleAccessoryKey)
   const { canCompose, canSend } = resolveMobileTerminalInputGate({
     connState,
     activeHandle: terminalInputStateReady ? activeHandle : null,
@@ -2623,6 +2628,7 @@ export default function SessionScreen() {
 
   useLayoutEffect(() => {
     // Why: Expo reuses this screen across worktrees; reset route state so it can't open stale UI or reject the next snapshot.
+    stopAccessoryRepeat()
     terminalInputStateScopeRef.current = terminalInputScope
     sessionTabActionSheetRequestSeqRef.current += 1
     sessionTabActionSheetKeyboardHideSubRef.current?.remove()
@@ -2660,12 +2666,14 @@ export default function SessionScreen() {
       sessionTabActionSheetKeyboardHideSubRef.current?.remove()
       clearPendingLiveInputCommit()
       clearDelayedActionTimers()
+      stopAccessoryRepeat()
     }
   }, [
     clearDelayedActionTimers,
     clearPendingLiveInputCommit,
     clearTerminalCache,
     hostId,
+    stopAccessoryRepeat,
     worktreeId
   ])
 
@@ -3003,19 +3011,20 @@ export default function SessionScreen() {
     await runTerminalBufferedInputSend(
       async () => {
         setInput('')
-        // Why: fail now and restore the text — a send parked across a reconnect would execute long after the tap.
-        await client.sendRequest(
-          'terminal.send',
-          buildTerminalSendParams({
-            terminal: targetHandle,
-            text,
-            enter: true,
-            deviceToken: deviceTokenRef.current
-          }),
-          TERMINAL_INPUT_SEND_OPTIONS
-        )
+        let outcome: MobileTerminalBufferedInputSendOutcome = 'rejected'
+        const accepted = await sendLiveInputExternalBoundary(targetHandle, async () => {
+          outcome = await sendMobileTerminalBufferedInput({
+            client,
+            deviceToken: deviceTokenRef.current,
+            targetHandle,
+            text
+          })
+          return outcome === 'accepted'
+        })
+        return accepted ? 'accepted' : outcome
       },
-      () => setInput(text)
+      () => setInput((current) => mergeRejectedTerminalBufferedInput(text, current)),
+      () => showToast('Command delivery uncertain', 2000)
     )
   }
 
@@ -3028,15 +3037,17 @@ export default function SessionScreen() {
     if (accessoryCommit.kind !== 'allow-raw') {
       return
     }
-    await sendTerminalLiveAccessoryRawBytes({
-      client: clientRef.current,
-      targetHandle,
-      activeHandle: activeHandleRef.current,
-      activeSessionTabType: activeSessionTabTypeRef.current,
-      connState: connStateRef.current,
-      bytes: input.bytes,
-      deviceToken: deviceTokenRef.current
-    })
+    await sendLiveInputExternalBoundary(targetHandle, () =>
+      sendTerminalLiveAccessoryRawBytes({
+        client: clientRef.current,
+        targetHandle,
+        activeHandle: activeHandleRef.current,
+        activeSessionTabType: activeSessionTabTypeRef.current,
+        connState: connStateRef.current,
+        bytes: input.bytes,
+        deviceToken: deviceTokenRef.current
+      })
+    )
   }
 
   const sendLiveTerminalInput = useCallback(
@@ -3300,58 +3311,63 @@ export default function SessionScreen() {
     []
   )
 
-  const flushTerminalGestureInput = useCallback(async (handle: string) => {
-    const queued = terminalGestureInputQueuesRef.current.get(handle)
-    if (!queued) {
-      return
-    }
-    if (queued.timer) {
-      clearTimeout(queued.timer)
-      queued.timer = null
-    }
-    if (terminalGestureInputInFlightRef.current.has(handle)) {
-      return
-    }
+  const flushTerminalGestureInput = useCallback(
+    async (handle: string) => {
+      const queued = terminalGestureInputQueuesRef.current.get(handle)
+      if (!queued) {
+        return
+      }
+      if (queued.timer) {
+        clearTimeout(queued.timer)
+        queued.timer = null
+      }
+      if (terminalGestureInputInFlightRef.current.has(handle)) {
+        return
+      }
 
-    terminalGestureInputQueuesRef.current.delete(handle)
-    const isActive =
-      handle === activeHandleRef.current && activeSessionTabTypeRef.current === 'terminal'
-    const isFresh = Date.now() - queued.lastUpdatedMs <= TERMINAL_GESTURE_INPUT_MAX_QUEUE_AGE_MS
-    const rpc = clientRef.current
-    if (!rpc || connStateRef.current !== 'connected' || !isActive || !isFresh) {
-      return
-    }
+      terminalGestureInputQueuesRef.current.delete(handle)
+      const isActive =
+        handle === activeHandleRef.current && activeSessionTabTypeRef.current === 'terminal'
+      const isFresh = Date.now() - queued.lastUpdatedMs <= TERMINAL_GESTURE_INPUT_MAX_QUEUE_AGE_MS
+      if (!clientRef.current || connStateRef.current !== 'connected' || !isActive || !isFresh) {
+        return
+      }
 
-    terminalGestureInputInFlightRef.current.add(handle)
-    try {
-      // Why: gesture arrows parked across a reconnect would move a TUI long after the swipe.
-      await rpc.sendRequest(
-        'terminal.send',
-        buildTerminalSendParams({
-          terminal: handle,
-          text: queued.bytes,
-          enter: false,
-          deviceToken: deviceTokenRef.current
-        }),
-        TERMINAL_INPUT_SEND_OPTIONS
-      )
-    } catch {
-      // Transient failure
-    } finally {
-      terminalGestureInputInFlightRef.current.delete(handle)
-      const next = terminalGestureInputQueuesRef.current.get(handle)
-      if (next) {
-        if (Date.now() - next.lastUpdatedMs > TERMINAL_GESTURE_INPUT_MAX_QUEUE_AGE_MS) {
-          if (next.timer) {
-            clearTimeout(next.timer)
+      const flushGeneration = Symbol('terminal-gesture-input-flush')
+      terminalGestureInputInFlightRef.current.set(handle, flushGeneration)
+      try {
+        await sendLiveInputExternalBoundary(handle, () =>
+          sendMobileTerminalLiveInput({
+            client: clientRef.current,
+            connState: connStateRef.current,
+            targetHandle: handle,
+            activeHandle: activeHandleRef.current,
+            activeSessionTabType: activeSessionTabTypeRef.current,
+            text: queued.bytes,
+            deviceToken: deviceTokenRef.current
+          })
+        )
+      } catch {
+        // Transient failure
+      } finally {
+        if (terminalGestureInputInFlightRef.current.get(handle) === flushGeneration) {
+          terminalGestureInputInFlightRef.current.delete(handle)
+          const next = terminalGestureInputQueuesRef.current.get(handle)
+          if (next) {
+            if (Date.now() - next.lastUpdatedMs > TERMINAL_GESTURE_INPUT_MAX_QUEUE_AGE_MS) {
+              if (next.timer) {
+                clearTimeout(next.timer)
+              }
+              terminalGestureInputQueuesRef.current.delete(handle)
+            } else {
+              void flushTerminalGestureInput(handle)
+            }
           }
-          terminalGestureInputQueuesRef.current.delete(handle)
-        } else {
-          void flushTerminalGestureInput(handle)
         }
       }
-    }
-  }, [])
+    },
+    [sendLiveInputExternalBoundary]
+  )
 
   const enqueueTerminalGestureInput = useCallback(
     (handle: string, bytes: string, sequenceCount: number) => {
@@ -3453,33 +3469,6 @@ export default function SessionScreen() {
     }
   }
 
-  // Why: hold-to-repeat matches iOS cadence (400ms then 45ms); non-repeatable keys fire once (holding is destructive).
-  const repeatTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const repeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // Why: ref keeps repeat firing the current callback; else a mid-hold tab switch/reconnect routes bytes to a stale terminal.
-  const handleAccessoryKeyRef = useRef(handleAccessoryKey)
-  handleAccessoryKeyRef.current = handleAccessoryKey
-  const stopAccessoryRepeat = useCallback(() => {
-    if (repeatTimeoutRef.current) {
-      clearTimeout(repeatTimeoutRef.current)
-      repeatTimeoutRef.current = null
-    }
-    if (repeatIntervalRef.current) {
-      clearInterval(repeatIntervalRef.current)
-      repeatIntervalRef.current = null
-    }
-  }, [])
-  const startAccessoryRepeat = useCallback(
-    (input: ReturnType<typeof createTerminalLiveAccessoryInput>) => {
-      stopAccessoryRepeat()
-      repeatTimeoutRef.current = setTimeout(() => {
-        repeatIntervalRef.current = setInterval(() => {
-          void handleAccessoryKeyRef.current(input)
-        }, 45)
-      }, 400)
-    },
-    [stopAccessoryRepeat]
-  )
   const setMobileSessionRootRef = useCallback(
     (node: View | null): void => {
       if (node !== null) {

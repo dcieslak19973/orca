@@ -43,7 +43,9 @@ type AccessoryInputCommitHarnessOptions = {
   readonly pendingHandle?: string | null
   readonly sendResult?: boolean
   readonly flushResult?: boolean
-  readonly producerCurrent?: boolean
+  readonly liveInputActive?: boolean
+  readonly producerCurrent?: boolean | (() => boolean)
+  readonly waitForPendingFlush?: () => Promise<boolean>
   readonly waitResult?: boolean
 }
 
@@ -64,7 +66,9 @@ function createAccessoryInputCommitHarness({
   pendingHandle = null,
   sendResult = true,
   flushResult = true,
+  liveInputActive = true,
   producerCurrent = true,
+  waitForPendingFlush,
   waitResult = true
 }: AccessoryInputCommitHarnessOptions = {}): AccessoryInputCommitHarness {
   const activeHandle = 'terminal-a'
@@ -72,7 +76,7 @@ function createAccessoryInputCommitHarness({
   const sentLiveInputTextRef: RefObject<string> = { current: sentText }
   const pendingLiveInputHandleRef: RefObject<string | null> = { current: pendingHandle }
   const liveInputRef: RefObject<TextInput | null> = { current: null }
-  const liveInputTerminalHandles = new Set([activeHandle])
+  const liveInputTerminalHandles = new Set(liveInputActive ? [activeHandle] : [])
   const sent: string[] = []
   const sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender> = {
     current: async (_handle, bytes) => {
@@ -86,7 +90,9 @@ function createAccessoryInputCommitHarness({
     async (_expectedHandle: string, sendBoundary: () => Promise<boolean>) =>
       flushResult ? sendBoundary() : false
   )
-  const waitForPendingLiveInputFlush = vi.fn(async () => waitResult)
+  const waitForPendingLiveInputFlush = vi.fn(
+    waitForPendingFlush ?? (async (): Promise<boolean> => waitResult)
+  )
   const setLiveInputCapture = vi.fn((_text: string) => {})
 
   let commit: AccessoryInputCommitHarness['commit'] | null = null
@@ -98,7 +104,8 @@ function createAccessoryInputCommitHarness({
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
       heldLiveInputTextRef,
-      isLiveInputProducerCurrent: () => producerCurrent,
+      isLiveInputProducerCurrent: () =>
+        typeof producerCurrent === 'function' ? producerCurrent() : producerCurrent,
       liveInputRef,
       liveInputTerminalHandles,
       pendingLiveInputHandleRef,
@@ -171,6 +178,25 @@ describe('terminal live accessory inactive input commit result', () => {
 })
 
 describe('terminal live accessory input commit hook', () => {
+  it('suppresses inactive raw fallback when its producer goes stale during the flush', async () => {
+    let resolveFlush: (sent: boolean) => void = () => undefined
+    const flush = new Promise<boolean>((resolve) => {
+      resolveFlush = resolve
+    })
+    let producerCurrent = true
+    const harness = createAccessoryInputCommitHarness({
+      liveInputActive: false,
+      producerCurrent: () => producerCurrent,
+      waitForPendingFlush: () => flush
+    })
+    const commit = harness.commit({ bytes: '\r' })
+    producerCurrent = false
+    resolveFlush(true)
+
+    await expect(commit).resolves.toEqual({ kind: 'suppress-raw' })
+    harness.unmount()
+  })
+
   it('suppresses a stale local edit before it mutates the capture field', async () => {
     const harness = createAccessoryInputCommitHarness({
       heldText: 'か',

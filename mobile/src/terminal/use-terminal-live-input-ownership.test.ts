@@ -46,6 +46,7 @@ function createOwnershipHarness() {
       liveInputRef: { current: null } as RefObject<TextInput | null>,
       liveInputGeneration,
       liveInputProducerGeneration,
+      liveInputScope: 'terminal-live-input-ownership',
       liveInputTerminalHandlesRef: { current: new Set(['terminal-a', 'terminal-b']) },
       sendLiveTerminalInputRef: {
         current: async (_handle, bytes) => {

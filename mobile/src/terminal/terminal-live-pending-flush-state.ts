@@ -2,9 +2,7 @@ export type TerminalLivePendingFlushState = {
   current: Promise<boolean> | null
 }
 
-export type TerminalLiveHandleSendState = {
-  current: Map<string, Promise<boolean>>
-}
+const terminalLiveHandleSendTails = new Map<string, Map<string, Promise<boolean>>>()
 
 export function waitForTerminalLivePendingFlush(
   state: TerminalLivePendingFlushState
@@ -13,11 +11,13 @@ export function waitForTerminalLivePendingFlush(
 }
 
 export function queueTerminalLiveHandleSend(
-  state: TerminalLiveHandleSendState,
+  inputScope: string,
   handle: string,
   send: () => Promise<boolean>
 ): Promise<boolean> {
-  const previousSend = state.current.get(handle)
+  const scopeTails = terminalLiveHandleSendTails.get(inputScope) ?? new Map()
+  terminalLiveHandleSendTails.set(inputScope, scopeTails)
+  const previousSend = scopeTails.get(handle)
   const sendResult = (async () => {
     if (previousSend) {
       await previousSend.catch(() => false)
@@ -25,10 +25,13 @@ export function queueTerminalLiveHandleSend(
     return send()
   })()
   const trackedSend = sendResult.catch(() => false)
-  state.current.set(handle, trackedSend)
+  scopeTails.set(handle, trackedSend)
   void trackedSend.then(() => {
-    if (state.current.get(handle) === trackedSend) {
-      state.current.delete(handle)
+    if (scopeTails.get(handle) === trackedSend) {
+      scopeTails.delete(handle)
+      if (scopeTails.size === 0) {
+        terminalLiveHandleSendTails.delete(inputScope)
+      }
     }
   })
   return sendResult

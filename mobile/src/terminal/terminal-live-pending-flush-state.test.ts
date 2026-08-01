@@ -1,11 +1,46 @@
 import { describe, expect, it, vi } from 'vitest'
 import { sendTerminalLiveControlAfterPendingFlush } from './terminal-live-control-send-order'
 import {
+  queueTerminalLiveHandleSend,
   queueTerminalLiveBoundarySend,
   queueTerminalLiveMirrorSend,
   waitForTerminalLivePendingFlush,
   type TerminalLivePendingFlushState
 } from './terminal-live-pending-flush-state'
+
+describe('terminal live handle send queue', () => {
+  it('orders one handle across producers while another handle stays independent', async () => {
+    const order: string[] = []
+    let resolveFirst: (value: boolean) => void = () => undefined
+    const first = queueTerminalLiveHandleSend(
+      'host-a\0worktree-a',
+      'terminal-a',
+      () =>
+        new Promise<boolean>((resolve) => {
+          order.push('a1')
+          resolveFirst = resolve
+        })
+    )
+    const second = queueTerminalLiveHandleSend('host-a\0worktree-a', 'terminal-a', async () => {
+      order.push('a2')
+      return true
+    })
+    const otherHandle = queueTerminalLiveHandleSend(
+      'host-a\0worktree-a',
+      'terminal-b',
+      async () => {
+        order.push('b')
+        return true
+      }
+    )
+
+    await expect(otherHandle).resolves.toBe(true)
+    expect(order).toEqual(['a1', 'b'])
+    resolveFirst(true)
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(order).toEqual(['a1', 'b', 'a2'])
+  })
+})
 
 describe('terminal live pending flush state', () => {
   it('Given no in-flight flush When waiting for the barrier Then allows control input', async () => {

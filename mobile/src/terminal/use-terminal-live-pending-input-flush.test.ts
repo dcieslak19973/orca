@@ -64,6 +64,7 @@ it('reserves a slow kana boundary before a newer live-input generation', async (
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
+      liveInputScope: 'pending-flush-boundary',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -126,6 +127,7 @@ it('preserves new kana when an old terminal boundary arrives late', async () => 
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
+      liveInputScope: 'pending-flush-late-boundary',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: (text) => captures.push(text)
@@ -187,6 +189,7 @@ it('cancels queued terminal sends when the hook unmounts', async () => {
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
+      liveInputScope: 'pending-flush-unmount',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined
@@ -249,6 +252,7 @@ it('cancels queued terminal boundaries when the connection drops', async () => {
       liveInputRef,
       liveInputGeneration: LIVE_INPUT_GENERATION,
       liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
+      liveInputScope: 'pending-flush-disconnect',
       liveInputTerminalHandlesRef,
       sendLiveTerminalInputRef,
       setLiveInputCapture: () => undefined
@@ -279,5 +283,72 @@ it('cancels queued terminal boundaries when the connection drops', async () => {
 
   await expect(boundary).resolves.toBe(false)
   expect(sent).toEqual(['か'])
+  act(() => renderer?.unmount())
+})
+
+it('invalidates dependent mirror deltas after a rejected current-generation send', async () => {
+  const activeHandle = 'terminal-a'
+  const activeHandleRef: RefObject<string | null> = { current: activeHandle }
+  const activeSessionTabTypeRef: RefObject<string | null> = { current: 'terminal' }
+  const liveInputTerminalHandlesRef: RefObject<Set<string>> = {
+    current: new Set([activeHandle])
+  }
+  const firstSend = createDeferredBoolean()
+  const sent: string[] = []
+  const sendLiveTerminalInputRef: RefObject<TerminalLiveInputSender> = {
+    current: async (_handle, bytes) => {
+      sent.push(bytes)
+      return sent.length === 1 ? firstSend.promise : true
+    }
+  }
+  const captures: string[] = []
+  let handlers: ReturnType<typeof useTerminalLivePendingInputFlush<string>> | null = null
+  let renderer: ReactTestRenderer | null = null
+
+  function Harness(): null {
+    handlers = useTerminalLivePendingInputFlush({
+      activeHandleRef,
+      activeSessionTabTypeRef,
+      inputStateReady: true,
+      liveInputRef: { current: null },
+      liveInputGeneration: LIVE_INPUT_GENERATION,
+      liveInputProducerGeneration: LIVE_INPUT_PRODUCER_GENERATION,
+      liveInputScope: 'pending-flush-rejected-mirror',
+      liveInputTerminalHandlesRef,
+      sendLiveTerminalInputRef,
+      setLiveInputCapture: (text) => captures.push(text)
+    })
+    return null
+  }
+
+  const restoreConsoleError = suppressReactTestRendererDeprecationWarning()
+  try {
+    act(() => {
+      renderer = create(createElement(Harness))
+    })
+  } finally {
+    restoreConsoleError()
+  }
+  if (!handlers || !renderer) {
+    throw new Error('terminal live pending-input hook did not render')
+  }
+
+  handlers.applyLiveInputMirror(activeHandle, 'かき')
+  handlers.applyLiveInputMirror(activeHandle, 'かきく')
+  const staleBoundary = handlers.runLiveInputBoundary(activeHandle, () =>
+    sendLiveTerminalInputRef.current(activeHandle, '\r')
+  )
+  await vi.waitFor(() => expect(sent).toEqual(['か']))
+
+  firstSend.resolve(false)
+  await expect(staleBoundary).resolves.toBe(false)
+  expect(sent).toEqual(['か'])
+  expect(captures.at(-1)).toBe('')
+
+  handlers.applyLiveInputMirror(activeHandle, 'さし')
+  await handlers.runLiveInputBoundary(activeHandle, () =>
+    sendLiveTerminalInputRef.current(activeHandle, '\r')
+  )
+  expect(sent).toEqual(['か', 'さ', 'し', '\r'])
   act(() => renderer?.unmount())
 })

@@ -63,7 +63,10 @@ export function useTerminalLiveAccessoryInputCommit({
         return { kind: 'allow-raw' }
       }
       if (!liveInputTerminalHandles.has(activeHandle)) {
-        return getTerminalLiveAccessoryInactiveInputCommitResult(waitForPendingLiveInputFlush)
+        const inactiveResult = await getTerminalLiveAccessoryInactiveInputCommitResult(
+          waitForPendingLiveInputFlush
+        )
+        return isLiveInputProducerCurrent() ? inactiveResult : { kind: 'suppress-raw' }
       }
       const ownsPendingState = pendingLiveInputHandleRef.current === activeHandle
       if (pendingLiveInputHandleRef.current && !ownsPendingState) {
