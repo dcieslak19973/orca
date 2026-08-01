@@ -35,6 +35,8 @@ type AgentDetectionCommand = {
 const SUPPORTED_POSIX_SHELLS = new Set(['sh', 'dash', 'bash', 'zsh', 'fish'])
 const CONSERVATIVE_SYSTEM_SHELL_DIRS = new Set(['/bin', '/usr/bin'])
 const AGENT_PATH_PREFIX = '__ORCA_AGENT_PATH__'
+const FORGE_CLI_ALLOWLIST = new Set(['gh', 'glab'])
+const FORGE_AUTH_TIMEOUT_MS = 10_000
 
 export class PreflightHandler {
   private dispatcher: RelayDispatcher
@@ -49,6 +51,7 @@ export class PreflightHandler {
     this.dispatcher.onRequest('preflight.detectWindowsTerminalCapabilities', () =>
       this.detectWindowsTerminalCapabilities()
     )
+    this.dispatcher.onRequest('preflight.detectForgeClis', (p) => this.detectForgeClis(p))
   }
 
   // Why: the client sends the command list rather than importing TUI_AGENT_CONFIG
@@ -121,6 +124,44 @@ export class PreflightHandler {
   // Windows has no POSIX shell on native OpenSSH hosts, so use where.exe there.
   private async isCommandOnPath(command: string): Promise<boolean> {
     return isCommandOnPathForRelay(command)
+  }
+
+  // Why: ignore rather than error on non-allowlisted entries — a newer desktop
+  // probing a CLI this relay doesn't know must degrade, mirroring how missing
+  // methods degrade.
+  private async detectForgeClis(
+    params: Record<string, unknown>
+  ): Promise<{ results: Record<string, { installed: boolean; authenticated: boolean }> }> {
+    const requested = Array.isArray(params.clis) ? (params.clis as string[]) : []
+    const clis = requested.filter((cli) => FORGE_CLI_ALLOWLIST.has(cli))
+    const results: Record<string, { installed: boolean; authenticated: boolean }> = {}
+    await Promise.all(
+      clis.map(async (cli) => {
+        const installed = await this.isCommandOnPath(cli)
+        results[cli] = {
+          installed,
+          authenticated: installed && (await isForgeCliAuthenticated(cli))
+        }
+      })
+    )
+    return { results }
+  }
+}
+
+// Why: glab writes auth status to stderr in some versions and can exit
+// non-zero while still logged in, so check output markers on failure too.
+async function isForgeCliAuthenticated(cli: string): Promise<boolean> {
+  try {
+    await execFileAsync(cli, ['auth', 'status'], {
+      env: buildRelayCommandEnv(),
+      timeout: FORGE_AUTH_TIMEOUT_MS
+    })
+    return true
+  } catch (error) {
+    const stdout = (error as { stdout?: string }).stdout ?? ''
+    const stderr = (error as { stderr?: string }).stderr ?? ''
+    const output = `${stdout}\n${stderr}`
+    return output.includes('Logged in') || output.includes('Active account: true')
   }
 }
 
