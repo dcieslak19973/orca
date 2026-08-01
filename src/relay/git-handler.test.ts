@@ -670,6 +670,39 @@ describe('GitHandler', () => {
       expect(unstagedDiff.trim()).toBe('')
     })
 
+    it('applies concurrent same-file stage requests without corrupting the index', async () => {
+      gitInit(tmpDir)
+      const filePath = path.join(tmpDir, 'code.txt')
+      const lines = numberedLines(30)
+      writeLines(filePath, lines)
+      gitCommit(tmpDir, 'initial')
+      // Why: two pure insertions, the shape most exposed to a stale apply — a modification hunk
+      // self-corrects because git apply offset-searches for its `-` line. This asserts the end
+      // state of overlapping requests; it does not by itself prove the serialization, since git
+      // apply also recovers here on its own. KeyedMutationQueue carries the ordering contract.
+      const modified = [...lines]
+      modified.splice(25, 0, 'insertedC', 'insertedD')
+      modified.splice(3, 0, 'insertedA', 'insertedB')
+      writeLines(filePath, modified)
+
+      await Promise.all([
+        dispatcher.callRequest('git.stageHunk', {
+          worktreePath: tmpDir,
+          filePath: 'code.txt',
+          range: { oldStart: 3, oldCount: 0, newStart: 4, newCount: 2 }
+        }),
+        dispatcher.callRequest('git.stageHunk', {
+          worktreePath: tmpDir,
+          filePath: 'code.txt',
+          range: { oldStart: 25, oldCount: 0, newStart: 28, newCount: 2 }
+        })
+      ])
+
+      expect(indexContent(tmpDir, 'code.txt')).toBe(`${modified.join('\n')}\n`)
+      const unstagedDiff = execFileSync('git', ['diff'], { cwd: tmpDir, encoding: 'utf-8' })
+      expect(unstagedDiff.trim()).toBe('')
+    })
+
     it('rejects a range that no longer matches any hunk', async () => {
       gitInit(tmpDir)
       const filePath = path.join(tmpDir, 'code.txt')

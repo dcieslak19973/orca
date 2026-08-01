@@ -20,6 +20,7 @@ import {
   selectHunksForRange,
   type DiffHunkRange
 } from '../shared/git-hunk-patch'
+import { KeyedMutationQueue } from '../shared/keyed-mutation-queue'
 import {
   computeDiff,
   branchCompare as branchCompareOp,
@@ -185,6 +186,7 @@ function execFileWithStdin(
 export class GitHandler {
   private dispatcher: RelayDispatcher
   private readonly gitDiffReadDedupe = new InFlightPromiseDedupe<unknown>()
+  private readonly hunkApplyQueue = new KeyedMutationQueue()
   private readonly gitCapabilities = new GitCapabilityCache()
   // Why: use the bulk lane so large responses do not block interactive PTY echo.
   private readonly responseStreams = new GitResponseStreamRegistry()
@@ -525,14 +527,28 @@ export class GitHandler {
 
   // Why: the applied patch is git's own -U0 output for the matched hunks, verbatim —
   // re-synthesizing hunks would have to re-solve EOL and no-newline-at-EOF edge cases.
+  // Serialized per worktree+file: this is read-diff-then-apply, so two overlapping requests for one
+  // file would let the second build its patch from a pre-apply diff and then apply it at line
+  // numbers the first already invalidated, which `--unidiff-zero` gives git no context to reject.
   private async applyHunkRangeToIndex(
     params: Record<string, unknown>,
     reverse: boolean
   ): Promise<void> {
-    this.clearGitMutationReadCaches()
     const worktreePath = params.worktreePath as string
     const filePath = params.filePath as string
     const range = params.range as DiffHunkRange
+    return this.hunkApplyQueue.run(`${worktreePath} ${filePath}`, () =>
+      this.applyHunkRangeNow(worktreePath, filePath, range, reverse)
+    )
+  }
+
+  private async applyHunkRangeNow(
+    worktreePath: string,
+    filePath: string,
+    range: DiffHunkRange,
+    reverse: boolean
+  ): Promise<void> {
+    this.clearGitMutationReadCaches()
     try {
       const { stdout } = await this.git(
         [

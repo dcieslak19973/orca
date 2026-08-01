@@ -40,6 +40,7 @@ import {
   selectHunksForRange,
   type DiffHunkRange
 } from '../../shared/git-hunk-patch'
+import { KeyedMutationQueue } from '../../shared/keyed-mutation-queue'
 import {
   gitExecFileAsync,
   gitExecFileAsyncBuffer,
@@ -2085,6 +2086,33 @@ async function applyHunkRangeToIndex(
   )
 }
 
+// Why: applying a hunk is read-diff-then-apply. Two overlapping requests for the same file would
+// let the second build its patch from a pre-apply diff and then apply it at line numbers the first
+// already invalidated — and `--unidiff-zero` has no context for git to reject that on. Serialize
+// per worktree+file; different files still apply concurrently.
+const hunkApplyQueue = new KeyedMutationQueue()
+
+function hunkApplyKey(worktreePath: string, filePath: string): string {
+  return `${worktreePath} ${filePath}`
+}
+
+async function applyHunkSerialized(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  reverse: boolean,
+  options: GitRuntimeOptions
+): Promise<void> {
+  return hunkApplyQueue.run(hunkApplyKey(worktreePath, filePath), async () => {
+    invalidateGitReadCaches()
+    try {
+      await applyHunkRangeToIndex(worktreePath, filePath, range, reverse, options)
+    } finally {
+      invalidateGitReadCaches()
+    }
+  })
+}
+
 /**
  * Stage a single hunk of a file's unstaged diff.
  */
@@ -2094,12 +2122,7 @@ export async function stageHunk(
   range: DiffHunkRange,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  invalidateGitReadCaches()
-  try {
-    await applyHunkRangeToIndex(worktreePath, filePath, range, false, options)
-  } finally {
-    invalidateGitReadCaches()
-  }
+  await applyHunkSerialized(worktreePath, filePath, range, false, options)
 }
 
 /**
@@ -2111,12 +2134,7 @@ export async function unstageHunk(
   range: DiffHunkRange,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  invalidateGitReadCaches()
-  try {
-    await applyHunkRangeToIndex(worktreePath, filePath, range, true, options)
-  } finally {
-    invalidateGitReadCaches()
-  }
+  await applyHunkSerialized(worktreePath, filePath, range, true, options)
 }
 
 export async function getStagedCommitContext(
