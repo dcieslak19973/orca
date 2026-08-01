@@ -4562,6 +4562,13 @@ function SourceControlInner(): React.JSX.Element {
     })
   }, [settings, sourceControlViewMode, updateSettings])
 
+  const handleToggleOpenDiffsInSideSplit = useCallback(() => {
+    if (!settings) {
+      return
+    }
+    updateSettings({ sourceControlOpenDiffsInSideSplit: !openDiffsInSideSplit })
+  }, [openDiffsInSideSplit, settings, updateSettings])
+
   // Clear selection on worktree or tab change
   useEffect(() => {
     clearSelection()
@@ -5573,6 +5580,8 @@ function SourceControlInner(): React.JSX.Element {
           branchCompareRefreshDisabled={!branchSummary || branchSummary.status === 'loading'}
           diffCommentCount={diffCommentCount}
           onExpandNotes={() => setDiffCommentsExpanded(true)}
+          openDiffsInSideSplit={openDiffsInSideSplit}
+          onToggleOpenDiffsInSideSplit={handleToggleOpenDiffsInSideSplit}
           branchSummary={branchSummary}
           compareBaseRef={compareBaseRef}
           headDisplay={gitIdentityDisplay}
