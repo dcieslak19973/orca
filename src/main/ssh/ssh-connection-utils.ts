@@ -304,8 +304,11 @@ export function spawnProxyCommand(
     proxy.kind === 'jump-host'
       ? // Why: ProxyJump is structured input, not a shell snippet. Spawn ssh
         // directly so jump-host values cannot escape through shell parsing.
+        // windowsHide: ssh.exe is console-subsystem, so a GUI parent would
+        // otherwise get a conhost that flashes and steals focus (#10488).
         spawn('ssh', ['-W', `${host}:${port}`, '--', proxy.jumpHost], {
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
         })
       : (() => {
           const escape = process.platform === 'win32' ? cmdEscape : shellEscape
@@ -314,7 +317,11 @@ export function spawnProxyCommand(
             .replace(/%p/g, escape(String(port)))
             .replace(/%r/g, escape(user))
           const shell = getShellSpawnConfig(expanded)
-          return spawn(shell.file, shell.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+          // Why: same conhost flash via the cmd.exe wrapper on Windows (#10488).
+          return spawn(shell.file, shell.args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true
+          })
         })()
 
   // Why: a single PassThrough for both directions creates a feedback loop.
