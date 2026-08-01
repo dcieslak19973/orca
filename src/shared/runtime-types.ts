@@ -685,6 +685,13 @@ export type RuntimeTerminalFocus = {
   handle: string
   tabId: string
   worktreeId: string
+  /**
+   * Whether host UI navigation ran for this request.
+   * - true: reveal/focus was applied (or navigateHost was requested and completed)
+   * - false: identity-only — navigateHost false, or latest-wins dropped this request
+   * Optional for older clients; omit only when unknown.
+   */
+  navigated?: boolean
 }
 
 export type RuntimeTerminalClose = {

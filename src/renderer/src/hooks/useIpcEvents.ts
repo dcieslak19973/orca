@@ -1806,8 +1806,8 @@ export function useIpcEvents(): void {
       })
     )
 
-    // Why: bulk terminal.focus / remote multi-session open can flood ui:focusTerminal;
-    // latest-wins coalescing keeps only the newest host activation (see freeze harness).
+    // Why: concurrent ui:focusTerminal deliveries can still fan out after main-process
+    // single-flight; frame-coalesced latest-wins keeps only one host activation per frame.
     const focusTerminalIpcCoalescer = createTerminalFocusIpcCoalescer((payload) => {
       const store = useAppStore.getState()
       activateTerminalInitiatedWorktree(store, payload.worktreeId)

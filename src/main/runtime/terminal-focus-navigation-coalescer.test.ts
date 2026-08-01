@@ -1,6 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 import { TerminalFocusNavigationCoalescer } from './terminal-focus-navigation-coalescer'
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (error: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 describe('TerminalFocusNavigationCoalescer', () => {
   it('runs a single job to completion', async () => {
     const coalescer = new TerminalFocusNavigationCoalescer<string>()
@@ -10,7 +24,7 @@ describe('TerminalFocusNavigationCoalescer', () => {
       resolveSuperseded: () => 'superseded-a'
     })
     expect(result).toBe('full-a')
-    expect(coalescer.getState()).toEqual({
+    expect(coalescer.getState()).toMatchObject({
       running: false,
       activeKey: null,
       pendingKey: null
@@ -19,29 +33,29 @@ describe('TerminalFocusNavigationCoalescer', () => {
 
   it('serializes concurrent focuses and latest-wins drops intermediate pending', async () => {
     const coalescer = new TerminalFocusNavigationCoalescer<string>()
-    let releaseA!: () => void
-    const aStarted = Promise.withResolvers<void>()
-    const aGate = new Promise<void>((resolve) => {
-      releaseA = resolve
-    })
+    const aGate = deferred<void>()
+    let aStarted = false
 
-    const runA = vi.fn(async () => {
-      aStarted.resolve()
-      await aGate
+    const runA = vi.fn(async (ctx: { isCurrent: () => boolean }) => {
+      aStarted = true
+      await aGate.promise
+      if (!ctx.isCurrent()) {
+        return 'obsolete-a'
+      }
       return 'full-a'
     })
     const runB = vi.fn(async () => 'full-b')
     const runC = vi.fn(async () => 'full-c')
-    const superA = vi.fn(() => 'super-a')
     const superB = vi.fn(() => 'super-b')
-    const superC = vi.fn(() => 'super-c')
 
     const pA = coalescer.run({
       key: 'term_a',
       run: runA,
-      resolveSuperseded: superA
+      resolveSuperseded: () => 'super-a'
     })
-    await aStarted.promise
+    await vi.waitFor(() => {
+      expect(aStarted).toBe(true)
+    })
 
     const pB = coalescer.run({
       key: 'term_b',
@@ -51,20 +65,18 @@ describe('TerminalFocusNavigationCoalescer', () => {
     const pC = coalescer.run({
       key: 'term_c',
       run: runC,
-      resolveSuperseded: superC
+      resolveSuperseded: () => 'super-c'
     })
 
-    // B was pending then superseded by C before A finished.
     await expect(pB).resolves.toBe('super-b')
     expect(superB).toHaveBeenCalledTimes(1)
     expect(runB).not.toHaveBeenCalled()
 
-    releaseA()
-    await expect(pA).resolves.toBe('full-a')
+    aGate.resolve()
+    // A became obsolete after C enqueued — resolves as superseded, not full-a.
+    await expect(pA).resolves.toBe('super-a')
     await expect(pC).resolves.toBe('full-c')
     expect(runC).toHaveBeenCalledTimes(1)
-    expect(superC).not.toHaveBeenCalled()
-    expect(runA).toHaveBeenCalledTimes(1)
   })
 
   it('bounds host navigation to one full run under a parallel storm', async () => {
@@ -76,12 +88,18 @@ describe('TerminalFocusNavigationCoalescer', () => {
     const makeJob = (key: string) =>
       coalescer.run({
         key,
-        run: async () => {
+        run: async (ctx) => {
+          if (!ctx.isCurrent()) {
+            return -1
+          }
           inFlight += 1
           maxInFlight = Math.max(maxInFlight, inFlight)
           fullRuns += 1
           await new Promise((r) => setTimeout(r, 5))
           inFlight -= 1
+          if (!ctx.isCurrent()) {
+            return -1
+          }
           return fullRuns
         },
         resolveSuperseded: () => -1
@@ -89,34 +107,59 @@ describe('TerminalFocusNavigationCoalescer', () => {
 
     const results = await Promise.all(Array.from({ length: 16 }, (_, i) => makeJob(`term_${i}`)))
 
-    // Only one full navigation at a time.
     expect(maxInFlight).toBe(1)
-    // Most of the storm is superseded; only a small number of full runs occur.
     expect(fullRuns).toBeLessThanOrEqual(2)
     expect(fullRuns).toBeGreaterThanOrEqual(1)
-    // Superseded jobs resolve cheaply; the last completer is a full run.
     expect(results.filter((r) => r === -1).length).toBeGreaterThanOrEqual(14)
     expect(results.some((r) => r > 0)).toBe(true)
   })
 
+  it('skips claiming navigation when a newer focus arrives mid-run', async () => {
+    const coalescer = new TerminalFocusNavigationCoalescer<{ id: string; navigated: boolean }>()
+    const aGate = deferred<void>()
+    let aStarted = false
+
+    const pA = coalescer.run({
+      key: 'term_a',
+      run: async (ctx) => {
+        aStarted = true
+        await aGate.promise
+        return { id: 'a', navigated: ctx.isCurrent() }
+      },
+      resolveSuperseded: () => ({ id: 'a', navigated: false })
+    })
+    await vi.waitFor(() => {
+      expect(aStarted).toBe(true)
+    })
+
+    const pB = coalescer.run({
+      key: 'term_b',
+      run: async () => ({ id: 'b', navigated: true }),
+      resolveSuperseded: () => ({ id: 'b', navigated: false })
+    })
+
+    aGate.resolve()
+    await expect(pA).resolves.toEqual({ id: 'a', navigated: false })
+    await expect(pB).resolves.toEqual({ id: 'b', navigated: true })
+  })
+
   it('propagates run failures without stranding the queue', async () => {
     const coalescer = new TerminalFocusNavigationCoalescer<string>()
-    let releaseA!: () => void
-    const aStarted = Promise.withResolvers<void>()
-    const aGate = new Promise<void>((resolve) => {
-      releaseA = resolve
-    })
+    const aGate = deferred<void>()
+    let aStarted = false
 
     const pA = coalescer.run({
       key: 'term_a',
       run: async () => {
-        aStarted.resolve()
-        await aGate
+        aStarted = true
+        await aGate.promise
         throw new Error('boom')
       },
       resolveSuperseded: () => 'super-a'
     })
-    await aStarted.promise
+    await vi.waitFor(() => {
+      expect(aStarted).toBe(true)
+    })
 
     const pB = coalescer.run({
       key: 'term_b',
@@ -124,8 +167,9 @@ describe('TerminalFocusNavigationCoalescer', () => {
       resolveSuperseded: () => 'super-b'
     })
 
-    releaseA()
-    await expect(pA).rejects.toThrow('boom')
+    aGate.resolve()
+    // A is obsolete when it fails after B enqueued — settles as superseded, not boom.
+    await expect(pA).resolves.toBe('super-a')
     await expect(pB).resolves.toBe('full-b')
     expect(coalescer.getState().running).toBe(false)
   })

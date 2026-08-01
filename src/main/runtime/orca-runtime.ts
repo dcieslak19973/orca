@@ -2713,9 +2713,10 @@ export class OrcaRuntimeService {
     createMobileSessionTabsNotifyCoalescer((worktreeId) =>
       this.notifyMobileSessionTabsChangedNow(worktreeId)
     )
-  // Why: bulk terminal.focus storms (remote multi-session open, wake restore,
-  // CLI switch fan-out) each await a full host reveal; intermediate focuses are
-  // overwritten by the next one, so latest-wins single-flight bounds host work.
+  // Why: concurrent host terminal.focus storms (CLI switch fan-out / bulk open)
+  // each await a full host reveal; only one terminal can be focused, so latest-wins
+  // single-flight bounds host work. Does not replace cheaper activation or
+  // reconnect-scan bounding for sequential soft freezes.
   private readonly terminalFocusNavigationCoalescer =
     new TerminalFocusNavigationCoalescer<RuntimeTerminalFocus>()
   private pendingMobileSessionPtyInventoryRefresh: Promise<Set<string> | null> | null = null
@@ -25414,27 +25415,58 @@ export class OrcaRuntimeService {
     options: { navigateHost?: boolean } = {}
   ): Promise<RuntimeTerminalFocus> {
     const navigateHost = options.navigateHost !== false
+    const livePtyIdentity = (): RuntimeTerminalFocus => {
+      const live = this.getLivePtyForHandle(handle)
+      if (!live?.pty.connected) {
+        throw new Error('terminal_exited')
+      }
+      return {
+        handle,
+        tabId: live.pty.tabId ?? live.record.tabId,
+        worktreeId: live.pty.worktreeId,
+        navigated: false
+      }
+    }
+    const liveLeafIdentity = (): RuntimeTerminalFocus => {
+      this.assertGraphReady()
+      const { leaf: current } = this.getLiveLeafForHandle(handle)
+      return {
+        handle,
+        tabId: current.tabId,
+        worktreeId: current.worktreeId,
+        navigated: false
+      }
+    }
+
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
       if (!pty.pty.connected) {
         throw new Error('terminal_exited')
       }
-      const focusIdentity = (): RuntimeTerminalFocus => ({
-        handle,
-        tabId: pty.pty.tabId ?? pty.record.tabId,
-        worktreeId: pty.pty.worktreeId
-      })
       if (!navigateHost || !this.notifier?.revealTerminalSession) {
-        return focusIdentity()
+        return {
+          handle,
+          tabId: pty.pty.tabId ?? pty.record.tabId,
+          worktreeId: pty.pty.worktreeId,
+          navigated: false
+        }
       }
-      // Coalesce concurrent navigations: only the latest full reveal runs.
+      // Coalesce concurrent host navigations: only the latest full reveal claims navigated.
       return this.terminalFocusNavigationCoalescer.run({
         key: handle,
-        resolveSuperseded: focusIdentity,
-        run: async () => {
+        resolveSuperseded: livePtyIdentity,
+        run: async (ctx) => {
           const live = this.getLivePtyForHandle(handle)
           if (!live?.pty.connected) {
             throw new Error('terminal_exited')
+          }
+          if (!ctx.isCurrent()) {
+            return {
+              handle,
+              tabId: live.pty.tabId ?? live.record.tabId,
+              worktreeId: live.pty.worktreeId,
+              navigated: false
+            }
           }
           const parsedPaneKey = parsePaneKey(live.pty.paneKey ?? '')
           const revealed = await this.notifier?.revealTerminalSession?.(live.pty.worktreeId, {
@@ -25448,10 +25480,19 @@ export class OrcaRuntimeService {
             ...(live.pty.tabId !== null ? { tabId: live.pty.tabId } : {}),
             ...(parsedPaneKey ? { leafId: parsedPaneKey.leafId } : {})
           })
+          if (!ctx.isCurrent()) {
+            return {
+              handle,
+              tabId: revealed?.tabId ?? live.pty.tabId ?? live.record.tabId,
+              worktreeId: live.pty.worktreeId,
+              navigated: false
+            }
+          }
           return {
             handle,
             tabId: revealed?.tabId ?? live.pty.tabId ?? live.record.tabId,
-            worktreeId: live.pty.worktreeId
+            worktreeId: live.pty.worktreeId,
+            navigated: true
           }
         }
       })
@@ -25459,25 +25500,42 @@ export class OrcaRuntimeService {
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
     if (!navigateHost) {
-      return { handle, tabId: leaf.tabId, worktreeId: leaf.worktreeId }
+      return {
+        handle,
+        tabId: leaf.tabId,
+        worktreeId: leaf.worktreeId,
+        navigated: false
+      }
     }
-    // Fire-and-forget IPC still storms the renderer under bulk open — coalesce
-    // so only the latest focus paints the host UI.
     return this.terminalFocusNavigationCoalescer.run({
       key: handle,
-      resolveSuperseded: () => {
-        const current = this.getLiveLeafForHandle(handle)
-        return {
-          handle,
-          tabId: current.leaf.tabId,
-          worktreeId: current.leaf.worktreeId
-        }
-      },
-      run: async () => {
+      resolveSuperseded: liveLeafIdentity,
+      run: async (ctx) => {
         this.assertGraphReady()
         const { leaf: liveLeaf } = this.getLiveLeafForHandle(handle)
+        if (!ctx.isCurrent()) {
+          return {
+            handle,
+            tabId: liveLeaf.tabId,
+            worktreeId: liveLeaf.worktreeId,
+            navigated: false
+          }
+        }
         this.notifier?.focusTerminal(liveLeaf.tabId, liveLeaf.worktreeId, liveLeaf.leafId)
-        return { handle, tabId: liveLeaf.tabId, worktreeId: liveLeaf.worktreeId }
+        if (!ctx.isCurrent()) {
+          return {
+            handle,
+            tabId: liveLeaf.tabId,
+            worktreeId: liveLeaf.worktreeId,
+            navigated: false
+          }
+        }
+        return {
+          handle,
+          tabId: liveLeaf.tabId,
+          worktreeId: liveLeaf.worktreeId,
+          navigated: true
+        }
       }
     })
   }

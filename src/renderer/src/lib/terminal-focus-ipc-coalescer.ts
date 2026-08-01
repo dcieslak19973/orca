@@ -1,6 +1,7 @@
 /**
- * Latest-wins coalescer for ui:focusTerminal IPC storms.
- * Intermediate focuses are dropped; only the newest paints worktree + tab activation.
+ * Latest-wins coalescer for ui:focusTerminal IPC storms on the host renderer.
+ * Collapses to one activation per animation frame so exclusive host focus
+ * does not remount worktrees/tabs for every intermediate IPC delivery.
  */
 
 export type TerminalFocusIpcPayload = {
@@ -15,23 +16,46 @@ export type TerminalFocusIpcPayload = {
 export type TerminalFocusIpcCoalescer = {
   enqueue: (payload: TerminalFocusIpcPayload) => void
   dispose: () => void
-  /** Test aid: pending payload after enqueue before microtask flush. */
+  /** Test aid: pending payload before frame flush. */
   getPending: () => TerminalFocusIpcPayload | null
 }
 
+type RafScheduler = {
+  request: (cb: () => void) => number
+  cancel: (id: number) => void
+}
+
+function defaultRafScheduler(): RafScheduler {
+  if (typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function') {
+    return {
+      request: (cb) => requestAnimationFrame(cb),
+      cancel: (id) => cancelAnimationFrame(id)
+    }
+  }
+  // Node/test fallback: microtask approximates a single turn.
+  return {
+    request: (cb) => {
+      queueMicrotask(cb)
+      return 1
+    },
+    cancel: () => undefined
+  }
+}
+
 /**
- * Coalesces focus IPC onto the next microtask so a same-turn storm collapses
- * to a single host activation.
+ * Coalesces focus IPC onto the next animation frame so multi-delivery storms
+ * collapse to a single host activation (last payload wins).
  */
 export function createTerminalFocusIpcCoalescer(
-  apply: (payload: TerminalFocusIpcPayload) => void
+  apply: (payload: TerminalFocusIpcPayload) => void,
+  scheduler: RafScheduler = defaultRafScheduler()
 ): TerminalFocusIpcCoalescer {
   let pending: TerminalFocusIpcPayload | null = null
-  let scheduled = false
+  let rafId: number | null = null
   let disposed = false
 
   const flush = (): void => {
-    scheduled = false
+    rafId = null
     if (disposed) {
       pending = null
       return
@@ -49,15 +73,17 @@ export function createTerminalFocusIpcCoalescer(
         return
       }
       pending = payload
-      if (!scheduled) {
-        scheduled = true
-        queueMicrotask(flush)
+      if (rafId === null) {
+        rafId = scheduler.request(flush)
       }
     },
     dispose() {
       disposed = true
+      if (rafId !== null) {
+        scheduler.cancel(rafId)
+        rafId = null
+      }
       pending = null
-      scheduled = false
     },
     getPending() {
       return pending

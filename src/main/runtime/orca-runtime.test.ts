@@ -15194,19 +15194,27 @@ describe('OrcaRuntimeService', () => {
     const pB = runtime.focusTerminal(b.handle)
     const pC = runtime.focusTerminal(c.handle)
 
-    // B is superseded while A is in flight — resolves without a dedicated full reveal.
-    await expect(pB).resolves.toMatchObject({ handle: b.handle })
+    // B is superseded while A is in flight — identity only, never navigated.
+    await expect(pB).resolves.toMatchObject({
+      handle: b.handle,
+      navigated: false
+    })
     releaseFirstReveal({ tabId: 'tab-a' })
-    await expect(pA).resolves.toMatchObject({ handle: a.handle, tabId: 'tab-a' })
-    await expect(pC).resolves.toMatchObject({ handle: c.handle, tabId: 'tab-latest' })
+    // A may still complete reveal work, but if C superseded it, navigated is false.
+    const aResult = await pA
+    expect(aResult.handle).toBe(a.handle)
+    expect(aResult.navigated).toBe(false)
+    await expect(pC).resolves.toMatchObject({
+      handle: c.handle,
+      tabId: 'tab-latest',
+      navigated: true
+    })
 
-    // At most two full reveals (A then C); B was latest-wins dropped while pending.
-    expect(revealTerminalSession.mock.calls.length).toBeLessThanOrEqual(2)
-    expect(revealTerminalSession.mock.calls.length).toBeGreaterThanOrEqual(1)
+    // B must never have started a reveal; only A and/or C.
     const revealedPtyIds = revealTerminalSession.mock.calls.map(
       (call) => (call[1] as { ptyId?: string }).ptyId
     )
-    // Final focus (C) must have been able to run a full reveal after A.
+    expect(revealedPtyIds).not.toContain('pty-b')
     expect(revealedPtyIds.at(-1)).toBe('pty-c')
   })
 

@@ -135,6 +135,19 @@ Lab: sequential soft ~3.3–3.9s; **parallel=16 → ~20s HARD**.
 
 ---
 
+## Product fix (concurrent host-focus storms)
+
+Generation-aware **latest-wins single-flight** for exclusive host focus:
+
+| Layer | Module |
+|-------|--------|
+| Runtime | `TerminalFocusNavigationCoalescer` via `OrcaRuntimeService.focusTerminal` |
+| Renderer | frame-coalesced `createTerminalFocusIpcCoalescer` on `ui:focusTerminal` |
+| Contract | `RuntimeTerminalFocus.navigated?: boolean` — `false` when superseded / nav skipped |
+
+**In scope:** concurrent `terminal.focus` / bulk-switch storms.  
+**Residual:** sequential soft freezes; reconnect/wake metadata storms — need cheaper activation + scan bounding, not only focus coalescing.
+
 ## Files
 
 | Path | Role |
@@ -143,6 +156,8 @@ Lab: sequential soft ~3.3–3.9s; **parallel=16 → ~20s HARD**.
 | `config/scripts/live-remote-bulk-open-freeze-repro.mjs` | Parallel stress harness |
 | `config/scripts/live-remote-bulk-open-freeze-metrics.mjs` | Shared thresholds / handle extract |
 | `config/scripts/live-remote-bulk-open-freeze-metrics.test.mjs` | Unit tests |
+| `src/main/runtime/terminal-focus-navigation-coalescer.ts` | Host focus single-flight |
+| `src/renderer/src/lib/terminal-focus-ipc-coalescer.ts` | Renderer focus coalesce |
 | `pnpm run repro:live-remote-realistic-freeze` | package entry |
 | `pnpm run repro:live-remote-bulk-open-freeze` | package entry |
 
