@@ -156,6 +156,7 @@ export function buildDefaultSettings(args: {
     notifications: args.notifications,
     diffDefaultView: 'inline',
     diffWordWrap: false,
+    diffCollapseUnchangedRegions: false,
     combinedDiffFileTreeVisibleByDefault: false,
     prBotAuthorOverrides: [],
     promptCacheTimerEnabled: false,
