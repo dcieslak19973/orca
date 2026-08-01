@@ -2,10 +2,36 @@ export type TerminalLivePendingFlushState = {
   current: Promise<boolean> | null
 }
 
+export type TerminalLiveHandleSendState = {
+  current: Map<string, Promise<boolean>>
+}
+
 export function waitForTerminalLivePendingFlush(
   state: TerminalLivePendingFlushState
 ): Promise<boolean> {
   return state.current ?? Promise.resolve(true)
+}
+
+export function queueTerminalLiveHandleSend(
+  state: TerminalLiveHandleSendState,
+  handle: string,
+  send: () => Promise<boolean>
+): Promise<boolean> {
+  const previousSend = state.current.get(handle)
+  const sendResult = (async () => {
+    if (previousSend) {
+      await previousSend.catch(() => false)
+    }
+    return send()
+  })()
+  const trackedSend = sendResult.catch(() => false)
+  state.current.set(handle, trackedSend)
+  void trackedSend.then(() => {
+    if (state.current.get(handle) === trackedSend) {
+      state.current.delete(handle)
+    }
+  })
+  return sendResult
 }
 
 // Why: mirror payloads are erase/append deltas against the PTY echo. A skipped

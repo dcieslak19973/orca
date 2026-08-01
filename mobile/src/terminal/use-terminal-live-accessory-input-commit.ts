@@ -26,6 +26,7 @@ type TerminalLiveAccessoryInputCommitOptions = {
   readonly applyLiveInputMirror: (handle: string, fieldText: string) => void
   readonly clearPendingLiveInputCommit: () => void
   readonly heldLiveInputTextRef: RefObject<string>
+  readonly isLiveInputProducerCurrent: () => boolean
   readonly liveInputRef: RefObject<TextInput | null>
   readonly liveInputTerminalHandles: ReadonlySet<string>
   readonly pendingLiveInputHandleRef: RefObject<string | null>
@@ -41,6 +42,7 @@ export function useTerminalLiveAccessoryInputCommit({
   applyLiveInputMirror,
   clearPendingLiveInputCommit,
   heldLiveInputTextRef,
+  isLiveInputProducerCurrent,
   liveInputRef,
   liveInputTerminalHandles,
   pendingLiveInputHandleRef,
@@ -54,6 +56,9 @@ export function useTerminalLiveAccessoryInputCommit({
 ) => Promise<TerminalLiveAccessoryInputCommitResult> {
   return useCallback(
     async (input: TerminalLiveAccessoryInput): Promise<TerminalLiveAccessoryInputCommitResult> => {
+      if (!isLiveInputProducerCurrent()) {
+        return { kind: 'suppress-raw' }
+      }
       if (!activeHandle) {
         return { kind: 'allow-raw' }
       }
@@ -96,6 +101,7 @@ export function useTerminalLiveAccessoryInputCommit({
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
       heldLiveInputTextRef,
+      isLiveInputProducerCurrent,
       liveInputRef,
       liveInputTerminalHandles,
       pendingLiveInputHandleRef,

@@ -78,6 +78,18 @@ describe('terminal input connection gate', () => {
 })
 
 describe('session route offline-compose wiring', () => {
+  it('publishes terminal transport refs only from the committed snapshot hook', () => {
+    const committedSnapshot = routeSlice(
+      'const { activeSessionTabTypeRef, clientRef, connStateRef } =',
+      'const runTerminalBufferedInputSend ='
+    )
+    expect(committedSnapshot).toContain('useTerminalInputCommittedSnapshot({')
+    expect(committedSnapshot).toContain('client,')
+    expect(committedSnapshot).toContain('connState')
+    expect(sessionRouteSource).not.toContain('clientRef.current = client')
+    expect(sessionRouteSource).not.toContain('connStateRef.current = connState')
+  })
+
   it('derives both gates from the shared resolver', () => {
     const gateCall = routeSlice(
       'const { canCompose, canSend } = resolveMobileTerminalInputGate({',
@@ -103,8 +115,20 @@ describe('session route offline-compose wiring', () => {
   })
 
   it('holds composed text when the return key submits offline', () => {
-    const handleSend = routeSlice('async function handleSend()', 'sendingRef.current = true')
+    const handleSend = routeSlice(
+      'async function handleSend()',
+      'const targetHandle = activeHandle'
+    )
     expect(handleSend).toContain('!canSend')
+  })
+
+  it('scopes buffered send restoration and locking to the committed route generation', () => {
+    const handleSend = routeSlice(
+      'async function handleSend()',
+      'async function handleAccessoryKey'
+    )
+    expect(handleSend).toContain('runTerminalBufferedInputSend(')
+    expect(handleSend).toContain('const targetHandle = activeHandle')
   })
 
   it('keeps the live/buffered mode toggle reachable offline', () => {

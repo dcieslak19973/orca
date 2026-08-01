@@ -518,6 +518,7 @@ describe('terminal live input commit hook', () => {
   it('rejects new callbacks while terminal state still belongs to the previous route', async () => {
     const harness = createTerminalLiveInputCommitHarness()
     harness.setInputStateReady(false)
+    const capturesAfterRouteReset = [...harness.captures]
     const producerSend = vi.fn(async () => true)
 
     harness.handlers.handleLiveInputChange('stale')
@@ -525,6 +526,7 @@ describe('terminal live input commit hook', () => {
       harness.handlers.sendLiveInputExternalBoundary('terminal-a', producerSend)
     ).resolves.toBe(false)
 
+    expect(harness.captures).toEqual(capturesAfterRouteReset)
     expect(harness.sent).toEqual([])
     expect(producerSend).not.toHaveBeenCalled()
     harness.unmount()

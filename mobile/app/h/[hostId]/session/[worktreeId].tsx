@@ -47,7 +47,6 @@ import {
   SquareTerminal,
   X
 } from 'lucide-react-native'
-import type { RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
 import { startRuntimeCapabilityProbe } from '../../../../src/transport/runtime-capability-probe'
 import {
@@ -91,7 +90,7 @@ import {
   type MobileQuickCommandLaunch
 } from '../../../../src/terminal/quick-commands'
 import { MOBILE_AI_VAULT_CAPABILITY } from '../../../../src/agent-history/agent-history-capability'
-import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
+import type { RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import { headlessActivationNeedsHostRenderer } from '../../../../src/worktree/worktree-activation-result'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
 import { useMobileDictationRouteContext } from '../../../../src/session/mobile-dictation-route-context'
@@ -129,6 +128,8 @@ import { sendMobileTerminalLiveInput } from '../../../../src/terminal/mobile-ter
 import { sendMobileTerminalQueryReply } from '../../../../src/terminal/mobile-terminal-query-reply'
 import { TERMINAL_QUERY_REPLY_INPUT_RUNTIME_CAPABILITY } from '../../../../../src/shared/protocol-version'
 import { useTerminalLiveInputCommit } from '../../../../src/terminal/use-terminal-live-input-commit'
+import { useTerminalInputCommittedSnapshot } from '../../../../src/terminal/use-terminal-input-committed-snapshot'
+import { useTerminalBufferedInputSend } from '../../../../src/terminal/use-terminal-buffered-input-send'
 import { resolveMobileTerminalInputGate } from '../../../../src/terminal/terminal-input-connection-gate'
 import {
   buildTerminalSendParams,
@@ -280,7 +281,6 @@ import type {
   MobileDisplayMode,
   MobileNewTabAgentLoadState,
   MobileSessionTab,
-  MobileSessionTabType,
   RenderableDiffLine,
   RuntimeRepoSummary,
   SessionTabsResult,
@@ -1007,8 +1007,6 @@ export default function SessionScreen() {
   const deviceTokenRef = useRef<string | null>(null)
   // Why: state (not a ref) so the connection verdict re-renders when the endpoint loads and the Tailscale hint can appear.
   const [hostEndpoint, setHostEndpoint] = useState<string | null>(null)
-  const clientRef = useRef<RpcClient | null>(null)
-  const connStateRef = useRef<ConnectionState>(connState)
   // Why: measured once on mount, then passed with every subscribe so the server can auto-fit the PTY to phone dims.
   const viewportRef = useRef<{ cols: number; rows: number } | null>(null)
   const viewportMeasuredRef = useRef(false)
@@ -1028,7 +1026,6 @@ export default function SessionScreen() {
   // Why: don't subscribe until the WebView fires web-ready — iOS may defer JS in hidden WebViews and init() messages would queue unrendered.
   const webReadyHandlesRef = useRef<Set<string>>(new Set())
   const activeHandleRef = useRef<string | null>(null)
-  const activeSessionTabTypeRef = useRef<MobileSessionTabType | null>(null)
   const terminalInputScope = `${hostId}\0${worktreeId}`
   const terminalInputScopeRef = useRef(terminalInputScope)
   useLayoutEffect(() => {
@@ -1053,12 +1050,17 @@ export default function SessionScreen() {
   const delayedActionTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
   // Why: highest applyLayout seq seen per handle; drop older scrollback/resized as stale, but a >20 gap resets (fresh subscription/server restart).
   const layoutSeqRef = useRef<Map<string, number>>(new Map())
-  const sendingRef = useRef(false)
   // Why: exact terminal-frame height for measureFitDimensions; window.innerHeight can overstate the visible area.
   const terminalFrameHeightRef = useRef<number>(0)
   // Why: sidebar resizes change the terminal frame width without a window-dim change; track it so the refit hook re-fits (see terminal-viewport-refit.ts).
   const [terminalFrameWidth, setTerminalFrameWidth] = useState(0)
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
+  const { activeSessionTabTypeRef, clientRef, connStateRef } = useTerminalInputCommittedSnapshot({
+    activeSessionTabType: activeSessionTab?.type ?? null,
+    client,
+    connState
+  })
+  const runTerminalBufferedInputSend = useTerminalBufferedInputSend(terminalInputScope)
   const {
     clearPendingLiveInputCommit,
     handleLiveInputAccessoryBytes,
@@ -1097,10 +1099,6 @@ export default function SessionScreen() {
   // the capability probe resolves after the callbacks are created.
   const browserScreencastSupportedRef = useRef(browserScreencastSupported)
   browserScreencastSupportedRef.current = browserScreencastSupported
-  // Why: terminal gesture/input callbacks are stable/imperative, so keep their refs current before commit, not in a later effect.
-  clientRef.current = client
-  connStateRef.current = connState
-  activeSessionTabTypeRef.current = activeSessionTab?.type ?? null
   sessionTabsRef.current = sessionTabs
   activeSessionTabIdRef.current = activeSessionTabId
   markdownDocsRef.current = markdownDocs
@@ -2997,31 +2995,28 @@ export default function SessionScreen() {
 
   async function handleSend() {
     // Why: the return key still submits while offline; hold the composed text instead of firing a doomed RPC (#6713).
-    if (!client || !activeHandle || sendingRef.current || !canSend) {
+    if (!client || !activeHandle || !canSend) {
       return
     }
-    sendingRef.current = true
-
+    const targetHandle = activeHandle
     const text = normalizeTerminalTextInput(input)
-    setInput('')
-
-    try {
-      // Why: fail now and restore the text — a send parked across a reconnect would execute long after the tap.
-      await client.sendRequest(
-        'terminal.send',
-        buildTerminalSendParams({
-          terminal: activeHandle,
-          text,
-          enter: true,
-          deviceToken: deviceTokenRef.current
-        }),
-        TERMINAL_INPUT_SEND_OPTIONS
-      )
-    } catch {
-      setInput(text)
-    } finally {
-      sendingRef.current = false
-    }
+    await runTerminalBufferedInputSend(
+      async () => {
+        setInput('')
+        // Why: fail now and restore the text — a send parked across a reconnect would execute long after the tap.
+        await client.sendRequest(
+          'terminal.send',
+          buildTerminalSendParams({
+            terminal: targetHandle,
+            text,
+            enter: true,
+            deviceToken: deviceTokenRef.current
+          }),
+          TERMINAL_INPUT_SEND_OPTIONS
+        )
+      },
+      () => setInput(text)
+    )
   }
 
   async function handleAccessoryKey(input: ReturnType<typeof createTerminalLiveAccessoryInput>) {
@@ -3070,7 +3065,9 @@ export default function SessionScreen() {
     },
     [showToast]
   )
-  sendLiveTerminalInputRef.current = sendLiveTerminalInput
+  useLayoutEffect(() => {
+    sendLiveTerminalInputRef.current = sendLiveTerminalInput
+  }, [sendLiveTerminalInput])
 
   const focusLiveInput = useCallback(() => {
     if (!canSend || !liveInputEnabled) {

@@ -96,27 +96,35 @@ function createOwnershipHarness() {
   }
 }
 
-it('cancels a queued boundary across an active-terminal ABA change', async () => {
+it('keeps a reused handle behind its started send while another handle stays independent', async () => {
   const harness = createOwnershipHarness()
   harness.handlers.applyLiveInputMirror('terminal-a', 'か')
-  const boundary = harness.handlers.runLiveInputBoundary('terminal-a', async () => {
-    harness.sent.push('\r')
+  const staleBoundary = harness.handlers.runLiveInputBoundary('terminal-a', async () => {
+    harness.sent.push('stale-a')
     return true
   })
   await vi.waitFor(() => expect(harness.sent).toEqual(['か']))
 
   harness.setOwner('terminal-b', 'terminal-b')
+  const terminalBBoundary = harness.handlers.runLiveInputBoundary('terminal-b', async () => {
+    harness.sent.push('terminal-b')
+    return true
+  })
+  await expect(terminalBBoundary).resolves.toBe(true)
+
   harness.setOwner('terminal-a', 'terminal-a')
   const currentBoundary = harness.handlers.runLiveInputBoundary('terminal-a', async () => {
-    harness.sent.push('\r')
+    harness.sent.push('current-a')
     return true
   })
 
-  await expect(currentBoundary).resolves.toBe(true)
+  await Promise.resolve()
+  expect(harness.sent).toEqual(['か', 'terminal-b'])
   harness.firstSend.resolve(true)
 
-  await expect(boundary).resolves.toBe(false)
-  expect(harness.sent).toEqual(['か', '\r'])
+  await expect(staleBoundary).resolves.toBe(false)
+  await expect(currentBoundary).resolves.toBe(true)
+  expect(harness.sent).toEqual(['か', 'terminal-b', 'current-a'])
   harness.unmount()
 })
 

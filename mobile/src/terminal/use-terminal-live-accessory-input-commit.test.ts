@@ -43,6 +43,7 @@ type AccessoryInputCommitHarnessOptions = {
   readonly pendingHandle?: string | null
   readonly sendResult?: boolean
   readonly flushResult?: boolean
+  readonly producerCurrent?: boolean
   readonly waitResult?: boolean
 }
 
@@ -63,6 +64,7 @@ function createAccessoryInputCommitHarness({
   pendingHandle = null,
   sendResult = true,
   flushResult = true,
+  producerCurrent = true,
   waitResult = true
 }: AccessoryInputCommitHarnessOptions = {}): AccessoryInputCommitHarness {
   const activeHandle = 'terminal-a'
@@ -96,6 +98,7 @@ function createAccessoryInputCommitHarness({
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
       heldLiveInputTextRef,
+      isLiveInputProducerCurrent: () => producerCurrent,
       liveInputRef,
       liveInputTerminalHandles,
       pendingLiveInputHandleRef,
@@ -168,6 +171,21 @@ describe('terminal live accessory inactive input commit result', () => {
 })
 
 describe('terminal live accessory input commit hook', () => {
+  it('suppresses a stale local edit before it mutates the capture field', async () => {
+    const harness = createAccessoryInputCommitHarness({
+      heldText: 'か',
+      pendingHandle: 'terminal-a',
+      producerCurrent: false
+    })
+
+    await expect(harness.commit({ bytes: '\x7f', localEdit: 'backspace' })).resolves.toEqual({
+      kind: 'suppress-raw'
+    })
+    expect(harness.applyLiveInputMirror).not.toHaveBeenCalled()
+    expect(harness.runLiveInputBoundary).not.toHaveBeenCalled()
+    harness.unmount()
+  })
+
   it('Given raw accessory bytes with a held syllable When committed Then flushes held text before sending bytes', async () => {
     // Given
     const harness = createAccessoryInputCommitHarness({

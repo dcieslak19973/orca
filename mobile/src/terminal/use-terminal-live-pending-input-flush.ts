@@ -8,6 +8,7 @@ import {
   TERMINAL_LIVE_HELD_SYLLABLE_COMMIT_DELAY_MS
 } from './terminal-live-composition-mirror'
 import {
+  queueTerminalLiveHandleSend,
   queueTerminalLiveBoundarySend,
   queueTerminalLiveMirrorSend,
   waitForTerminalLivePendingFlush
@@ -29,6 +30,7 @@ type TerminalLivePendingInputFlush = {
   readonly applyLiveInputMirror: (handle: string, fieldText: string) => void
   readonly clearPendingLiveInputCommit: () => void
   readonly heldLiveInputTextRef: RefObject<string>
+  readonly isLiveInputProducerCurrent: () => boolean
   readonly pendingLiveInputHandleRef: RefObject<string | null>
   readonly reconcileLiveInputAfterDisconnect: () => void
   readonly runLiveInputBoundary: (
@@ -51,6 +53,7 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
   setLiveInputCapture
 }: TerminalLivePendingInputFlushOptions<TTabType>): TerminalLivePendingInputFlush {
   const heldCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleSendTailsRef = useRef(new Map<string, Promise<boolean>>())
   const pendingLiveInputFlushRef = useRef<Promise<boolean> | null>(null)
   const lifecycleEpochRef = useRef(0)
   const appliedLiveInputGenerationRef = useRef(liveInputGeneration)
@@ -185,16 +188,18 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
         return waitForPendingLiveInputFlush()
       }
       const lifecycleEpoch = lifecycleEpochRef.current
-      return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () => {
-        if (
-          disposedRef.current ||
-          lifecycleEpoch !== lifecycleEpochRef.current ||
-          liveInputGeneration !== currentLiveInputGenerationRef.current
-        ) {
-          return Promise.resolve(false)
-        }
-        return sendLiveTerminalInputRef.current(handle, payload)
-      })
+      return queueTerminalLiveMirrorSend(pendingLiveInputFlushRef, () =>
+        queueTerminalLiveHandleSend(handleSendTailsRef, handle, () => {
+          if (
+            disposedRef.current ||
+            lifecycleEpoch !== lifecycleEpochRef.current ||
+            liveInputGeneration !== currentLiveInputGenerationRef.current
+          ) {
+            return Promise.resolve(false)
+          }
+          return sendLiveTerminalInputRef.current(handle, payload)
+        })
+      )
     },
     [
       activeHandleRef,
@@ -208,7 +213,9 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       waitForPendingLiveInputFlush
     ]
   )
-  runMirrorStepRef.current = runMirrorStep
+  useLayoutEffect(() => {
+    runMirrorStepRef.current = runMirrorStep
+  }, [runMirrorStep])
 
   const applyLiveInputMirror = useCallback(
     (handle: string, fieldText: string): void => {
@@ -231,12 +238,18 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
       }
       const lifecycleEpoch = lifecycleEpochRef.current
       const sendCurrentBoundary = (): Promise<boolean> => {
-        return inputStateReady &&
+        const targetHandle = expectedHandle ?? activeHandleRef.current
+        if (!targetHandle) {
+          return Promise.resolve(false)
+        }
+        return queueTerminalLiveHandleSend(handleSendTailsRef, targetHandle, () =>
+          inputStateReady &&
           !disposedRef.current &&
           lifecycleEpoch === lifecycleEpochRef.current &&
           liveInputProducerGeneration === currentLiveInputProducerGenerationRef.current
-          ? sendBoundary()
-          : Promise.resolve(false)
+            ? sendBoundary()
+            : Promise.resolve(false)
+        )
       }
       const handle = pendingLiveInputHandleRef.current
       if (!handle) {
@@ -299,6 +312,10 @@ export function useTerminalLivePendingInputFlush<TTabType extends string>({
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
     heldLiveInputTextRef,
+    isLiveInputProducerCurrent: () =>
+      inputStateReady &&
+      !disposedRef.current &&
+      liveInputProducerGeneration === currentLiveInputProducerGenerationRef.current,
     pendingLiveInputHandleRef,
     reconcileLiveInputAfterDisconnect,
     runLiveInputBoundary,

@@ -81,6 +81,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
     heldLiveInputTextRef,
+    isLiveInputProducerCurrent,
     pendingLiveInputHandleRef,
     reconcileLiveInputAfterDisconnect,
     runLiveInputBoundary,
@@ -130,6 +131,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
 
   const handleLiveInputChange = useCallback(
     (text: string) => {
+      if (!isLiveInputProducerCurrent()) {
+        return
+      }
       if (!activeHandle || !liveInputTerminalHandles.has(activeHandle)) {
         clearPendingLiveInputCommit()
         return
@@ -144,6 +148,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
       activeHandle,
       applyLiveInputMirror,
       clearPendingLiveInputCommit,
+      isLiveInputProducerCurrent,
       liveInputTerminalHandles,
       setLiveInputCapture
     ]
@@ -151,6 +156,9 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
 
   const handleLiveInputKeyPress = useCallback(
     (event: TerminalLiveInputKeyPressEvent) => {
+      if (!isLiveInputProducerCurrent()) {
+        return
+      }
       if (!activeHandle || !liveInputTerminalHandles.has(activeHandle)) {
         return
       }
@@ -180,6 +188,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     [
       activeHandle,
       clearPendingLiveInputCommit,
+      isLiveInputProducerCurrent,
       liveInputTerminalHandles,
       runLiveInputBoundary,
       sendLiveTerminalInputRef
@@ -191,6 +200,7 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
     applyLiveInputMirror,
     clearPendingLiveInputCommit,
     heldLiveInputTextRef,
+    isLiveInputProducerCurrent,
     liveInputRef,
     liveInputTerminalHandles,
     pendingLiveInputHandleRef,
@@ -202,13 +212,23 @@ export function useTerminalLiveInputCommit<TTabType extends string>({
   })
 
   const handleLiveInputSubmit = useCallback(() => {
-    if (!activeHandle || !liveInputTerminalHandles.has(activeHandle)) {
+    if (
+      !isLiveInputProducerCurrent() ||
+      !activeHandle ||
+      !liveInputTerminalHandles.has(activeHandle)
+    ) {
       return
     }
     void runLiveInputBoundary(activeHandle, () =>
       sendLiveTerminalInputRef.current(activeHandle, '\r')
     )
-  }, [activeHandle, liveInputTerminalHandles, runLiveInputBoundary, sendLiveTerminalInputRef])
+  }, [
+    activeHandle,
+    isLiveInputProducerCurrent,
+    liveInputTerminalHandles,
+    runLiveInputBoundary,
+    sendLiveTerminalInputRef
+  ])
 
   return {
     clearPendingLiveInputCommit,
