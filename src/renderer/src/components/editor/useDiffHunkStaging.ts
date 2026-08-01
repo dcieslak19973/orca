@@ -139,7 +139,11 @@ export function useDiffHunkStaging({
       }
     })
     const scrollSub = modifiedEditor.onDidScrollChange(() => {
-      if (hoverLineRef.current != null) {
+      // Why: follow the line only while the button is actually showing. hoverLineRef deliberately
+      // survives mouse-leave so a click in the gap between the content area and the button still
+      // resolves to a line, so it cannot double as the visibility signal — without the display
+      // check, any scroll after the pointer left would re-show the button under no cursor.
+      if (hoverLineRef.current != null && lastDisplay === 'flex') {
         positionAtLine(hoverLineRef.current)
       }
     })
