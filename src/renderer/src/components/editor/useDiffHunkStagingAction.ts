@@ -84,7 +84,10 @@ export function useDiffHunkStagingAction(
       // last hunk must still visibly empty this diff. A failed refresh leaves pre-apply entries in
       // the store, which would read as "still reloadable" and suppress the explicit reload while no
       // status change ever fires — so force it whenever the refresh did not land.
-      const entries = useAppStore.getState().gitStatusByWorktree[activeFile.worktreeId]?.entries
+      // Why: gitStatusByWorktree stores the entry array directly. Reaching for `.entries` here
+      // resolves to Array.prototype.entries — a function, which typechecks and then throws on
+      // `.some()` downstream.
+      const entries = useAppStore.getState().gitStatusByWorktree[activeFile.worktreeId]
       if (!statusRefreshed || !shouldReloadDiffOnGitStatusChange(activeFile, entries)) {
         reloadContent(activeFile)
       }
