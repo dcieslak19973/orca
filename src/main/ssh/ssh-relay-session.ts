@@ -1159,7 +1159,7 @@ export class SshRelaySession {
         isReplay?: unknown
         providerSession?: unknown
         providerSessionOnly?: unknown
-        claudeRunningShellOrMonitor?: unknown
+        claudeRunningNonAgentTask?: unknown
         payload?: unknown
       }
       if (typeof envelope.paneKey !== 'string') {
@@ -1188,9 +1188,9 @@ export class SshRelaySession {
           isReplay: envelope.isReplay === true ? true : undefined,
           providerSession: envelope.providerSession,
           providerSessionOnly: envelope.providerSessionOnly === true ? true : undefined,
-          claudeRunningShellOrMonitor:
-            typeof envelope.claudeRunningShellOrMonitor === 'boolean'
-              ? envelope.claudeRunningShellOrMonitor
+          claudeRunningNonAgentTask:
+            typeof envelope.claudeRunningNonAgentTask === 'boolean'
+              ? envelope.claudeRunningNonAgentTask
               : undefined,
           payload: envelope.payload
         },

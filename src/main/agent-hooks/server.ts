@@ -87,7 +87,7 @@ type EnrichedAgentHookEventPayload = AgentHookEventPayload & {
 
 type PersistedAgentHookEventPayload = Omit<
   EnrichedAgentHookEventPayload,
-  'claudeRunningShellOrMonitor' | 'launchToken' | 'promptInteractionKey'
+  'claudeRunningNonAgentTask' | 'launchToken' | 'promptInteractionKey'
 > & {
   launchTokenHash?: string
 }
@@ -755,7 +755,7 @@ export class AgentHookServer {
     // Why: Escape/Ctrl+C at Claude's idle prompt does not stop provider-owned background shells.
     if (
       agentType === 'claude' &&
-      this.state.claudeRunningShellOrMonitorPaneKeys.has(existing.paneKey)
+      this.state.claudeRunningNonAgentTaskPaneKeys.has(existing.paneKey)
     ) {
       return false
     }
@@ -1725,7 +1725,7 @@ export class AgentHookServer {
       providerSession?: unknown
       providerSessionOnly?: unknown
       isReplay?: boolean
-      claudeRunningShellOrMonitor?: unknown
+      claudeRunningNonAgentTask?: unknown
       payload: unknown
     },
     connectionId: string
@@ -1817,12 +1817,12 @@ export class AgentHookServer {
     if (
       normalizedPayload.agentType === 'claude' &&
       envelope.isReplay !== true &&
-      typeof envelope.claudeRunningShellOrMonitor === 'boolean'
+      typeof envelope.claudeRunningNonAgentTask === 'boolean'
     ) {
-      if (envelope.claudeRunningShellOrMonitor) {
-        this.state.claudeRunningShellOrMonitorPaneKeys.add(paneKey)
+      if (envelope.claudeRunningNonAgentTask) {
+        this.state.claudeRunningNonAgentTaskPaneKeys.add(paneKey)
       } else {
-        this.state.claudeRunningShellOrMonitorPaneKeys.delete(paneKey)
+        this.state.claudeRunningNonAgentTaskPaneKeys.delete(paneKey)
       }
     }
     // Why: run the HTTP path's warn-once version/env-mismatch diagnostics with this.env as expected.
@@ -1846,9 +1846,9 @@ export class AgentHookServer {
       providerSession,
       providerSessionOnly: envelope.providerSessionOnly === true ? true : undefined,
       isReplay: envelope.isReplay === true ? true : undefined,
-      claudeRunningShellOrMonitor:
-        typeof envelope.claudeRunningShellOrMonitor === 'boolean'
-          ? envelope.claudeRunningShellOrMonitor
+      claudeRunningNonAgentTask:
+        typeof envelope.claudeRunningNonAgentTask === 'boolean'
+          ? envelope.claudeRunningNonAgentTask
           : undefined,
       payload: normalizedPayload
     }
@@ -2518,7 +2518,7 @@ export class AgentHookServer {
         continue
       }
       const {
-        claudeRunningShellOrMonitor: _claudeRunningShellOrMonitor,
+        claudeRunningNonAgentTask: _claudeRunningNonAgentTask,
         promptInteractionKey: _promptInteractionKey,
         launchToken,
         ...persistedPayload
