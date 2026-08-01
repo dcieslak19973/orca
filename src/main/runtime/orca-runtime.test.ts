@@ -15130,6 +15130,86 @@ describe('OrcaRuntimeService', () => {
     })
   })
 
+  it('coalesces concurrent focusTerminal navigations so only the latest full reveal runs', async () => {
+    // Instant reveals during createTerminal; switch to gated mock before focus storm.
+    const revealTerminalSession = vi.fn().mockResolvedValue({ tabId: 'tab-create' })
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      spawn: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'pty-a' })
+        .mockResolvedValueOnce({ id: 'pty-b' })
+        .mockResolvedValueOnce({ id: 'pty-c' }),
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      revealTerminalSession,
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+    const a = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+      title: 'a',
+      presentation: 'background'
+    })
+    const b = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+      title: 'b',
+      presentation: 'background'
+    })
+    const c = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+      title: 'c',
+      presentation: 'background'
+    })
+
+    let releaseFirstReveal!: (value: { tabId: string }) => void
+    let firstRevealStarted = false
+    const firstRevealGate = new Promise<{ tabId: string }>((resolve) => {
+      releaseFirstReveal = resolve
+    })
+    revealTerminalSession.mockReset()
+    revealTerminalSession.mockImplementation(() => {
+      if (!firstRevealStarted) {
+        firstRevealStarted = true
+        return firstRevealGate
+      }
+      return Promise.resolve({ tabId: 'tab-latest' })
+    })
+
+    const pA = runtime.focusTerminal(a.handle)
+    await vi.waitFor(() => {
+      expect(firstRevealStarted).toBe(true)
+    })
+    const pB = runtime.focusTerminal(b.handle)
+    const pC = runtime.focusTerminal(c.handle)
+
+    // B is superseded while A is in flight — resolves without a dedicated full reveal.
+    await expect(pB).resolves.toMatchObject({ handle: b.handle })
+    releaseFirstReveal({ tabId: 'tab-a' })
+    await expect(pA).resolves.toMatchObject({ handle: a.handle, tabId: 'tab-a' })
+    await expect(pC).resolves.toMatchObject({ handle: c.handle, tabId: 'tab-latest' })
+
+    // At most two full reveals (A then C); B was latest-wins dropped while pending.
+    expect(revealTerminalSession.mock.calls.length).toBeLessThanOrEqual(2)
+    expect(revealTerminalSession.mock.calls.length).toBeGreaterThanOrEqual(1)
+    const revealedPtyIds = revealTerminalSession.mock.calls.map(
+      (call) => (call[1] as { ptyId?: string }).ptyId
+    )
+    // Final focus (C) must have been able to run a full reveal after A.
+    expect(revealedPtyIds.at(-1)).toBe('pty-c')
+  })
+
   it('clears terminal scrollback through the PTY controller and headless buffer', async () => {
     const clearBuffer = vi.fn().mockResolvedValue(undefined)
     const runtime = new OrcaRuntimeService(store)

@@ -74,6 +74,7 @@ import { TOGGLE_FLOATING_TERMINAL_EVENT } from '@/lib/floating-terminal'
 import { TOGGLE_QUICK_COMMANDS_MENU_EVENT } from '@/lib/quick-commands-menu-events'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
+import { createTerminalFocusIpcCoalescer } from '@/lib/terminal-focus-ipc-coalescer'
 import { getRuntimeEnvironmentConnectionGeneration } from '@/store/slices/runtime-status'
 import { getEnvironmentSshStateGeneration } from '@/store/slices/runtime-environment-ssh'
 import { getRuntimeEnvironmentRevision } from '@/runtime/runtime-environment-revision'
@@ -1805,33 +1806,38 @@ export function useIpcEvents(): void {
       })
     )
 
+    // Why: bulk terminal.focus / remote multi-session open can flood ui:focusTerminal;
+    // latest-wins coalescing keeps only the newest host activation (see freeze harness).
+    const focusTerminalIpcCoalescer = createTerminalFocusIpcCoalescer((payload) => {
+      const store = useAppStore.getState()
+      activateTerminalInitiatedWorktree(store, payload.worktreeId)
+      store.setActiveTab(payload.tabId)
+      store.revealWorktreeInSidebar(payload.worktreeId)
+      if (
+        payload.ackPaneKeyOnSuccess ||
+        payload.flashFocusedPane ||
+        payload.scrollToBottomIfOutputSinceLastView
+      ) {
+        activateTabAndFocusPane(payload.tabId, payload.leafId ?? null, {
+          ...(payload.ackPaneKeyOnSuccess
+            ? { ackPaneKeyOnSuccess: payload.ackPaneKeyOnSuccess }
+            : {}),
+          ...(payload.flashFocusedPane ? { flashFocusedPane: true } : {}),
+          ...(payload.scrollToBottomIfOutputSinceLastView
+            ? { scrollToBottomIfOutputSinceLastView: true }
+            : {})
+        })
+        return
+      }
+      focusTerminalInitiatedTab(payload.tabId, payload.leafId)
+    })
+    unsubs.push(() => {
+      focusTerminalIpcCoalescer.dispose()
+    })
     unsubs.push(
-      window.api.ui.onFocusTerminal(
-        ({
-          tabId,
-          worktreeId,
-          leafId,
-          ackPaneKeyOnSuccess,
-          flashFocusedPane,
-          scrollToBottomIfOutputSinceLastView
-        }) => {
-          const store = useAppStore.getState()
-          activateTerminalInitiatedWorktree(store, worktreeId)
-          store.setActiveTab(tabId)
-          store.revealWorktreeInSidebar(worktreeId)
-          if (ackPaneKeyOnSuccess || flashFocusedPane || scrollToBottomIfOutputSinceLastView) {
-            activateTabAndFocusPane(tabId, leafId ?? null, {
-              ...(ackPaneKeyOnSuccess ? { ackPaneKeyOnSuccess } : {}),
-              ...(flashFocusedPane ? { flashFocusedPane: true } : {}),
-              ...(scrollToBottomIfOutputSinceLastView
-                ? { scrollToBottomIfOutputSinceLastView: true }
-                : {})
-            })
-            return
-          }
-          focusTerminalInitiatedTab(tabId, leafId)
-        }
-      )
+      window.api.ui.onFocusTerminal((payload) => {
+        focusTerminalIpcCoalescer.enqueue(payload)
+      })
     )
 
     unsubs.push(

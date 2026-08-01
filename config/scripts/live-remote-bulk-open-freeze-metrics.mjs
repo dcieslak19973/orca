@@ -83,3 +83,43 @@ export function applySwitchTargetCap(targets, maxSwitchTargets) {
   }
   return targets.slice(0, maxSwitchTargets)
 }
+
+/** Scenarios that model real user recovery, not concurrent CLI pileup. */
+export const REALISTIC_SCENARIOS = [
+  'idle-backlog-open',
+  'idle-backlog-reconnect-open',
+  'restart-proxy'
+]
+
+/**
+ * Peak across open latencies + optional reconnect-refresh wall + probes.
+ * Used by the naturalistic harness (no parallel switch amp).
+ */
+export function evaluateRealisticFreezeSignals({
+  maxOpenMs = 0,
+  firstOpenMs = 0,
+  reconnectRefreshMs = 0,
+  statusProbeMs = 0,
+  memoryProbeMs = null,
+  softMs = DEFAULT_SOFT_MS,
+  hardMs = DEFAULT_HARD_MS
+}) {
+  const peakLatencyMs = Math.max(maxOpenMs, firstOpenMs, reconnectRefreshMs)
+  return evaluateFreezeSignals({
+    maxSwitchMs: peakLatencyMs,
+    maxBatchWallMs: 0,
+    statusProbeMs,
+    memoryProbeMs,
+    softMs,
+    hardMs
+  })
+}
+
+export function humanPaceDelayMs(baseMs, jitterMs = 0) {
+  const base = Math.max(0, baseMs)
+  const jitter = Math.max(0, jitterMs)
+  if (jitter === 0) {
+    return base
+  }
+  return base + Math.floor(Math.random() * (jitter + 1))
+}

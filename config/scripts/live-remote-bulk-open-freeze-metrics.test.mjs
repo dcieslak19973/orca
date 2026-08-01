@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   applySwitchTargetCap,
   evaluateFreezeSignals,
+  evaluateRealisticFreezeSignals,
   extractTerminalHandle,
+  humanPaceDelayMs,
+  REALISTIC_SCENARIOS,
   shouldCapSwitchTargets,
   worktreeSelector
 } from './live-remote-bulk-open-freeze-metrics.mjs'
@@ -48,6 +51,36 @@ describe('live-remote-bulk-open-freeze-metrics', () => {
     const hardBatch = evaluateFreezeSignals({ maxSwitchMs: 900, maxBatchWallMs: 20201 })
     expect(hardBatch.hardFreeze).toBe(true)
     expect(hardBatch.peakLatencyMs).toBe(20201)
+  })
+
+  it('evaluates naturalistic peaks without requiring parallel batch amp', () => {
+    expect(REALISTIC_SCENARIOS).toContain('idle-backlog-open')
+    expect(REALISTIC_SCENARIOS).toContain('idle-backlog-reconnect-open')
+    const soft = evaluateRealisticFreezeSignals({
+      maxOpenMs: 3200,
+      firstOpenMs: 2800,
+      reconnectRefreshMs: 900
+    })
+    expect(soft.softFreeze).toBe(true)
+    expect(soft.hardFreeze).toBe(false)
+    expect(soft.peakLatencyMs).toBe(3200)
+
+    const hardFromReconnect = evaluateRealisticFreezeSignals({
+      maxOpenMs: 800,
+      firstOpenMs: 700,
+      reconnectRefreshMs: 6200
+    })
+    expect(hardFromReconnect.hardFreeze).toBe(true)
+    expect(hardFromReconnect.peakLatencyMs).toBe(6200)
+  })
+
+  it('human pace delay stays within base+jitter', () => {
+    for (let i = 0; i < 20; i += 1) {
+      const d = humanPaceDelayMs(250, 150)
+      expect(d).toBeGreaterThanOrEqual(250)
+      expect(d).toBeLessThanOrEqual(400)
+    }
+    expect(humanPaceDelayMs(100, 0)).toBe(100)
   })
 
   it('reads the real hard-freeze lab report when present', async () => {
