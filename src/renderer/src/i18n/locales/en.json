@@ -12748,7 +12748,9 @@
           "3c6e71df22": "Text diff is unavailable for this file in branch compare.",
           "d07e4b8553": "branch",
           "d16e037f40": "rich",
-          "6c4f1a8d2e": "Check details are unavailable."
+          "6c4f1a8d2e": "Check details are unavailable.",
+          "unstageHunk": "Unstage hunk",
+          "stageHunk": "Stage hunk"
         },
         "EditorPanelHeader": {
           "fb8331694e": "Open Preview to the Side",

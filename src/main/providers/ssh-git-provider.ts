@@ -19,6 +19,7 @@ import type {
   RemoveWorktreeResult
 } from '../../shared/types'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
+import type { DiffHunkRange } from '../../shared/git-hunk-patch'
 import { buildHostedRemoteCommitUrl, buildHostedRemoteFileUrl } from '../git/hosted-remote-url'
 import { JsonRpcErrorCode } from '../ssh/relay-protocol'
 import { requestGitStreamable } from '../ssh/ssh-git-response-stream-reader'
@@ -419,6 +420,24 @@ export class SshGitProvider implements IGitProvider {
     this.gitDiffReadDedupe.clear()
     try {
       await this.mux.request('git.unstage', { worktreePath, filePath })
+    } finally {
+      this.gitDiffReadDedupe.clear()
+    }
+  }
+
+  async stageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void> {
+    this.gitDiffReadDedupe.clear()
+    try {
+      await this.mux.request('git.stageHunk', { worktreePath, filePath, range })
+    } finally {
+      this.gitDiffReadDedupe.clear()
+    }
+  }
+
+  async unstageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void> {
+    this.gitDiffReadDedupe.clear()
+    try {
+      await this.mux.request('git.unstageHunk', { worktreePath, filePath, range })
     } finally {
       this.gitDiffReadDedupe.clear()
     }

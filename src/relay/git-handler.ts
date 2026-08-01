@@ -12,6 +12,15 @@ import {
 } from './git-handler-utils'
 import { parseNumstat } from '../shared/git-uncommitted-line-stats'
 import {
+  GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_STALE_MESSAGE,
+  buildPatchForHunks,
+  parseSingleFileUnifiedDiff,
+  selectHunksForRange,
+  type DiffHunkRange
+} from '../shared/git-hunk-patch'
+import {
   computeDiff,
   branchCompare as branchCompareOp,
   branchDiffEntries,
@@ -210,6 +219,8 @@ export class GitHandler {
     this.dispatcher.onRequest('git.diff', (p, context) => this.getDiff(p, context))
     this.dispatcher.onRequest('git.stage', (p) => this.stage(p))
     this.dispatcher.onRequest('git.unstage', (p) => this.unstage(p))
+    this.dispatcher.onRequest('git.stageHunk', (p) => this.stageHunk(p))
+    this.dispatcher.onRequest('git.unstageHunk', (p) => this.unstageHunk(p))
     this.dispatcher.onRequest('git.bulkStage', (p) => this.bulkStage(p))
     this.dispatcher.onRequest('git.bulkUnstage', (p) => this.bulkUnstage(p))
     this.dispatcher.onRequest('git.abortMerge', (p) => this.abortMerge(p))
@@ -508,6 +519,61 @@ export class GitHandler {
     } finally {
       this.clearGitMutationReadCaches()
     }
+  }
+
+  // Why: the applied patch is git's own -U0 output for the matched hunks, verbatim —
+  // re-synthesizing hunks would have to re-solve EOL and no-newline-at-EOF edge cases.
+  private async applyHunkRangeToIndex(
+    params: Record<string, unknown>,
+    reverse: boolean
+  ): Promise<void> {
+    this.clearGitMutationReadCaches()
+    const worktreePath = params.worktreePath as string
+    const filePath = params.filePath as string
+    const range = params.range as DiffHunkRange
+    try {
+      const { stdout } = await this.git(
+        [
+          'diff',
+          ...(reverse ? ['--cached'] : []),
+          '-U0',
+          '--no-color',
+          '--no-ext-diff',
+          '--',
+          this.literalPathspec(filePath)
+        ],
+        worktreePath
+      )
+      const parsed = parseSingleFileUnifiedDiff(stdout)
+      if (!parsed || parsed.hunks.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      if (parsed.isRename) {
+        throw new Error(GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE)
+      }
+      if (parsed.isBinary) {
+        throw new Error(GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE)
+      }
+      const selected = selectHunksForRange(parsed.hunks, range)
+      if (selected.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      await this.git(
+        ['apply', '--cached', '--unidiff-zero', ...(reverse ? ['--reverse'] : []), '-'],
+        worktreePath,
+        { stdin: buildPatchForHunks(parsed, selected) }
+      )
+    } finally {
+      this.clearGitMutationReadCaches()
+    }
+  }
+
+  private async stageHunk(params: Record<string, unknown>): Promise<void> {
+    return this.applyHunkRangeToIndex(params, false)
+  }
+
+  private async unstageHunk(params: Record<string, unknown>): Promise<void> {
+    return this.applyHunkRangeToIndex(params, true)
   }
 
   private async commit(

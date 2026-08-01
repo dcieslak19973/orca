@@ -13,6 +13,7 @@ import type {
   RemoveWorktreeResult
 } from '../../shared/types'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
+import type { DiffHunkRange } from '../../shared/git-hunk-patch'
 import type { CommitMessageDraftContext } from '../../shared/commit-message-generation'
 import type { GitProviderStatusOptions } from './git-provider-status-options'
 
@@ -37,6 +38,8 @@ export type IGitProvider = {
   ): Promise<GitDiffResult>
   stageFile(worktreePath: string, filePath: string): Promise<void>
   unstageFile(worktreePath: string, filePath: string): Promise<void>
+  stageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void>
+  unstageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void>
   bulkStageFiles(worktreePath: string, filePaths: string[]): Promise<void>
   bulkUnstageFiles(worktreePath: string, filePaths: string[]): Promise<void>
   discardChanges(worktreePath: string, filePath: string): Promise<void>

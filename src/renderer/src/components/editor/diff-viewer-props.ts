@@ -1,4 +1,5 @@
 import type { LargeDiffRenderLimit } from './large-diff-render-limit'
+import type { DiffHunkStagingConfig } from './useDiffHunkStaging'
 
 export type DiffViewerProps = {
   modelKey: string
@@ -24,6 +25,8 @@ export type DiffViewerProps = {
   addLineCommentPlaceholder?: string
   onContentChange?: (content: string) => void
   onSave?: (content: string) => void
+  /** Per-hunk stage/unstage action; absent for diffs that aren't index-backed. */
+  hunkStaging?: DiffHunkStagingConfig
   largeDiffRenderLimit?: LargeDiffRenderLimit
   // Why: main-process limited diffs intentionally blank text bodies before IPC;
   // the fallback must not treat that placeholder as a saveable draft.

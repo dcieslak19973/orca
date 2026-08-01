@@ -2161,6 +2161,10 @@ function createGitApi(): NonNullable<Partial<PreloadApi>['git']> {
       mutateGitPaths('git.bulkStage', worktreePath, filePaths),
     unstage: async ({ worktreePath, filePath }) =>
       mutateGitPath('git.unstage', worktreePath, filePath),
+    stageHunk: async ({ worktreePath, filePath, range }) =>
+      mutateGitHunk('git.stageHunk', worktreePath, filePath, range),
+    unstageHunk: async ({ worktreePath, filePath, range }) =>
+      mutateGitHunk('git.unstageHunk', worktreePath, filePath, range),
     bulkUnstage: async ({ worktreePath, filePaths }) =>
       mutateGitPaths('git.bulkUnstage', worktreePath, filePaths),
     discard: async ({ worktreePath, filePath }) =>
@@ -4146,6 +4150,20 @@ async function mutateGitPath(
   await callRuntimeResult(method, {
     worktree: toRuntimeWorktreeSelector(file.worktree.id),
     filePath: file.relativePath
+  })
+}
+
+async function mutateGitHunk(
+  method: string,
+  worktreePath: string,
+  filePath: string,
+  range: { oldStart: number; oldCount: number; newStart: number; newCount: number }
+): Promise<void> {
+  const file = await resolveRuntimeFilePath(filePath, worktreePath)
+  await callRuntimeResult(method, {
+    worktree: toRuntimeWorktreeSelector(file.worktree.id),
+    filePath: file.relativePath,
+    range
   })
 }
 

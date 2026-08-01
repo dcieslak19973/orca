@@ -15,6 +15,7 @@ import {
   GitDiff,
   GitFilePath,
   GitForkSync,
+  GitHunkRangeParams,
   GitGenerateCommitMessage,
   GitGeneratePullRequestFields,
   GitHistory,
@@ -324,6 +325,18 @@ export const GIT_METHODS: RpcMethod[] = [
     params: GitFilePath,
     handler: async (params, { runtime }) =>
       runtime.stageRuntimeGitPath(params.worktree, params.filePath)
+  }),
+  defineMethod({
+    name: 'git.stageHunk',
+    params: GitHunkRangeParams,
+    handler: async (params, { runtime }) =>
+      runtime.stageRuntimeGitHunk(params.worktree, params.filePath, params.range)
+  }),
+  defineMethod({
+    name: 'git.unstageHunk',
+    params: GitHunkRangeParams,
+    handler: async (params, { runtime }) =>
+      runtime.unstageRuntimeGitHunk(params.worktree, params.filePath, params.range)
   }),
   defineMethod({
     name: 'git.bulkStage',

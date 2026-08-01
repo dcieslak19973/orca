@@ -22,6 +22,7 @@ import type { HostedReviewProvider } from '../../../shared/hosted-review'
 import type { ResolvedSourceControlAiGenerationParams } from '../../../shared/source-control-ai'
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../shared/commit-message-host-key'
 import type { GitHistoryOptions, GitHistoryResult } from '../../../shared/git-history'
+import type { DiffHunkRange } from '../../../shared/git-hunk-patch'
 import { getRepoIdFromWorktreeId, splitWorktreeIdForFilesystem } from '../../../shared/worktree-id'
 import { callRuntimeRpc, getActiveRuntimeTarget } from './runtime-rpc-client'
 import { toRuntimeWorktreeSelector } from './runtime-worktree-selector'
@@ -836,6 +837,52 @@ export async function unstageRuntimeGitPath(
     target,
     'git.unstage',
     { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath },
+    { timeoutMs: 15_000 }
+  )
+}
+
+export async function stageRuntimeGitHunk(
+  context: RuntimeGitContext,
+  filePath: string,
+  range: DiffHunkRange
+): Promise<void> {
+  const target = getActiveRuntimeTarget(context.settings)
+  if (target.kind === 'local' || !context.worktreeId) {
+    await window.api.git.stageHunk({
+      worktreePath: resolveLocalWorktreePath(context),
+      filePath,
+      range,
+      connectionId: context.connectionId
+    })
+    return
+  }
+  await callRuntimeRpc(
+    target,
+    'git.stageHunk',
+    { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath, range },
+    { timeoutMs: 15_000 }
+  )
+}
+
+export async function unstageRuntimeGitHunk(
+  context: RuntimeGitContext,
+  filePath: string,
+  range: DiffHunkRange
+): Promise<void> {
+  const target = getActiveRuntimeTarget(context.settings)
+  if (target.kind === 'local' || !context.worktreeId) {
+    await window.api.git.unstageHunk({
+      worktreePath: resolveLocalWorktreePath(context),
+      filePath,
+      range,
+      connectionId: context.connectionId
+    })
+    return
+  }
+  await callRuntimeRpc(
+    target,
+    'git.unstageHunk',
+    { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath, range },
     { timeoutMs: 15_000 }
   )
 }
