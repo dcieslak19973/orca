@@ -1,4 +1,5 @@
 import type { Tab } from '../../../../shared/types'
+import { isEditorTabContentType } from '../../../../shared/editor-tab-content-type'
 
 export type SourceControlRowOpenEvent = {
   altKey: boolean
@@ -48,12 +49,7 @@ export function toPermanentSourceControlRowOpenEvent(
 type SideSplitCandidateTab = Pick<Tab, 'groupId' | 'contentType' | 'isPreview'>
 
 function isEditorContentTab(tab: SideSplitCandidateTab): boolean {
-  return (
-    tab.contentType === 'editor' ||
-    tab.contentType === 'diff' ||
-    tab.contentType === 'conflict-review' ||
-    tab.contentType === 'check-details'
-  )
+  return isEditorTabContentType(tab.contentType)
 }
 
 /**
