@@ -3,6 +3,15 @@ import { gitOptionsForWorktree } from '../git-runtime-options'
 import { gitExecFileAsync } from '../runner'
 import { invalidateGitReadCaches } from './git-read-cache-invalidation'
 import { bulkPathspecCommands, literalPathspec } from './git-pathspec'
+import {
+  GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_STALE_MESSAGE,
+  buildPatchForHunks,
+  parseSingleFileUnifiedDiff,
+  selectHunksForRange,
+  type DiffHunkRange
+} from '../../../shared/git-hunk-patch'
 
 /**
  * Stage a file.
@@ -36,6 +45,84 @@ export async function unstageFile(
     await gitExecFileAsync(['restore', '--staged', '--', literalPathspec(filePath, options)], {
       ...gitOptionsForWorktree(worktreePath, options)
     })
+  } finally {
+    invalidateGitReadCaches()
+  }
+}
+
+// Why: the applied patch is git's own -U0 output for the matched hunks, verbatim —
+// re-synthesizing hunks would have to re-solve EOL and no-newline-at-EOF edge cases.
+async function applyHunkRangeToIndex(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  reverse: boolean,
+  options: GitRuntimeOptions
+): Promise<void> {
+  const diffResult = await gitExecFileAsync(
+    [
+      'diff',
+      ...(reverse ? ['--cached'] : []),
+      '-U0',
+      '--no-color',
+      '--no-ext-diff',
+      '--',
+      literalPathspec(filePath, options)
+    ],
+    gitOptionsForWorktree(worktreePath, options)
+  )
+  const parsed = parseSingleFileUnifiedDiff(diffResult.stdout)
+  if (!parsed || parsed.hunks.length === 0) {
+    throw new Error(GIT_HUNK_STALE_MESSAGE)
+  }
+  if (parsed.isRename) {
+    throw new Error(GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE)
+  }
+  if (parsed.isBinary) {
+    throw new Error(GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE)
+  }
+  const selected = selectHunksForRange(parsed.hunks, range)
+  if (selected.length === 0) {
+    throw new Error(GIT_HUNK_STALE_MESSAGE)
+  }
+  await gitExecFileAsync(
+    ['apply', '--cached', '--unidiff-zero', ...(reverse ? ['--reverse'] : []), '-'],
+    {
+      ...gitOptionsForWorktree(worktreePath, options),
+      stdin: buildPatchForHunks(parsed, selected)
+    }
+  )
+}
+
+/**
+ * Stage a single hunk of a file's unstaged diff.
+ */
+export async function stageHunk(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  options: GitRuntimeOptions = {}
+): Promise<void> {
+  invalidateGitReadCaches()
+  try {
+    await applyHunkRangeToIndex(worktreePath, filePath, range, false, options)
+  } finally {
+    invalidateGitReadCaches()
+  }
+}
+
+/**
+ * Unstage a single hunk of a file's staged diff.
+ */
+export async function unstageHunk(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  options: GitRuntimeOptions = {}
+): Promise<void> {
+  invalidateGitReadCaches()
+  try {
+    await applyHunkRangeToIndex(worktreePath, filePath, range, true, options)
   } finally {
     invalidateGitReadCaches()
   }

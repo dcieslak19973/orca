@@ -4,6 +4,7 @@ import type {
 } from '../../shared/git-diff-compare-types'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
 import type { GitConflictOperation } from '../../shared/git-status-types'
+import type { DiffHunkRange } from '../../shared/git-hunk-patch'
 import type { GitAdmissionTier } from '../git/command-runner/git-exec-options'
 import { SshGitNoninteractiveProvider } from './ssh-git-noninteractive-provider'
 
@@ -47,6 +48,18 @@ export class SshGitWorkingTreeProvider extends SshGitNoninteractiveProvider {
   async unstageFile(worktreePath: string, filePath: string): Promise<void> {
     await this.runWithGitReadInvalidation(async () => {
       await this.mux.request('git.unstage', { worktreePath, filePath })
+    })
+  }
+
+  async stageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void> {
+    await this.runWithGitReadInvalidation(async () => {
+      await this.mux.request('git.stageHunk', { worktreePath, filePath, range })
+    })
+  }
+
+  async unstageHunk(worktreePath: string, filePath: string, range: DiffHunkRange): Promise<void> {
+    await this.runWithGitReadInvalidation(async () => {
+      await this.mux.request('git.unstageHunk', { worktreePath, filePath, range })
     })
   }
 

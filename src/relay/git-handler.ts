@@ -111,6 +111,7 @@ export class GitHandler {
     this.clearGitMutationReadCaches()
   }
 
+
   private responseAck(params: Record<string, unknown>, context: RequestContext): void {
     const streamId = params.streamId
     const seq = params.seq
@@ -202,6 +203,7 @@ export class GitHandler {
     })) as { stdout: Buffer }
     return stdout
   }
+
 
   private async spawnClone(
     args: string[],

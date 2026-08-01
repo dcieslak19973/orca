@@ -112,6 +112,18 @@ export type GitOperationApi = {
     filePaths: string[]
     connectionId?: string
   }) => Promise<void>
+  stageHunk: (args: {
+    worktreePath: string
+    filePath: string
+    range: { oldStart: number; oldCount: number; newStart: number; newCount: number }
+    connectionId?: string
+  }) => Promise<void>
+  unstageHunk: (args: {
+    worktreePath: string
+    filePath: string
+    range: { oldStart: number; oldCount: number; newStart: number; newCount: number }
+    connectionId?: string
+  }) => Promise<void>
   discard: (args: {
     worktreePath: string
     filePath: string

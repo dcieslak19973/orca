@@ -4,8 +4,11 @@ import {
   bulkUnstageFiles,
   discardChanges,
   stageFile,
-  unstageFile
+  stageHunk,
+  unstageFile,
+  unstageHunk
 } from '../git/status'
+import type { DiffHunkRange } from '../../shared/git-hunk-patch'
 import {
   getSshGitProvider,
   SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE
@@ -49,6 +52,50 @@ export class RuntimeGitStagingCommands {
       return { ok: true }
     }
     await unstageFile(target.worktree.path, relativePath, {
+      ...localGitOptionsForTarget(target),
+      admissionTier: 'interactive'
+    })
+    return { ok: true }
+  }
+
+  async stageRuntimeGitHunk(
+    worktreeSelector: string,
+    filePath: string,
+    range: DiffHunkRange
+  ): Promise<{ ok: true }> {
+    const target = await this.host.resolveRuntimeGitTarget(worktreeSelector)
+    const relativePath = normalizeRuntimeGitRelativePath(filePath)
+    const provider = target.connectionId ? getSshGitProvider(target.connectionId) : null
+    if (target.connectionId) {
+      if (!provider) {
+        throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
+      }
+      await provider.stageHunk(target.worktree.path, relativePath, range)
+      return { ok: true }
+    }
+    await stageHunk(target.worktree.path, relativePath, range, {
+      ...localGitOptionsForTarget(target),
+      admissionTier: 'interactive'
+    })
+    return { ok: true }
+  }
+
+  async unstageRuntimeGitHunk(
+    worktreeSelector: string,
+    filePath: string,
+    range: DiffHunkRange
+  ): Promise<{ ok: true }> {
+    const target = await this.host.resolveRuntimeGitTarget(worktreeSelector)
+    const relativePath = normalizeRuntimeGitRelativePath(filePath)
+    const provider = target.connectionId ? getSshGitProvider(target.connectionId) : null
+    if (target.connectionId) {
+      if (!provider) {
+        throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
+      }
+      await provider.unstageHunk(target.worktree.path, relativePath, range)
+      return { ok: true }
+    }
+    await unstageHunk(target.worktree.path, relativePath, range, {
       ...localGitOptionsForTarget(target),
       admissionTier: 'interactive'
     })

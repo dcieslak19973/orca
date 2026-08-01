@@ -4,9 +4,8 @@ import type { GitDiffResult } from '../../../../shared/git-diff-compare-types'
 import { getDiffContentSignature } from './diff-content-signature'
 import { DiffViewer, ImageDiffViewer, MarkdownPreview } from './editor-lazy-views'
 import { ExternalFileChangeBanner } from './ExternalFileChangeBanner'
-import type { useMarkdownDocuments } from './useMarkdownDocuments'
-
-type MarkdownDocumentsController = ReturnType<typeof useMarkdownDocuments>
+import type { UseMarkdownDocumentsResult } from './useMarkdownDocuments'
+import type { DiffHunkStagingConfig } from './useDiffHunkStaging'
 
 export function EditorDiffFileSurface({
   activeFile,
@@ -24,7 +23,8 @@ export function EditorDiffFileSurface({
   markdownDocuments,
   onContentChange,
   onSave,
-  reloadContent
+  reloadContent,
+  hunkStaging
 }: {
   activeFile: OpenFile
   diffContent: GitDiffResult | undefined
@@ -38,10 +38,11 @@ export function EditorDiffFileSurface({
   showMarkdownTableOfContents: boolean
   onCloseMarkdownTableOfContents: () => void
   markdownAnnotationsEnabled: boolean
-  markdownDocuments: MarkdownDocumentsController
+  markdownDocuments: UseMarkdownDocumentsResult
   onContentChange: (content: string) => void
   onSave: (content: string) => Promise<boolean>
   reloadContent: (file: OpenFile) => void
+  hunkStaging?: DiffHunkStagingConfig
 }): React.JSX.Element {
   if (!diffContent) {
     return (
@@ -157,6 +158,7 @@ export function EditorDiffFileSurface({
       worktreeId={activeFile.worktreeId}
       onContentChange={isEditable ? onContentChange : undefined}
       onSave={isEditable ? (isMarkdown ? markdownDocuments.mdSave : onSave) : undefined}
+      hunkStaging={isEditable ? hunkStaging : undefined}
     />
   )
   if (activeFile.externalMutation !== 'changed') {

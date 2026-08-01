@@ -10,6 +10,7 @@ import { EditorEditFileSurface } from './EditorEditFileSurface'
 import { EditorFileLoadErrorView } from './EditorFileLoadErrorView'
 import type { FileContent } from './editor-panel-content-types'
 import { translate } from '@/i18n/i18n'
+import { useDiffHunkStagingAction } from './useDiffHunkStagingAction'
 import { useEditorConflictNavigation } from './useEditorConflictNavigation'
 import { useMarkdownDocuments } from './useMarkdownDocuments'
 import type { MarkdownRenderState } from './markdown-render-mode'
@@ -110,6 +111,7 @@ export function EditorContent({
   const reloadOpenCheckRunDetailsTab = useAppStore((state) => state.reloadOpenCheckRunDetailsTab)
   const markdownDocuments = useMarkdownDocuments(activeFile, isMarkdown, mdViewMode, handleSave)
   const getConflictNavigation = useEditorConflictNavigation()
+  const hunkStaging = useDiffHunkStagingAction(activeFile, worktreeEntries, reloadContent)
   const activeConflictEntry =
     worktreeEntries.find((entry) => entry.path === activeFile.relativePath) ?? null
   const isCombinedDiff =
@@ -278,6 +280,7 @@ export function EditorContent({
       onContentChange={handleContentChange}
       onSave={handleSave}
       reloadContent={reloadContent}
+      hunkStaging={hunkStaging}
     />
   )
 }

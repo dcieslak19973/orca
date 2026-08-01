@@ -1,6 +1,7 @@
 import { resolveLocalWorktreePath, type RuntimeGitContext } from './runtime-git-client-context'
 import { callRuntimeRpc, getActiveRuntimeTarget } from './runtime-rpc-client'
 import { toRuntimeWorktreeSelector } from './runtime-worktree-selector'
+import type { DiffHunkRange } from '../../../shared/git-hunk-patch'
 
 export async function stageRuntimeGitPath(
   context: RuntimeGitContext,
@@ -19,6 +20,52 @@ export async function stageRuntimeGitPath(
     target,
     'git.stage',
     { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath },
+    { timeoutMs: 15_000 }
+  )
+}
+
+export async function stageRuntimeGitHunk(
+  context: RuntimeGitContext,
+  filePath: string,
+  range: DiffHunkRange
+): Promise<void> {
+  const target = getActiveRuntimeTarget(context.settings)
+  if (target.kind === 'local' || !context.worktreeId) {
+    await window.api.git.stageHunk({
+      worktreePath: resolveLocalWorktreePath(context),
+      filePath,
+      range,
+      connectionId: context.connectionId
+    })
+    return
+  }
+  await callRuntimeRpc(
+    target,
+    'git.stageHunk',
+    { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath, range },
+    { timeoutMs: 15_000 }
+  )
+}
+
+export async function unstageRuntimeGitHunk(
+  context: RuntimeGitContext,
+  filePath: string,
+  range: DiffHunkRange
+): Promise<void> {
+  const target = getActiveRuntimeTarget(context.settings)
+  if (target.kind === 'local' || !context.worktreeId) {
+    await window.api.git.unstageHunk({
+      worktreePath: resolveLocalWorktreePath(context),
+      filePath,
+      range,
+      connectionId: context.connectionId
+    })
+    return
+  }
+  await callRuntimeRpc(
+    target,
+    'git.unstageHunk',
+    { worktree: toRuntimeWorktreeSelector(context.worktreeId), filePath, range },
     { timeoutMs: 15_000 }
   )
 }

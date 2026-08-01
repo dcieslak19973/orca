@@ -1,4 +1,5 @@
 import type { PreloadApi } from '../../../../preload/api-types'
+import type { DiffHunkRange } from '../../../../shared/git-hunk-patch'
 import { callAbortableRuntimeEnvironment } from '../../runtime/abortable-runtime-environment-call'
 import { toRuntimeWorktreeSelector } from '../../runtime/runtime-worktree-selector'
 import { translate } from '@/i18n/i18n'
@@ -245,6 +246,10 @@ export function createGitApi(): NonNullable<Partial<PreloadApi>['git']> {
       mutateGitPaths('git.bulkStage', worktreePath, filePaths),
     unstage: async ({ worktreePath, filePath }) =>
       mutateGitPath('git.unstage', worktreePath, filePath),
+    stageHunk: async ({ worktreePath, filePath, range }) =>
+      mutateGitHunk('git.stageHunk', worktreePath, filePath, range),
+    unstageHunk: async ({ worktreePath, filePath, range }) =>
+      mutateGitHunk('git.unstageHunk', worktreePath, filePath, range),
     bulkUnstage: async ({ worktreePath, filePaths }) =>
       mutateGitPaths('git.bulkUnstage', worktreePath, filePaths),
     discard: async ({ worktreePath, filePath }) =>
@@ -281,6 +286,20 @@ export async function mutateGitPath(
   await callRuntimeResult(method, {
     worktree: toRuntimeWorktreeSelector(file.worktree.id),
     filePath: file.relativePath
+  })
+}
+
+export async function mutateGitHunk(
+  method: string,
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange
+): Promise<void> {
+  const file = await resolveRuntimeFilePath(filePath, worktreePath)
+  await callRuntimeResult(method, {
+    worktree: toRuntimeWorktreeSelector(file.worktree.id),
+    filePath: file.relativePath,
+    range
   })
 }
 

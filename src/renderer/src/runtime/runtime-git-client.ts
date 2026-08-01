@@ -40,7 +40,9 @@ import {
   discardRuntimeGitPath as discardRuntimeGitPathImplementation,
   getRuntimeGitRemoteCommitUrl as getRuntimeGitRemoteCommitUrlImplementation,
   getRuntimeGitRemoteFileUrl as getRuntimeGitRemoteFileUrlImplementation,
+  stageRuntimeGitHunk as stageRuntimeGitHunkImplementation,
   stageRuntimeGitPath as stageRuntimeGitPathImplementation,
+  unstageRuntimeGitHunk as unstageRuntimeGitHunkImplementation,
   unstageRuntimeGitPath as unstageRuntimeGitPathImplementation
 } from './runtime-git-working-tree-client'
 
@@ -82,8 +84,10 @@ export const generateRuntimePullRequestFields = generateRuntimePullRequestFields
 export const cancelRuntimeGeneratePullRequestFields =
   cancelRuntimeGeneratePullRequestFieldsImplementation
 export const stageRuntimeGitPath = stageRuntimeGitPathImplementation
+export const stageRuntimeGitHunk = stageRuntimeGitHunkImplementation
 export const bulkStageRuntimeGitPaths = bulkStageRuntimeGitPathsImplementation
 export const unstageRuntimeGitPath = unstageRuntimeGitPathImplementation
+export const unstageRuntimeGitHunk = unstageRuntimeGitHunkImplementation
 export const bulkUnstageRuntimeGitPaths = bulkUnstageRuntimeGitPathsImplementation
 export const bulkDiscardRuntimeGitPaths = bulkDiscardRuntimeGitPathsImplementation
 export const discardRuntimeGitPath = discardRuntimeGitPathImplementation

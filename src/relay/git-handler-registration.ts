@@ -17,6 +17,8 @@ export function registerGitHandlers(
   dispatcher.onRequest('git.diff', (p, context) => handlers.read.getDiff(p, context))
   dispatcher.onRequest('git.stage', (p) => handlers.changes.stage(p))
   dispatcher.onRequest('git.unstage', (p) => handlers.changes.unstage(p))
+  dispatcher.onRequest('git.stageHunk', (p) => handlers.changes.stageHunk(p))
+  dispatcher.onRequest('git.unstageHunk', (p) => handlers.changes.unstageHunk(p))
   dispatcher.onRequest('git.bulkStage', (p) => handlers.changes.bulkStage(p))
   dispatcher.onRequest('git.bulkUnstage', (p) => handlers.changes.bulkUnstage(p))
   dispatcher.onRequest('git.abortMerge', (p) => handlers.changes.abortMerge(p))

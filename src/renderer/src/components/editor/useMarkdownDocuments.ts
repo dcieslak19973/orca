@@ -30,7 +30,7 @@ export async function saveMarkdownAndRefreshDocuments(
   return true
 }
 
-type UseMarkdownDocumentsResult = {
+export type UseMarkdownDocumentsResult = {
   markdownDocuments: MarkdownDocument[]
   openMarkdownDocument: (
     document: MarkdownDocument,

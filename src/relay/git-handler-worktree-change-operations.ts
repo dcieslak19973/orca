@@ -1,5 +1,14 @@
 import { GitHandlerOperationContext, GIT_BULK_CHUNK_SIZE } from './git-handler-operation-context'
 import { commitChangesRelay } from './git-handler-worktree-ops'
+import {
+  GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_STALE_MESSAGE,
+  buildPatchForHunks,
+  parseSingleFileUnifiedDiff,
+  selectHunksForRange,
+  type DiffHunkRange
+} from '../shared/git-hunk-patch'
 
 const BULK_CHUNK_SIZE = GIT_BULK_CHUNK_SIZE
 
@@ -32,6 +41,80 @@ export class GitHandlerWorktreeChangeOperations extends GitHandlerOperationConte
     const filePath = params.filePath as string
     try {
       await this.git(['restore', '--staged', '--', this.literalPathspec(filePath)], worktreePath)
+    } finally {
+      this.clearGitMutationReadCaches()
+    }
+  }
+
+  // Why: the applied patch is git's own -U0 output for the matched hunk, verbatim —
+  // re-synthesizing it would have to re-solve EOL and no-newline-at-EOF edge cases.
+  async stageHunk(params: Record<string, unknown>): Promise<void> {
+    this.clearGitMutationReadCaches()
+    const worktreePath = params.worktreePath as string
+    const filePath = params.filePath as string
+    const range = params.range as DiffHunkRange
+    try {
+      const { stdout } = await this.git(
+        ['diff', '-U0', '--no-color', '--no-ext-diff', '--', this.literalPathspec(filePath)],
+        worktreePath
+      )
+      const parsed = parseSingleFileUnifiedDiff(stdout)
+      if (!parsed || parsed.hunks.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      if (parsed.isRename) {
+        throw new Error(GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE)
+      }
+      if (parsed.isBinary) {
+        throw new Error(GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE)
+      }
+      const selected = selectHunksForRange(parsed.hunks, range)
+      if (selected.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      await this.git(['apply', '--cached', '--unidiff-zero', '-'], worktreePath, {
+        stdin: buildPatchForHunks(parsed, selected)
+      })
+    } finally {
+      this.clearGitMutationReadCaches()
+    }
+  }
+
+  async unstageHunk(params: Record<string, unknown>): Promise<void> {
+    this.clearGitMutationReadCaches()
+    const worktreePath = params.worktreePath as string
+    const filePath = params.filePath as string
+    const range = params.range as DiffHunkRange
+    try {
+      const { stdout } = await this.git(
+        [
+          'diff',
+          '--cached',
+          '-U0',
+          '--no-color',
+          '--no-ext-diff',
+          '--',
+          this.literalPathspec(filePath)
+        ],
+        worktreePath
+      )
+      const parsed = parseSingleFileUnifiedDiff(stdout)
+      if (!parsed || parsed.hunks.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      if (parsed.isRename) {
+        throw new Error(GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE)
+      }
+      if (parsed.isBinary) {
+        throw new Error(GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE)
+      }
+      const selected = selectHunksForRange(parsed.hunks, range)
+      if (selected.length === 0) {
+        throw new Error(GIT_HUNK_STALE_MESSAGE)
+      }
+      await this.git(['apply', '--cached', '--unidiff-zero', '--reverse', '-'], worktreePath, {
+        stdin: buildPatchForHunks(parsed, selected)
+      })
     } finally {
       this.clearGitMutationReadCaches()
     }
