@@ -124,6 +124,24 @@ describe('selectHunksForRange', () => {
 })
 
 describe('buildPatchForHunks', () => {
+  it('preserves hunk order when rebuilding from several selected hunks', () => {
+    const parsed = parseSingleFileUnifiedDiff(MULTI_HUNK_PATCH)
+    if (!parsed) {
+      throw new Error('expected parsed patch')
+    }
+    // Why: git apply consumes this output directly, and it rejects hunks that are not in
+    // ascending order — so the reconstruction must not reorder what selection returned.
+    const rebuilt = buildPatchForHunks(parsed, [parsed.hunks[0], parsed.hunks[2]])
+    expect(rebuilt.split('\n').filter((line) => line.startsWith('@@'))).toEqual([
+      '@@ -2,1 +2,1 @@ function one() {',
+      '@@ -12,2 +14,0 @@ function three() {'
+    ])
+    expect(rebuilt).toContain('-  return 1')
+    expect(rebuilt).toContain('+  return 100')
+    expect(rebuilt).toContain('-  console.log("three")')
+    expect(rebuilt).not.toContain('// inserted')
+  })
+
   it('rebuilds a verbatim patch from the header and the selected hunk', () => {
     const parsed = parseSingleFileUnifiedDiff(MULTI_HUNK_PATCH)
     if (!parsed) {
