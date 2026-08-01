@@ -101,11 +101,19 @@ export function useDiffHunkStaging({
       }
       busy = true
       button.disabled = true
-      void applyHunkRef.current?.(toDiffHunkRange(change)).finally(() => {
-        busy = false
-        button.disabled = false
-        setDisplay('none')
-      })
+      void applyHunkRef
+        .current?.(toDiffHunkRange(change))
+        // Why: applyHunk reports git failures itself; anything reaching here is a defect in the
+        // post-apply bookkeeping. Without this it lands as an unhandled rejection and the click
+        // looks like it silently did nothing.
+        .catch((err) => {
+          console.error('[diff-hunk] applying the hunk failed after the git call', err)
+        })
+        .finally(() => {
+          busy = false
+          button.disabled = false
+          setDisplay('none')
+        })
     }
     button.addEventListener('mousedown', handleClick)
 
