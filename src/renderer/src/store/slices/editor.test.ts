@@ -981,6 +981,133 @@ describe('createEditorSlice openDiff', () => {
     )
   })
 
+  it('recycles a preview parked in another split group when no target group is given', () => {
+    const store = createEditorTabsStore()
+
+    store.getState().openFile({
+      filePath: '/repo/pinned.ts',
+      relativePath: 'pinned.ts',
+      worktreeId: 'wt-1',
+      language: 'typescript',
+      mode: 'edit'
+    })
+    const groupAId = store.getState().groupsByWorktree['wt-1'][0].id
+    const groupBId = store.getState().createEmptySplitGroup('wt-1', groupAId, 'right')
+    if (!groupBId) {
+      throw new Error('expected split group')
+    }
+    store.getState().openDiff('wt-1', '/repo/a.ts', 'a.ts', 'typescript', false, {
+      preview: true,
+      targetGroupId: groupBId
+    })
+    store.getState().focusGroup('wt-1', groupAId)
+
+    store.getState().openDiff('wt-1', '/repo/b.ts', 'b.ts', 'typescript', false, { preview: true })
+
+    const state = store.getState()
+    expect(state.openFiles).toEqual([
+      expect.objectContaining({ id: '/repo/pinned.ts' }),
+      expect.objectContaining({ id: 'wt-1::diff::unstaged::b.ts', isPreview: true })
+    ])
+    const tabs = state.unifiedTabsByWorktree['wt-1']
+    expect(tabs).toHaveLength(2)
+    expect(tabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groupId: groupAId, entityId: '/repo/pinned.ts' }),
+        expect.objectContaining({
+          groupId: groupBId,
+          entityId: 'wt-1::diff::unstaged::b.ts',
+          isPreview: true
+        })
+      ])
+    )
+  })
+
+  it('recycles a parked preview for file-explorer preview opens from another group', () => {
+    const store = createEditorTabsStore()
+
+    store.getState().openFile({
+      filePath: '/repo/pinned.ts',
+      relativePath: 'pinned.ts',
+      worktreeId: 'wt-1',
+      language: 'typescript',
+      mode: 'edit'
+    })
+    const groupAId = store.getState().groupsByWorktree['wt-1'][0].id
+    const groupBId = store.getState().createEmptySplitGroup('wt-1', groupAId, 'right')
+    if (!groupBId) {
+      throw new Error('expected split group')
+    }
+    store.getState().openDiff('wt-1', '/repo/a.ts', 'a.ts', 'typescript', false, {
+      preview: true,
+      targetGroupId: groupBId
+    })
+    store.getState().focusGroup('wt-1', groupAId)
+
+    store.getState().openFile(
+      {
+        filePath: '/repo/c.ts',
+        relativePath: 'c.ts',
+        worktreeId: 'wt-1',
+        language: 'typescript',
+        mode: 'edit'
+      },
+      { preview: true }
+    )
+
+    const state = store.getState()
+    expect(state.openFiles).toEqual([
+      expect.objectContaining({ id: '/repo/pinned.ts' }),
+      expect.objectContaining({ id: '/repo/c.ts', isPreview: true })
+    ])
+    const tabs = state.unifiedTabsByWorktree['wt-1']
+    expect(tabs).toHaveLength(2)
+    expect(tabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groupId: groupAId, entityId: '/repo/pinned.ts' }),
+        expect.objectContaining({ groupId: groupBId, entityId: '/repo/c.ts', isPreview: true })
+      ])
+    )
+  })
+
+  it('re-activates a parked preview tab in place when reopening the same file', () => {
+    const store = createEditorTabsStore()
+
+    store.getState().openFile({
+      filePath: '/repo/pinned.ts',
+      relativePath: 'pinned.ts',
+      worktreeId: 'wt-1',
+      language: 'typescript',
+      mode: 'edit'
+    })
+    const groupAId = store.getState().groupsByWorktree['wt-1'][0].id
+    const groupBId = store.getState().createEmptySplitGroup('wt-1', groupAId, 'right')
+    if (!groupBId) {
+      throw new Error('expected split group')
+    }
+    store.getState().openDiff('wt-1', '/repo/a.ts', 'a.ts', 'typescript', false, {
+      preview: true,
+      targetGroupId: groupBId
+    })
+    store.getState().focusGroup('wt-1', groupAId)
+
+    store.getState().openDiff('wt-1', '/repo/a.ts', 'a.ts', 'typescript', false, { preview: true })
+
+    const state = store.getState()
+    const tabs = state.unifiedTabsByWorktree['wt-1']
+    expect(tabs).toHaveLength(2)
+    expect(tabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groupId: groupAId, entityId: '/repo/pinned.ts' }),
+        expect.objectContaining({
+          groupId: groupBId,
+          entityId: 'wt-1::diff::unstaged::a.ts',
+          isPreview: true
+        })
+      ])
+    )
+  })
+
   it('opens a new preview diff beside a pinned file tab', () => {
     const store = createEditorTabsStore()
 
