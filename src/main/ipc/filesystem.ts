@@ -29,6 +29,7 @@ import type {
   TuiAgent
 } from '../../shared/types'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
+import type { DiffHunkRange } from '../../shared/git-hunk-patch'
 import type { SshMutationExpectation } from '../../shared/ssh-types'
 import { assertSshMutationExpectation } from '../ssh/ssh-connection-generation'
 import {
@@ -48,7 +49,9 @@ import {
   getDiff,
   commitChanges,
   stageFile,
+  stageHunk,
   unstageFile,
+  unstageHunk,
   bulkStageFiles,
   bulkUnstageFiles,
   bulkDiscardChanges,
@@ -2117,6 +2120,64 @@ export function registerFilesystemHandlers(
         worktreePath
       )
       await unstageFile(worktreePath, filePath, gitOptions)
+    }
+  )
+
+  ipcMain.handle(
+    'git:stageHunk',
+    async (
+      _event,
+      args: {
+        worktreePath: string
+        filePath: string
+        range: DiffHunkRange
+        connectionId?: string
+      }
+    ): Promise<void> => {
+      if (args.connectionId) {
+        const provider = getSshGitProvider(args.connectionId)
+        if (!provider) {
+          throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
+        }
+        return provider.stageHunk(args.worktreePath, args.filePath, args.range)
+      }
+      const worktreePath = await resolveRegisteredWorktreePath(args.worktreePath, store)
+      const filePath = validateGitRelativeFilePath(worktreePath, args.filePath)
+      const gitOptions = getLocalGitOptionsForRegisteredWorktree(
+        store,
+        args.worktreePath,
+        worktreePath
+      )
+      await stageHunk(worktreePath, filePath, args.range, gitOptions)
+    }
+  )
+
+  ipcMain.handle(
+    'git:unstageHunk',
+    async (
+      _event,
+      args: {
+        worktreePath: string
+        filePath: string
+        range: DiffHunkRange
+        connectionId?: string
+      }
+    ): Promise<void> => {
+      if (args.connectionId) {
+        const provider = getSshGitProvider(args.connectionId)
+        if (!provider) {
+          throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
+        }
+        return provider.unstageHunk(args.worktreePath, args.filePath, args.range)
+      }
+      const worktreePath = await resolveRegisteredWorktreePath(args.worktreePath, store)
+      const filePath = validateGitRelativeFilePath(worktreePath, args.filePath)
+      const gitOptions = getLocalGitOptionsForRegisteredWorktree(
+        store,
+        args.worktreePath,
+        worktreePath
+      )
+      await unstageHunk(worktreePath, filePath, args.range, gitOptions)
     }
   )
 

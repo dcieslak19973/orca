@@ -32,6 +32,16 @@ import {
 } from '../../shared/git-uncommitted-line-stats'
 import { decodeGitCQuotedPath } from '../../shared/git-cquoted-path'
 import {
+  GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE,
+  GIT_HUNK_STALE_MESSAGE,
+  buildPatchForHunks,
+  parseSingleFileUnifiedDiff,
+  selectHunksForRange,
+  type DiffHunkRange
+} from '../../shared/git-hunk-patch'
+import { KeyedMutationQueue } from '../../shared/keyed-mutation-queue'
+import {
   gitExecFileAsync,
   gitExecFileAsyncBuffer,
   gitOptionalLocksDisabledEnv,
@@ -1968,6 +1978,101 @@ export async function unstageFile(
   } finally {
     invalidateGitReadCaches()
   }
+}
+
+// Why: the applied patch is git's own -U0 output for the matched hunks, verbatim —
+// re-synthesizing hunks would have to re-solve EOL and no-newline-at-EOF edge cases.
+async function applyHunkRangeToIndex(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  reverse: boolean,
+  options: GitRuntimeOptions
+): Promise<void> {
+  const diffResult = await gitExecFileAsync(
+    [
+      'diff',
+      ...(reverse ? ['--cached'] : []),
+      '-U0',
+      '--no-color',
+      '--no-ext-diff',
+      '--',
+      literalPathspec(filePath, options)
+    ],
+    gitOptionsForWorktree(worktreePath, options)
+  )
+  const parsed = parseSingleFileUnifiedDiff(diffResult.stdout)
+  if (!parsed || parsed.hunks.length === 0) {
+    throw new Error(GIT_HUNK_STALE_MESSAGE)
+  }
+  if (parsed.isRename) {
+    throw new Error(GIT_HUNK_RENAME_UNSUPPORTED_MESSAGE)
+  }
+  if (parsed.isBinary) {
+    throw new Error(GIT_HUNK_BINARY_UNSUPPORTED_MESSAGE)
+  }
+  const selected = selectHunksForRange(parsed.hunks, range)
+  if (selected.length === 0) {
+    throw new Error(GIT_HUNK_STALE_MESSAGE)
+  }
+  await gitExecFileAsync(
+    ['apply', '--cached', '--unidiff-zero', ...(reverse ? ['--reverse'] : []), '-'],
+    {
+      ...gitOptionsForWorktree(worktreePath, options),
+      stdin: buildPatchForHunks(parsed, selected)
+    }
+  )
+}
+
+// Why: applying a hunk is read-diff-then-apply. Two overlapping requests for the same file would
+// let the second build its patch from a pre-apply diff and then apply it at line numbers the first
+// already invalidated — and `--unidiff-zero` has no context for git to reject that on. Serialize
+// per worktree+file; different files still apply concurrently.
+const hunkApplyQueue = new KeyedMutationQueue()
+
+function hunkApplyKey(worktreePath: string, filePath: string): string {
+  return `${worktreePath} ${filePath}`
+}
+
+async function applyHunkSerialized(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  reverse: boolean,
+  options: GitRuntimeOptions
+): Promise<void> {
+  return hunkApplyQueue.run(hunkApplyKey(worktreePath, filePath), async () => {
+    invalidateGitReadCaches()
+    try {
+      await applyHunkRangeToIndex(worktreePath, filePath, range, reverse, options)
+    } finally {
+      invalidateGitReadCaches()
+    }
+  })
+}
+
+/**
+ * Stage a single hunk of a file's unstaged diff.
+ */
+export async function stageHunk(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  options: GitRuntimeOptions = {}
+): Promise<void> {
+  await applyHunkSerialized(worktreePath, filePath, range, false, options)
+}
+
+/**
+ * Unstage a single hunk of a file's staged diff.
+ */
+export async function unstageHunk(
+  worktreePath: string,
+  filePath: string,
+  range: DiffHunkRange,
+  options: GitRuntimeOptions = {}
+): Promise<void> {
+  await applyHunkSerialized(worktreePath, filePath, range, true, options)
 }
 
 export async function getStagedCommitContext(

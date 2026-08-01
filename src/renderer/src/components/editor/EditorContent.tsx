@@ -28,6 +28,7 @@ import {
 import { getDiffContentSignature } from './diff-content-signature'
 import { translate } from '@/i18n/i18n'
 import { CheckRunDetailsPanel } from './CheckRunDetailsPanel'
+import { useDiffHunkStagingAction } from './useDiffHunkStagingAction'
 import { ExternalFileChangeBanner } from './ExternalFileChangeBanner'
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'))
@@ -190,6 +191,7 @@ export function EditorContent({
     Record<string, number>
   >({})
   const md = useMarkdownDocuments(activeFile, isMarkdown, mdViewMode, handleSave)
+  const hunkStaging = useDiffHunkStagingAction(activeFile, worktreeEntries, reloadContent)
   const activeConflictEntry =
     worktreeEntries.find((entry) => entry.path === activeFile.relativePath) ?? null
   const selectedConflictReviewFile =
@@ -942,6 +944,7 @@ export function EditorContent({
       worktreeId={activeFile.worktreeId}
       onContentChange={isEditable ? handleContentChange : undefined}
       onSave={isEditable ? (isMarkdown ? md.mdSave : handleSave) : undefined}
+      hunkStaging={hunkStaging}
     />
   )
   // Why: editable diffs get the changed-on-disk banner; its reload refetches the diff body, not plain file content.
