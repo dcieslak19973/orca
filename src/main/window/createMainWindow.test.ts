@@ -75,7 +75,7 @@ import {
 import { ipcMain } from 'electron'
 import { shouldRecoverRendererAfterProcessGone } from '../crash-reporting/process-gone-classification'
 import { BROWSER_WINDOW_CLOSE_ALLOWED_PRELOAD } from '../../shared/browser-window-close-policy'
-import { fileURLToPath } from 'node:url'
+import { resolveBrowserWindowCloseAllowedPreloadPath } from './browser-window-close-preload-path'
 
 function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
   const original = process.platform
@@ -281,16 +281,21 @@ describe('createMainWindow', () => {
     expect(allowWindowCloseParams.preload).toBeUndefined()
     expect(allowWindowClosePrefs).not.toHaveProperty('preload')
 
-    const allowWindowClosePathPrefs = {
-      partition: 'persist:orca-browser',
-      preload: fileURLToPath(BROWSER_WINDOW_CLOSE_ALLOWED_PRELOAD)
+    // Why: the sentinel has no path form on win32, where converting it throws. Exercise the
+    // path-form branch only where a path exists; the marker branch above covers every platform.
+    const allowedPreloadPath = resolveBrowserWindowCloseAllowedPreloadPath()
+    if (allowedPreloadPath !== null) {
+      const allowWindowClosePathPrefs = {
+        partition: 'persist:orca-browser',
+        preload: allowedPreloadPath
+      }
+      windowHandlers['will-attach-webview'](
+        { preventDefault: vi.fn() } as never,
+        allowWindowClosePathPrefs as never,
+        { src: 'data:text/html,', preload: '' } as never
+      )
+      expect(allowWindowClosePathPrefs).not.toHaveProperty('preload')
     }
-    windowHandlers['will-attach-webview'](
-      { preventDefault: vi.fn() } as never,
-      allowWindowClosePathPrefs as never,
-      { src: 'data:text/html,', preload: '' } as never
-    )
-    expect(allowWindowClosePathPrefs).not.toHaveProperty('preload')
 
     const cliGuest = { marker: 'cli-guest' }
     windowHandlers['did-attach-webview']({} as never, cliGuest as never)

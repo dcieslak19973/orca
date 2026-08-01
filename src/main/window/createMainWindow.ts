@@ -10,7 +10,7 @@ import {
   screen
 } from 'electron'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolveBrowserWindowCloseAllowedPreloadPath } from './browser-window-close-preload-path'
 import { is } from '@electron-toolkit/utils'
 import type { Store } from '../persistence'
 import { getAppIconPath } from '../app-icon'
@@ -444,7 +444,9 @@ export function createMainWindow(
   registerPluginPanelNavigationGuard(mainWindow.webContents)
 
   const browserWindowClosePreload = join(__dirname, 'browser-window-close-preload.js')
-  const browserWindowCloseAllowedPreloadPath = fileURLToPath(BROWSER_WINDOW_CLOSE_ALLOWED_PRELOAD)
+  // Why: null on platforms where the sentinel has no path form (win32 file URLs need a drive
+  // letter). Converting it unguarded here threw and aborted window creation, blanking the app.
+  const browserWindowCloseAllowedPreloadPath = resolveBrowserWindowCloseAllowedPreloadPath()
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     const src = typeof params.src === 'string' ? params.src : ''
     const normalizedSrc = normalizeBrowserNavigationUrl(src)
