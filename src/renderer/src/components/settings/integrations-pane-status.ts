@@ -1,5 +1,6 @@
 import type { PreflightStatus } from '../../../../preload/api-types'
 
+export type ForgeCliName = 'gh' | 'glab'
 export type GhStatus = 'checking' | 'connected' | 'not-installed' | 'not-authenticated'
 // Why: parallel to GhStatus — GitLab uses glab and the same three failure
 // modes (probe in-flight / installed-but-unauth / missing entirely).
@@ -82,6 +83,37 @@ function bitbucketStatusFromPreflight(status: PreflightStatus['bitbucket']): Bit
     return 'not-configured'
   }
   return status.authenticated ? 'connected' : 'not-authenticated'
+}
+
+// Local card state as reported by the two CLI cards; kept structurally
+// compatible with CliProviderCardState (source-control-preflight-card-status.ts)
+// without importing it, to avoid a cross-module type cycle.
+type LocalCliCardState = GhStatus | 'unavailable'
+
+/** Host answer for one CLI, as attached to `PreflightStatus.hostForge`. */
+type HostForgeStatus = NonNullable<PreflightStatus['hostForge']>
+
+/**
+ * Hint to show on a CLI card when the SSH execution host already has the
+ * CLI installed and authenticated, but the local card state hasn't caught
+ * up yet — i.e. the host answer is strictly better than the local one.
+ */
+export function deriveHostForgeHint(
+  cli: ForgeCliName,
+  cardState: LocalCliCardState,
+  hostForge: HostForgeStatus | undefined
+): { hostLabel: string } | null {
+  if (cardState !== 'not-installed' && cardState !== 'not-authenticated') {
+    return null
+  }
+  if (!hostForge) {
+    return null
+  }
+  const hostCliStatus = hostForge[cli]
+  if (!hostCliStatus?.installed || !hostCliStatus.authenticated) {
+    return null
+  }
+  return { hostLabel: hostForge.hostLabel }
 }
 
 function maybeChecking<T extends string>(

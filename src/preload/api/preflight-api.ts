@@ -24,6 +24,13 @@ export type PreflightStatus = {
     baseUrl: string | null
     tokenConfigured: boolean
   }
+  /** Optional — present only when the context names an SSH execution host and the remote gh/glab probe succeeds. */
+  hostForge?: {
+    connectionId: string
+    hostLabel: string
+    gh?: { installed: boolean; authenticated: boolean }
+    glab?: { installed: boolean; authenticated: boolean }
+  }
 }
 
 export type RefreshAgentsResult = {
