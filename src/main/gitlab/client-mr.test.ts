@@ -944,7 +944,7 @@ describe('gitlab client — MR operations', () => {
           '-f',
           'remove_labels=stale'
         ],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
   })
@@ -975,7 +975,7 @@ describe('gitlab client — MR operations', () => {
           '-f',
           'resolved=true'
         ],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
 
@@ -1063,7 +1063,7 @@ describe('gitlab client — MR operations', () => {
           '-f',
           'position[new_line]=12'
         ],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
   })
@@ -1086,7 +1086,7 @@ describe('gitlab client — MR operations', () => {
 
       expect(glabExecFileAsyncMock).toHaveBeenCalledWith(
         ['api', '--hostname', 'git.internal', 'projects/g%2Fp/jobs/99/trace'],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
 
@@ -1118,7 +1118,7 @@ describe('gitlab client — MR operations', () => {
 
       expect(glabExecFileAsyncMock).toHaveBeenCalledWith(
         ['api', '--hostname', 'git.internal', '-X', 'POST', 'projects/g%2Fp/jobs/99/retry'],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
   })
@@ -1170,7 +1170,7 @@ describe('gitlab client — MR operations', () => {
           '-f',
           'reviewer_ids[]=1'
         ],
-        {}
+        { remoteCwd: '/repo', sshTargetId: 'conn-1' }
       )
     })
   })

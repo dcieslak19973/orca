@@ -419,7 +419,7 @@ describe('gitlab issue operations', () => {
         '-f',
         'body=Hello'
       ],
-      {}
+      { remoteCwd: '/repo-root', sshTargetId: 'conn-1' }
     )
   })
 
