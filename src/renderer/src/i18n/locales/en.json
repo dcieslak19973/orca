@@ -1153,7 +1153,17 @@
         "2a829a2f00": "priority",
         "693be070d0": "transition",
         "ef21405c6d": "Jira issue",
-        "commentTooLarge": "Comment is too large to submit safely."
+        "commentTooLarge": "Comment is too large to submit safely.",
+        "transitionsLoadFailed": "Failed to load status transitions.",
+        "resolutionRequired": "Select a resolution to continue.",
+        "transitionCommentRequired": "A comment is required for this transition.",
+        "retryTransitions": "Retry",
+        "unsupportedTransitionTitle": "Complete “{{value0}}” in Jira",
+        "unsupportedTransitionBody": "This transition requires fields Orca cannot collect yet: {{value0}}.",
+        "back": "Back",
+        "transitionComment": "Comment",
+        "applyTransition": "Transition",
+        "noTransitions": "No transitions available."
       },
       "Landing": {
         "76a95f7f47": "Create",
@@ -7152,7 +7162,9 @@
           "4a342f44c1": "Advanced Connection",
           "e9609ddca6": "Proxy, jump host, and connection reuse",
           "8c922dffba": "Reuse SSH connection for faster setup",
-          "53e9aabfc0": "Uses OpenSSH multiplexing when available. Turn off for hosts with custom SSH restrictions."
+          "53e9aabfc0": "Uses OpenSSH multiplexing when available. Turn off for hosts with custom SSH restrictions.",
+          "runGitLabCliOnHost": "Run GitLab CLI (glab) on this host",
+          "runGitLabCliOnHostHelp": "Use when glab credentials live on the remote host. Repo-scoped GitLab features run glab over SSH instead of locally."
         },
         "TasksPane": {
           "f71d8a9dd3": "Task Providers",
@@ -10350,7 +10362,8 @@
             "740aca88ab": "Workspace port scan failed.",
             "5be4f7f727": "Port {{value0}} menu",
             "7550998473": "Copy",
-            "1004af16ab": "Copy {{value0}}"
+            "1004af16ab": "Copy {{value0}}",
+            "showOtherUsers": "Show ports from other users"
           },
           "Search": {
             "1abfb25a66": "Type to search in files",
