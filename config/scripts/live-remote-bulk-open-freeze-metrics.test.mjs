@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applySwitchTargetCap,
   evaluateFreezeSignals,
+  evaluatePermanentLockup,
   evaluateRealisticFreezeSignals,
   extractTerminalHandle,
   humanPaceDelayMs,
@@ -56,6 +57,7 @@ describe('live-remote-bulk-open-freeze-metrics', () => {
   it('evaluates naturalistic peaks without requiring parallel batch amp', () => {
     expect(REALISTIC_SCENARIOS).toContain('idle-backlog-open')
     expect(REALISTIC_SCENARIOS).toContain('idle-backlog-reconnect-open')
+    expect(REALISTIC_SCENARIOS).toContain('lockup-storm')
     const soft = evaluateRealisticFreezeSignals({
       maxOpenMs: 3200,
       firstOpenMs: 2800,
@@ -72,6 +74,50 @@ describe('live-remote-bulk-open-freeze-metrics', () => {
     })
     expect(hardFromReconnect.hardFreeze).toBe(true)
     expect(hardFromReconnect.peakLatencyMs).toBe(6200)
+  })
+
+  it('distinguishes recovered hard stall from permanent lockup', () => {
+    // Single reveal timeout with healthy status is NOT permanent app lockup.
+    expect(
+      evaluatePermanentLockup({
+        timedOutOps: 1,
+        statusHangMs: 0,
+        consecutiveSwitchFailures: 1,
+        openFailed: 1,
+        openTotal: 64
+      }).permanentLockup
+    ).toBe(false)
+    expect(
+      evaluatePermanentLockup({
+        timedOutOps: 3,
+        statusHangMs: 0,
+        consecutiveSwitchFailures: 0,
+        openFailed: 3,
+        openTotal: 64
+      }).permanentLockup
+    ).toBe(true)
+    expect(
+      evaluatePermanentLockup({
+        timedOutOps: 0,
+        statusHangMs: 60_000,
+        consecutiveSwitchFailures: 0,
+        permanentTimeoutMs: 60_000
+      }).permanentLockup
+    ).toBe(true)
+    expect(
+      evaluatePermanentLockup({
+        timedOutOps: 0,
+        statusHangMs: 0,
+        consecutiveSwitchFailures: 5
+      }).permanentLockup
+    ).toBe(true)
+    expect(
+      evaluatePermanentLockup({
+        timedOutOps: 0,
+        openFailed: 20,
+        openTotal: 40
+      }).permanentLockup
+    ).toBe(true)
   })
 
   it('human pace delay stays within base+jitter', () => {

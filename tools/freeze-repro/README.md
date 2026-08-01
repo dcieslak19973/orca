@@ -79,10 +79,30 @@ Or: `node config/scripts/live-remote-realistic-freeze-repro.mjs`
 | Scenario | create | idle | open | peak | Signal |
 |----------|--------|------|------|------|--------|
 | idle-backlog-open | 6 | 45s | 24 | **1.7s** max open | none (&lt; soft) |
-| **idle-backlog-reconnect-open** | 10 | 60s | 40 | **11.0s** max open; reconnect refresh **3.6s** | **HARD** |
-| **restart-proxy** | 0 | 20s | 30 | **11.2s** max open | **HARD** |
+| **idle-backlog-reconnect-open** | 10 | 60s | 40 | **11.0s** max open; reconnect refresh **3.6s** | **HARD (recovered)** |
+| **restart-proxy** | 0 | 20s | 30 | **11.2s** max open | **HARD (recovered)** |
+| **lockup-storm** (parallel open + overlap refresh) | 12–16 | 45–60s | 64–80 @ p20–32 | **27–35s** batches; some `Terminal reveal timed out` | **HARD stalls + reveal timeouts; app still answers `orca status` ~150ms** |
 
-**Interpretation:** Pure sequential open after idle on a healthy connection stays under 2s. Adding a **wake/reconnect-style metadata refresh** (or restart-proxy discovery) before opening pushes individual opens past **5s (hard freeze)** — matching Brandon/Tim sleep/wake and restore stories better than parallel switch alone.
+### Forever lockup?
+
+**Not yet.** Across storms:
+
+- Opens that finish can take **10–35s** (bad UX; feels frozen).
+- Some opens fail with **`Terminal reveal timed out`** (real under load).
+- **`orca status` stayed ~120–200ms** even mid concurrent storm (18 probes, 0 hangs).
+- Process never needed Force Quit in lab; desktop stayed `running`.
+
+So this is **severe multi-second / multi-tens-of-seconds stall + flaky reveal**, not “UI dead forever until Force Quit” (the classic Brandon report). That class may need **real OS sleep/wake**, **renderer React #185**, or another path not hit by CLI switch alone.
+
+| Exit | Meaning |
+|------|---------|
+| 0 | no freeze |
+| 1 | soft (≥2s recovered) |
+| 2 | hard stall ≥5s **but recovered** |
+| 4 | permanentLockup heuristic (status hang / many timeouts / high fail rate) |
+| 3 | harness error |
+
+**Interpretation:** Pure sequential open after idle stays under 2s. **Wake/reconnect-style refresh + open** (or concurrent fan-out) produces **recovered hard stalls**. True permanent lockup remains unproven with CLI-only levers.
 
 Reports: `test-results/freeze-repro/live-realistic-freeze-<env>-<scenario>.json`
 

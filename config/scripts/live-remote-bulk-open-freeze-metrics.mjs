@@ -88,8 +88,42 @@ export function applySwitchTargetCap(targets, maxSwitchTargets) {
 export const REALISTIC_SCENARIOS = [
   'idle-backlog-open',
   'idle-backlog-reconnect-open',
-  'restart-proxy'
+  'restart-proxy',
+  /** Idle + flood + reconnect storm overlapped with concurrent open fan-out. */
+  'lockup-storm'
 ]
+
+/**
+ * Permanent lockup: app/host stops making progress — not a single recovered timeout.
+ * Distinct from multi-second hard stall that still recovers (status answers, most opens ok).
+ */
+export function evaluatePermanentLockup({
+  timedOutOps = 0,
+  statusHangMs = 0,
+  consecutiveSwitchFailures = 0,
+  openFailed = 0,
+  openTotal = 0,
+  permanentTimeoutMs = 60_000,
+  /** Fraction of opens that must fail to count as lockup without status hang. */
+  failRateThreshold = 0.25,
+  minTimedOutOps = 3
+}) {
+  const failRate = openTotal > 0 ? openFailed / openTotal : 0
+  const permanentLockup =
+    statusHangMs >= permanentTimeoutMs ||
+    timedOutOps >= minTimedOutOps ||
+    consecutiveSwitchFailures >= 5 ||
+    (openTotal >= 8 && failRate >= failRateThreshold)
+  return {
+    permanentLockup,
+    timedOutOps,
+    statusHangMs,
+    consecutiveSwitchFailures,
+    failRate,
+    recoveredHardStallCandidate:
+      !permanentLockup && timedOutOps < minTimedOutOps && statusHangMs < permanentTimeoutMs
+  }
+}
 
 /**
  * Peak across open latencies + optional reconnect-refresh wall + probes.
