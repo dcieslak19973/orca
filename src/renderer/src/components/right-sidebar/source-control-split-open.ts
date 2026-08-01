@@ -1,3 +1,5 @@
+import type { Tab } from '../../../../shared/types'
+
 export type SourceControlRowOpenEvent = {
   altKey: boolean
   ctrlKey: boolean
@@ -41,4 +43,31 @@ export function toPermanentSourceControlRowOpenEvent(
   event: SourceControlOpenModifierKeys
 ): SourceControlRowOpenEvent {
   return { ...toSourceControlRowOpenEvent(event), openAsPermanent: true }
+}
+
+type SideSplitCandidateTab = Pick<Tab, 'groupId' | 'contentType' | 'isPreview'>
+
+function isEditorContentTab(tab: SideSplitCandidateTab): boolean {
+  return (
+    tab.contentType === 'editor' ||
+    tab.contentType === 'diff' ||
+    tab.contentType === 'conflict-review' ||
+    tab.contentType === 'check-details'
+  )
+}
+
+/**
+ * Picks the group that already serves as the worktree's diff column: the parked
+ * preview's group wins, else a non-active group holding a diff tab. Undefined
+ * means the caller should create a fresh side split.
+ */
+export function findSideSplitDiffTargetGroupId(
+  tabs: readonly SideSplitCandidateTab[],
+  activeGroupId: string | undefined
+): string | undefined {
+  const previewTab = tabs.find((tab) => tab.isPreview && isEditorContentTab(tab))
+  if (previewTab) {
+    return previewTab.groupId
+  }
+  return tabs.find((tab) => tab.contentType === 'diff' && tab.groupId !== activeGroupId)?.groupId
 }
