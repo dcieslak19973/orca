@@ -11,6 +11,7 @@ import type { RecentlyClosedTabPosition } from './recently-closed-tabs'
 import { joinPath } from '@/lib/path'
 import { toast } from 'sonner'
 import { isPathInsideOrEqual } from '../../../../shared/cross-platform-path'
+import { isEditorTabContentType } from '../../../../shared/editor-tab-content-type'
 import { resolveMarkdownLinkTarget } from '@/components/editor/markdown-internal-links'
 import {
   buildCheckRunDetailsTabId,
@@ -806,15 +807,6 @@ function openWorkspaceEditorItem(
     ...(resolvedGroupId ? { targetGroupId: resolvedGroupId } : {})
   })
   return created?.id ?? fileId
-}
-
-function isEditorTabContentType(contentType: Tab['contentType']): boolean {
-  return (
-    contentType === 'editor' ||
-    contentType === 'diff' ||
-    contentType === 'conflict-review' ||
-    contentType === 'check-details'
-  )
 }
 
 type ReplaceablePreviewSlot = {
