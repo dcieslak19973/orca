@@ -1023,6 +1023,56 @@ describe('createEditorSlice openDiff', () => {
     )
   })
 
+  it('leaves a preview parked in the active group behind when the diff column is pinned elsewhere', () => {
+    const store = createEditorTabsStore()
+
+    store.getState().openDiff('wt-1', '/repo/a.ts', 'a.ts', 'typescript', false, { preview: true })
+    const groupAId = store.getState().groupsByWorktree['wt-1'][0].id
+    const groupBId = store.getState().createEmptySplitGroup('wt-1', groupAId, 'right')
+    if (!groupBId) {
+      throw new Error('expected split group')
+    }
+
+    store.getState().openDiff('wt-1', '/repo/b.ts', 'b.ts', 'typescript', false, {
+      preview: true,
+      targetGroupId: groupBId
+    })
+
+    // Why: pinning scopes preview replacement to the new split, so the parked preview survives as a
+    // second preview — a one-time cost when the side-split setting first takes effect.
+    const tabs = store.getState().unifiedTabsByWorktree['wt-1']
+    expect(tabs).toHaveLength(2)
+    expect(tabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          groupId: groupAId,
+          entityId: 'wt-1::diff::unstaged::a.ts',
+          isPreview: true
+        }),
+        expect.objectContaining({
+          groupId: groupBId,
+          entityId: 'wt-1::diff::unstaged::b.ts',
+          isPreview: true
+        })
+      ])
+    )
+
+    // Why: once the column is recorded, every later open replaces the split's preview in place.
+    store.getState().openDiff('wt-1', '/repo/c.ts', 'c.ts', 'typescript', false, {
+      preview: true,
+      targetGroupId: groupBId
+    })
+
+    const settled = store.getState().unifiedTabsByWorktree['wt-1']
+    expect(settled).toHaveLength(2)
+    expect(settled).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groupId: groupAId, entityId: 'wt-1::diff::unstaged::a.ts' }),
+        expect.objectContaining({ groupId: groupBId, entityId: 'wt-1::diff::unstaged::c.ts' })
+      ])
+    )
+  })
+
   it('recycles a parked preview for file-explorer preview opens from another group', () => {
     const store = createEditorTabsStore()
 

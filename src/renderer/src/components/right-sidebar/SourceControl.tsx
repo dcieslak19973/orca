@@ -234,8 +234,8 @@ import {
 } from '@/lib/source-control-commit-draft-session'
 import { hasExpandedCommitFailureDetails, summarizeCommitFailure } from './commit-failure-summary'
 import {
-  findSideSplitDiffTargetGroupId,
   isSourceControlSplitOpenModifier,
+  resolveSideSplitDiffColumn,
   shouldOpenSourceControlRowAsPreview,
   toPermanentSourceControlRowOpenEvent,
   type SourceControlRowOpenEvent
@@ -942,6 +942,8 @@ function SourceControlInner(): React.JSX.Element {
   const createEmptySplitGroup = useAppStore((s) => s.createEmptySplitGroup)
   const groupsByWorktree = useAppStore((s) => s.groupsByWorktree)
   const activeGroupIdByWorktree = useAppStore((s) => s.activeGroupIdByWorktree)
+  const diffColumnGroupIdByWorktree = useAppStore((s) => s.diffColumnGroupIdByWorktree)
+  const setDiffColumnGroupId = useAppStore((s) => s.setDiffColumnGroupId)
   const openAllDiffs = useAppStore((s) => s.openAllDiffs)
   const openBranchAllDiffs = useAppStore((s) => s.openBranchAllDiffs)
   const deleteDiffComment = useAppStore((s) => s.deleteDiffComment)
@@ -4459,9 +4461,9 @@ function SourceControlInner(): React.JSX.Element {
 
   const openDiffsInSideSplit = settings?.sourceControlOpenDiffsInSideSplit ?? false
 
-  // Why: with the side-split setting on, diff opens target the worktree's diff column (parked
-  // preview's group, else an existing diff group, else a fresh right split) instead of covering
-  // the active group; modifier-click still forces a brand-new split with a permanent tab.
+  // Why: with the side-split setting on, diff opens go to the worktree's recorded diff column
+  // instead of covering the active group; whatever the resolver settles on (including a split
+  // created here) is recorded, so the column stays put. Modifier-click still forces a new split.
   const resolveDiffOpenPlacement = useCallback(
     (
       event?: SourceControlRowOpenEvent
@@ -4478,27 +4480,39 @@ function SourceControlInner(): React.JSX.Element {
         return { targetGroupId: undefined, preview }
       }
       const tabs = useAppStore.getState().unifiedTabsByWorktree[activeWorktreeId] ?? []
-      const activeGroupId =
-        activeGroupIdByWorktree[activeWorktreeId] ?? groupsByWorktree[activeWorktreeId]?.[0]?.id
-      const existingGroupId = findSideSplitDiffTargetGroupId(tabs, activeGroupId)
-      if (existingGroupId) {
-        return { targetGroupId: existingGroupId, preview }
+      const groups = groupsByWorktree[activeWorktreeId] ?? []
+      const activeGroupId = activeGroupIdByWorktree[activeWorktreeId] ?? groups[0]?.id
+      const { groupId, shouldRecord } = resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId,
+        liveGroupIds: groups.map((group) => group.id),
+        recordedGroupId: diffColumnGroupIdByWorktree[activeWorktreeId]
+      })
+      if (groupId) {
+        if (shouldRecord) {
+          setDiffColumnGroupId(activeWorktreeId, groupId)
+        }
+        return { targetGroupId: groupId, preview }
       }
       if (!activeGroupId) {
         return { targetGroupId: undefined, preview }
       }
-      return {
-        targetGroupId: createEmptySplitGroup(activeWorktreeId, activeGroupId, 'right') ?? undefined,
-        preview
+      const splitGroupId =
+        createEmptySplitGroup(activeWorktreeId, activeGroupId, 'right') ?? undefined
+      if (splitGroupId) {
+        setDiffColumnGroupId(activeWorktreeId, splitGroupId)
       }
+      return { targetGroupId: splitGroupId, preview }
     },
     [
       activeGroupIdByWorktree,
       activeWorktreeId,
       createEmptySplitGroup,
+      diffColumnGroupIdByWorktree,
       groupsByWorktree,
       openDiffsInSideSplit,
-      resolveSplitTargetGroupId
+      resolveSplitTargetGroupId,
+      setDiffColumnGroupId
     ]
   )
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Tab } from '../../../../shared/types'
 import {
-  findSideSplitDiffTargetGroupId,
   isSourceControlSplitOpenModifier,
+  resolveSideSplitDiffColumn,
   shouldOpenSourceControlRowAsPreview,
   toPermanentSourceControlRowOpenEvent,
   type SourceControlRowOpenEvent
@@ -62,29 +62,106 @@ function tab(
   return { groupId, contentType, isPreview }
 }
 
-describe('findSideSplitDiffTargetGroupId', () => {
-  it('targets the parked preview tab group first, wherever it lives', () => {
-    const tabs = [tab('group-a', 'terminal'), tab('group-a', 'diff'), tab('group-b', 'diff', true)]
-    expect(findSideSplitDiffTargetGroupId(tabs, 'group-a')).toBe('group-b')
+describe('resolveSideSplitDiffColumn', () => {
+  it('does not let a preview parked in the active group capture the diff column', () => {
+    const tabs = [tab('group-a', 'editor', true)]
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a'],
+        recordedGroupId: undefined
+      })
+    ).toEqual({ groupId: undefined, shouldRecord: true })
   })
 
-  it('keeps recycling a preview that lives in the active group', () => {
-    const tabs = [tab('group-a', 'editor', true)]
-    expect(findSideSplitDiffTargetGroupId(tabs, 'group-a')).toBe('group-a')
+  it('reuses the recorded column ahead of any preview or diff tab', () => {
+    const tabs = [tab('group-b', 'editor', true), tab('group-c', 'diff')]
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a', 'group-b', 'group-c', 'group-d'],
+        recordedGroupId: 'group-d'
+      })
+    ).toEqual({ groupId: 'group-d', shouldRecord: false })
+  })
+
+  it('re-infers and re-records once the recorded group is gone', () => {
+    const tabs = [tab('group-a', 'terminal'), tab('group-b', 'diff', true)]
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a', 'group-b'],
+        recordedGroupId: 'group-gone'
+      })
+    ).toEqual({ groupId: 'group-b', shouldRecord: true })
+  })
+
+  it('records a parked preview that already sits in a side group', () => {
+    const tabs = [
+      tab('group-a', 'terminal'),
+      tab('group-a', 'diff'),
+      tab('group-b', 'editor', true)
+    ]
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a', 'group-b'],
+        recordedGroupId: undefined
+      })
+    ).toEqual({ groupId: 'group-b', shouldRecord: true })
   })
 
   it('falls back to a non-active group already holding diff tabs', () => {
     const tabs = [tab('group-a', 'terminal'), tab('group-b', 'diff')]
-    expect(findSideSplitDiffTargetGroupId(tabs, 'group-a')).toBe('group-b')
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a', 'group-b'],
+        recordedGroupId: undefined
+      })
+    ).toEqual({ groupId: 'group-b', shouldRecord: true })
   })
 
   it('ignores diff tabs in the active group and terminal previews', () => {
     const tabs = [tab('group-a', 'diff'), tab('group-b', 'terminal', true)]
-    expect(findSideSplitDiffTargetGroupId(tabs, 'group-a')).toBeUndefined()
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a', 'group-b'],
+        recordedGroupId: undefined
+      })
+    ).toEqual({ groupId: undefined, shouldRecord: true })
   })
 
   it('returns undefined for a fresh worktree so the caller creates a split', () => {
-    expect(findSideSplitDiffTargetGroupId([], 'group-a')).toBeUndefined()
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs: [],
+        activeGroupId: 'group-a',
+        liveGroupIds: ['group-a'],
+        recordedGroupId: undefined
+      })
+    ).toEqual({ groupId: undefined, shouldRecord: true })
+  })
+
+  it('keeps returning the recorded split after it becomes the active group', () => {
+    // Why: createEmptySplitGroup focuses the new split, so inference alone would exclude it and
+    // split again on every open.
+    const tabs = [tab('group-a', 'terminal'), tab('group-b', 'diff', true)]
+    expect(
+      resolveSideSplitDiffColumn({
+        tabs,
+        activeGroupId: 'group-b',
+        liveGroupIds: ['group-a', 'group-b'],
+        recordedGroupId: 'group-b'
+      })
+    ).toEqual({ groupId: 'group-b', shouldRecord: false })
   })
 })
 

@@ -2227,6 +2227,7 @@ const WORKTREE_ID_KEYED_MAP_KEYS = [
   'groupsByWorktree',
   'layoutByWorktree',
   'activeGroupIdByWorktree',
+  'diffColumnGroupIdByWorktree',
   'gitStatusByWorktree',
   'gitStatusHeadByWorktree',
   'gitBranchLineTotalByWorktree',
@@ -2692,6 +2693,7 @@ function buildWorktreePurgeState(s: AppState, worktreeIds: string[]): Partial<Ap
     groupsByWorktree: omitByWorktree(s.groupsByWorktree),
     layoutByWorktree: omitByWorktree(s.layoutByWorktree),
     activeGroupIdByWorktree: omitByWorktree(s.activeGroupIdByWorktree),
+    diffColumnGroupIdByWorktree: omitByWorktree(s.diffColumnGroupIdByWorktree),
     // Git status caches
     gitStatusByWorktree: omitByWorktree(s.gitStatusByWorktree),
     // Why: keyed by worktreeId; re-keyed on rename but missed by both removal paths (upstream-status entry).
@@ -4435,6 +4437,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         delete nextLayoutByWorktree[worktreeId]
         const nextActiveGroupIdByWorktree = { ...s.activeGroupIdByWorktree }
         delete nextActiveGroupIdByWorktree[worktreeId]
+        const nextDiffColumnGroupIdByWorktree = { ...s.diffColumnGroupIdByWorktree }
+        delete nextDiffColumnGroupIdByWorktree[worktreeId]
         // Why: git status/compare caches stop refreshing once the worktree is deleted; remove them so no stale badges/diffs linger.
         const nextGitStatusByWorktree = { ...s.gitStatusByWorktree }
         delete nextGitStatusByWorktree[worktreeId]
@@ -4595,6 +4599,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           groupsByWorktree: nextGroupsByWorktree,
           layoutByWorktree: nextLayoutByWorktree,
           activeGroupIdByWorktree: nextActiveGroupIdByWorktree,
+          diffColumnGroupIdByWorktree: nextDiffColumnGroupIdByWorktree,
           editorDrafts: nextEditorDrafts,
           markdownViewMode: nextMarkdownViewMode,
           editorViewMode: nextEditorViewMode,

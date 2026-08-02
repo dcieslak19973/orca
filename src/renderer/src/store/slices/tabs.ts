@@ -64,6 +64,8 @@ export type TabsSlice = {
   renamingTabId: string | null
   groupsByWorktree: Record<string, TabGroup[]>
   activeGroupIdByWorktree: Record<string, string>
+  // Why: the group each worktree parks Source Control diffs in with the side-split setting on; recorded, not inferred per open, so the column stops following focus. Not persisted — a stale id fails the caller's liveness check and is re-inferred once.
+  diffColumnGroupIdByWorktree: Record<string, string>
   layoutByWorktree: Record<string, TabGroupLayoutNode>
   createUnifiedTab: (
     worktreeId: string,
@@ -142,6 +144,7 @@ export type TabsSlice = {
   ) => void
   setUnifiedTabColor: (tabId: string, color: string | null) => void
   setRenamingTabId: (tabId: string | null) => void
+  setDiffColumnGroupId: (worktreeId: string, groupId: string) => void
   pinTab: (tabId: string) => void
   unpinTab: (tabId: string) => void
   closeOtherTabs: (tabId: string) => string[]
@@ -831,6 +834,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
   renamingTabId: null,
   groupsByWorktree: {},
   activeGroupIdByWorktree: {},
+  diffColumnGroupIdByWorktree: {},
   layoutByWorktree: {},
 
   createUnifiedTab: (worktreeId, contentType, init) => {
@@ -1323,6 +1327,19 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
 
   setRenamingTabId: (tabId) => {
     set({ renamingTabId: tabId })
+  },
+
+  setDiffColumnGroupId: (worktreeId, groupId) => {
+    set((state) =>
+      state.diffColumnGroupIdByWorktree[worktreeId] === groupId
+        ? state
+        : {
+            diffColumnGroupIdByWorktree: {
+              ...state.diffColumnGroupIdByWorktree,
+              [worktreeId]: groupId
+            }
+          }
+    )
   },
 
   setTabCustomLabel: (tabId, label, opts) => {

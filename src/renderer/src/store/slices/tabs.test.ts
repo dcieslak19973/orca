@@ -129,6 +129,24 @@ describe('TabsSlice', () => {
     expect(store.getState().renamingTabId).toBeNull()
   })
 
+  it('setDiffColumnGroupId records the diff column per worktree', () => {
+    const otherWorktree = 'repo1::/tmp/other'
+    expect(store.getState().diffColumnGroupIdByWorktree).toEqual({})
+
+    store.getState().setDiffColumnGroupId(WT, 'group-a')
+    store.getState().setDiffColumnGroupId(otherWorktree, 'group-b')
+    expect(store.getState().diffColumnGroupIdByWorktree).toEqual({
+      [WT]: 'group-a',
+      [otherWorktree]: 'group-b'
+    })
+
+    store.getState().setDiffColumnGroupId(WT, 'group-c')
+    expect(store.getState().diffColumnGroupIdByWorktree).toEqual({
+      [WT]: 'group-c',
+      [otherWorktree]: 'group-b'
+    })
+  })
+
   // ─── createUnifiedTab ───────────────────────────────────────────────
 
   describe('createUnifiedTab', () => {
