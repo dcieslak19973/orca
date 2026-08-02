@@ -132,8 +132,10 @@ export class PreflightHandler {
   private async detectForgeClis(
     params: Record<string, unknown>
   ): Promise<{ results: Record<string, { installed: boolean; authenticated: boolean }> }> {
-    const requested = Array.isArray(params.clis) ? (params.clis as string[]) : []
-    const clis = requested.filter((cli) => FORGE_CLI_ALLOWLIST.has(cli))
+    // Why: iterate the allowlist, not the request — duplicated names would
+    // otherwise spawn one probe per repetition.
+    const requested = new Set(Array.isArray(params.clis) ? (params.clis as string[]) : [])
+    const clis = [...FORGE_CLI_ALLOWLIST].filter((cli) => requested.has(cli))
     const results: Record<string, { installed: boolean; authenticated: boolean }> = {}
     await Promise.all(
       clis.map(async (cli) => {
@@ -153,6 +155,7 @@ export class PreflightHandler {
 async function isForgeCliAuthenticated(cli: string): Promise<boolean> {
   try {
     await execFileAsync(cli, ['auth', 'status'], {
+      encoding: 'utf-8',
       env: buildRelayCommandEnv(),
       timeout: FORGE_AUTH_TIMEOUT_MS
     })

@@ -112,6 +112,8 @@ let preflightRunCounter = 0
 let preflightCacheEpoch = 0
 
 const LOCAL_PREFLIGHT_CACHE_KEY = 'local'
+// Why: keep a wedged remote host from delaying local integration status.
+const REMOTE_FORGE_PROBE_TIMEOUT_MS = 8000
 
 function preflightCacheKey(
   wslTarget: WslPreflightTarget | null,
@@ -271,10 +273,12 @@ export async function detectRemoteForgeClis(args: {
     return null
   }
   try {
-    const result = (await mux.request('preflight.detectForgeClis', {
-      clis: ['gh', 'glab']
-    })) as { results: Record<string, { installed: boolean; authenticated: boolean }> }
-    return result.results
+    const result = (await mux.request(
+      'preflight.detectForgeClis',
+      { clis: ['gh', 'glab'] },
+      { timeoutMs: REMOTE_FORGE_PROBE_TIMEOUT_MS }
+    )) as { results?: Record<string, { installed: boolean; authenticated: boolean }> } | null
+    return result?.results ?? null
   } catch {
     // Old relays do not implement this optional RPC; unknown must not read false.
     return null
@@ -416,7 +420,7 @@ async function executePreflightCheck(
     gitea
   }
 
-  if (sshHost && hostForgeResults) {
+  if (sshHost && (hostForgeResults?.gh || hostForgeResults?.glab)) {
     result.hostForge = {
       connectionId: sshHost.connectionId,
       hostLabel: sshHost.hostLabel,
