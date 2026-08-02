@@ -6,7 +6,7 @@ import {
   useIntegrationCommandRowClass,
   useIntegrationSubordinateRowClass
 } from './integration-card-presentation'
-import { deriveHostForgeHint } from './integrations-pane-status'
+import { deriveHostForgeHint, type ForgeCliName } from './integrations-pane-status'
 import { getProviderAccountScope } from './provider-account-scope'
 import { ProviderHostScopeControl } from './ProviderHostScopeControl'
 import { usePreflightCardStatuses } from './source-control-preflight-card-status'
@@ -45,7 +45,7 @@ function HostForgeHint({
   cli,
   hint
 }: {
-  cli: 'gh' | 'glab'
+  cli: ForgeCliName
   hint: { hostLabel: string } | null
 }): React.JSX.Element | null {
   if (!hint) {

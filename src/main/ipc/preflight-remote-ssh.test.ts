@@ -213,7 +213,7 @@ describe('preflight', () => {
   }
 
   describe('detectRemoteForgeClis', () => {
-    it('requests the relay method with both forge CLIs', async () => {
+    it('requests the relay method with both forge CLIs under a bounded timeout', async () => {
       const request = vi
         .fn()
         .mockResolvedValue({ results: { glab: { installed: true, authenticated: true } } })
@@ -221,8 +221,19 @@ describe('preflight', () => {
 
       const results = await detectRemoteForgeClis({ connectionId: 'ssh-1' })
 
-      expect(request).toHaveBeenCalledWith('preflight.detectForgeClis', { clis: ['gh', 'glab'] })
+      expect(request).toHaveBeenCalledWith(
+        'preflight.detectForgeClis',
+        { clis: ['gh', 'glab'] },
+        { timeoutMs: 8000 }
+      )
       expect(results?.glab).toEqual({ installed: true, authenticated: true })
+    })
+
+    it('returns null for a malformed relay response', async () => {
+      const request = vi.fn().mockResolvedValue({})
+      getActiveMultiplexerMock.mockReturnValue({ isDisposed: () => false, request })
+
+      expect(await detectRemoteForgeClis({ connectionId: 'ssh-1' })).toBeNull()
     })
 
     it('returns null when no live mux exists', async () => {
@@ -260,7 +271,37 @@ describe('preflight', () => {
       expect(status.hostForge?.connectionId).toBe('ssh-1')
       expect(status.hostForge?.hostLabel).toBe('work-box')
       expect(status.hostForge?.glab).toEqual({ installed: true, authenticated: true })
-      expect(request).toHaveBeenCalledWith('preflight.detectForgeClis', { clis: ['gh', 'glab'] })
+      expect(request).toHaveBeenCalledWith(
+        'preflight.detectForgeClis',
+        { clis: ['gh', 'glab'] },
+        { timeoutMs: 8000 }
+      )
+    })
+
+    it('omits hostForge when the host knows neither forge CLI', async () => {
+      mockAuthenticatedLocalProbes()
+      const request = vi.fn().mockResolvedValue({ results: {} })
+      getActiveMultiplexerMock.mockReturnValue({ isDisposed: () => false, request })
+
+      const status = await runPreflightCheck(true, contextWithSshHost('ssh-1', 'work-box'))
+
+      expect(status.hostForge).toBeUndefined()
+    })
+
+    it('keeps an SSH-host result out of the local cache slot', async () => {
+      mockAuthenticatedLocalProbes()
+      const request = vi
+        .fn()
+        .mockResolvedValue({ results: { glab: { installed: true, authenticated: true } } })
+      getActiveMultiplexerMock.mockReturnValue({ isDisposed: () => false, request })
+
+      await runPreflightCheck(true, contextWithSshHost('ssh-1', 'work-box'))
+      getActiveMultiplexerMock.mockClear()
+      mockAuthenticatedLocalProbes()
+      const local = await runPreflightCheck(false)
+
+      expect(local.hostForge).toBeUndefined()
+      expect(getActiveMultiplexerMock).not.toHaveBeenCalled()
     })
 
     it('omits hostForge entirely for local contexts', async () => {

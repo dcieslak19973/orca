@@ -428,6 +428,33 @@ describe('preflight.detectForgeClis', () => {
     expect(result.results.glab.authenticated).toBe(true)
   })
 
+  it('reports an installed CLI that is not logged in as unauthenticated', async () => {
+    isCommandOnPathSpy.mockResolvedValue(true)
+    execFileAsyncMock.mockRejectedValueOnce({ stdout: '', stderr: 'not logged in' })
+    const request = requestFromNewHandler()
+
+    const result = await request('preflight.detectForgeClis', { clis: ['gh'] })
+
+    expect(result).toEqual({ results: { gh: { installed: true, authenticated: false } } })
+  })
+
+  it('probes each allowlisted CLI once regardless of duplicate requests', async () => {
+    isCommandOnPathSpy.mockResolvedValue(false)
+    const request = requestFromNewHandler()
+
+    const result = await request('preflight.detectForgeClis', {
+      clis: [...Array<string>(500).fill('gh'), 'glab', 'glab']
+    })
+
+    expect(isCommandOnPathSpy).toHaveBeenCalledTimes(2)
+    expect(result).toEqual({
+      results: {
+        gh: { installed: false, authenticated: false },
+        glab: { installed: false, authenticated: false }
+      }
+    })
+  })
+
   it('reports not-installed without running auth', async () => {
     isCommandOnPathSpy.mockResolvedValue(false)
     const request = requestFromNewHandler()
