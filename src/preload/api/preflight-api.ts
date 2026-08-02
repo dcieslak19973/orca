@@ -48,6 +48,8 @@ export type PreflightRuntimeContext = {
   wslDistro?: string | null
   wslDefault?: boolean
   projectRuntime?: ProjectExecutionRuntimeResolution
+  /** Names the SSH execution host whose forge CLIs preflight should additionally probe. */
+  sshHost?: { connectionId: string; hostLabel: string }
 }
 
 export type PreflightApi = {
