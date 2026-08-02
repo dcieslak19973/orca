@@ -36,7 +36,10 @@ const SUPPORTED_POSIX_SHELLS = new Set(['sh', 'dash', 'bash', 'zsh', 'fish'])
 const CONSERVATIVE_SYSTEM_SHELL_DIRS = new Set(['/bin', '/usr/bin'])
 const AGENT_PATH_PREFIX = '__ORCA_AGENT_PATH__'
 const FORGE_CLI_ALLOWLIST = new Set(['gh', 'glab'])
-const FORGE_AUTH_TIMEOUT_MS = 10_000
+// Why: the caller (REMOTE_FORGE_PROBE_TIMEOUT_MS in src/main/ipc/preflight.ts)
+// abandons this request at 8s. Finishing under that leaves the relay a window
+// to answer instead of working on a result nobody is waiting for.
+const FORGE_AUTH_TIMEOUT_MS = 6_000
 
 export class PreflightHandler {
   private dispatcher: RelayDispatcher
@@ -163,9 +166,20 @@ async function isForgeCliAuthenticated(cli: 'gh' | 'glab'): Promise<boolean> {
     })
     return true
   } catch (error) {
-    const stdout = (error as { stdout?: string }).stdout ?? ''
-    const stderr = (error as { stderr?: string }).stderr ?? ''
-    const output = `${stdout}\n${stderr}`
+    // Why: execFile preserves stdout/stderr when `timeout` kills the child, so
+    // a hung `auth status` that had already printed "Logged in" would otherwise
+    // read as authenticated. A killed probe is "unknown", never a yes.
+    const failure = error as {
+      stdout?: string
+      stderr?: string
+      killed?: boolean
+      signal?: string
+      code?: string
+    }
+    if (failure.killed === true || failure.signal != null || failure.code === 'ETIMEDOUT') {
+      return false
+    }
+    const output = `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`
     return cli === 'gh'
       ? output.includes('Logged in') || output.includes('Active account: true')
       : output.includes('Logged in')

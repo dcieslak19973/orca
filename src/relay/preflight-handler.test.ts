@@ -414,7 +414,8 @@ describe('preflight.detectForgeClis', () => {
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       'glab',
       ['auth', 'status'],
-      expect.objectContaining({ timeout: 10_000 })
+      // Why: must stay under the caller's 8s REMOTE_FORGE_PROBE_TIMEOUT_MS.
+      expect.objectContaining({ timeout: 6_000 })
     )
   })
 
@@ -426,6 +427,24 @@ describe('preflight.detectForgeClis', () => {
     const result = await request('preflight.detectForgeClis', { clis: ['glab'] })
 
     expect(result.results.glab.authenticated).toBe(true)
+  })
+
+  // Why: execFile preserves stdout/stderr when `timeout` kills the child, so a
+  // hung `auth status` that had already printed the marker must not read as a
+  // yes. A killed probe is "unknown".
+  it('rejects a timed-out auth probe even when partial output carries the marker', async () => {
+    isCommandOnPathSpy.mockResolvedValue(true)
+    execFileAsyncMock.mockRejectedValueOnce({
+      stdout: 'Logged in as octocat\n',
+      stderr: '',
+      killed: true,
+      signal: 'SIGTERM'
+    })
+    const request = requestFromNewHandler()
+
+    const result = await request('preflight.detectForgeClis', { clis: ['glab'] })
+
+    expect(result.results.glab.authenticated).toBe(false)
   })
 
   it('treats gh "Active account: true" marker as authenticated', async () => {
