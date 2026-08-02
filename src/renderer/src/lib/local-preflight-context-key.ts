@@ -20,9 +20,11 @@ export function localPreflightContextKey(context: LocalPreflightContextKeyInput)
     return context.runtimeContextKey
   }
   // Why: two SSH hosts answer differently, so a host switch must invalidate the
-  // cached status instead of leaving the previous host's label on the card.
+  // cached status instead of leaving the previous host's label on the card. A
+  // rename (same connectionId, new hostLabel) must also invalidate, not just a
+  // host switch — otherwise the card keeps showing the old label.
   if (context?.sshHost) {
-    return `ssh:${context.sshHost.connectionId}`
+    return `ssh:${JSON.stringify([context.sshHost.connectionId, context.sshHost.hostLabel])}`
   }
   if (context?.wslDistro) {
     return `wsl:${context.wslDistro}`

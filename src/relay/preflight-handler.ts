@@ -142,7 +142,7 @@ export class PreflightHandler {
         const installed = await this.isCommandOnPath(cli)
         results[cli] = {
           installed,
-          authenticated: installed && (await isForgeCliAuthenticated(cli))
+          authenticated: installed && (await isForgeCliAuthenticated(cli as 'gh' | 'glab'))
         }
       })
     )
@@ -152,7 +152,9 @@ export class PreflightHandler {
 
 // Why: glab writes auth status to stderr in some versions and can exit
 // non-zero while still logged in, so check output markers on failure too.
-async function isForgeCliAuthenticated(cli: string): Promise<boolean> {
+// Markers mirror the main-process per-CLI checks (isGhAuthenticated /
+// isGlabAuthenticated in src/main/ipc/preflight.ts).
+async function isForgeCliAuthenticated(cli: 'gh' | 'glab'): Promise<boolean> {
   try {
     await execFileAsync(cli, ['auth', 'status'], {
       encoding: 'utf-8',
@@ -164,7 +166,9 @@ async function isForgeCliAuthenticated(cli: string): Promise<boolean> {
     const stdout = (error as { stdout?: string }).stdout ?? ''
     const stderr = (error as { stderr?: string }).stderr ?? ''
     const output = `${stdout}\n${stderr}`
-    return output.includes('Logged in') || output.includes('Active account: true')
+    return cli === 'gh'
+      ? output.includes('Logged in') || output.includes('Active account: true')
+      : output.includes('Logged in')
   }
 }
 
