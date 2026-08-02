@@ -132,7 +132,7 @@ describe('local preflight context', () => {
     const context = getLocalPreflightContext(state, 'darwin')
 
     expect(context).toEqual({ sshHost: { connectionId: 'builder', hostLabel: 'Build Box' } })
-    expect(localPreflightContextKey(context)).toBe('ssh:builder')
+    expect(localPreflightContextKey(context)).toBe('ssh:["builder","Build Box"]')
     expect(getLocalPreflightContext(state, 'darwin')).toBe(context)
   })
 
@@ -163,6 +163,20 @@ describe('local preflight context', () => {
 
     expect(first).not.toBe(second)
     expect(localPreflightContextKey(first)).not.toBe(localPreflightContextKey(second))
+  })
+
+  it('keys a renamed SSH target apart so the rename invalidates the card', () => {
+    const beforeRename = getLocalPreflightContext(
+      makeSshState({ connectionId: 'builder', labels: { builder: 'Build Box' } }),
+      'darwin'
+    )
+    const afterRename = getLocalPreflightContext(
+      makeSshState({ connectionId: 'builder', labels: { builder: 'Renamed Box' } }),
+      'darwin'
+    )
+
+    expect(afterRename).not.toBe(beforeRename)
+    expect(localPreflightContextKey(afterRename)).not.toBe(localPreflightContextKey(beforeRename))
   })
 
   it('omits the SSH host for local and WSL repos', () => {

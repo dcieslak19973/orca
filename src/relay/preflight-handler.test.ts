@@ -428,6 +428,26 @@ describe('preflight.detectForgeClis', () => {
     expect(result.results.glab.authenticated).toBe(true)
   })
 
+  it('treats gh "Active account: true" marker as authenticated', async () => {
+    isCommandOnPathSpy.mockResolvedValue(true)
+    execFileAsyncMock.mockRejectedValueOnce({ stdout: '', stderr: 'Active account: true\n' })
+    const request = requestFromNewHandler()
+
+    const result = await request('preflight.detectForgeClis', { clis: ['gh'] })
+
+    expect(result.results.gh.authenticated).toBe(true)
+  })
+
+  it('does not treat glab "Active account: true" marker as authenticated (gh-only marker)', async () => {
+    isCommandOnPathSpy.mockResolvedValue(true)
+    execFileAsyncMock.mockRejectedValueOnce({ stdout: '', stderr: 'Active account: true\n' })
+    const request = requestFromNewHandler()
+
+    const result = await request('preflight.detectForgeClis', { clis: ['glab'] })
+
+    expect(result.results.glab.authenticated).toBe(false)
+  })
+
   it('reports an installed CLI that is not logged in as unauthenticated', async () => {
     isCommandOnPathSpy.mockResolvedValue(true)
     execFileAsyncMock.mockRejectedValueOnce({ stdout: '', stderr: 'not logged in' })
