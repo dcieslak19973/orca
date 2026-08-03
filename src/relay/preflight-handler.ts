@@ -76,7 +76,7 @@ export class PreflightHandler {
     const results = await Promise.all(
       probeCommands.map(async (cmd) => ({
         cmd,
-        installed: await this.isCommandOnPath(cmd)
+        installed: (await this.resolveCommandPath(cmd)) !== null
       }))
     )
     const foundCommands = new Set(
@@ -125,8 +125,8 @@ export class PreflightHandler {
   // startup files sourced. Ask the user's configured shell so agent dirs added
   // by zsh/bash/fish startup hooks match the remote terminal experience.
   // Windows has no POSIX shell on native OpenSSH hosts, so use where.exe there.
-  private async isCommandOnPath(command: string): Promise<boolean> {
-    return isCommandOnPathForRelay(command)
+  private async resolveCommandPath(command: string): Promise<string | null> {
+    return resolveRelayCommandPath(command)
   }
 
   // Why: ignore rather than error on non-allowlisted entries — a newer desktop
@@ -142,10 +142,15 @@ export class PreflightHandler {
     const results: Record<string, { installed: boolean; authenticated: boolean }> = {}
     await Promise.all(
       clis.map(async (cli) => {
-        const installed = await this.isCommandOnPath(cli)
+        // Why: detection resolves through a login shell, so a PATH set in a
+        // shell startup file is visible here but not to a bare execFile. Reuse
+        // the resolved executable so "installed" and "authenticated" can never
+        // disagree about which binary they mean.
+        const executable = await this.resolveCommandPath(cli)
         results[cli] = {
-          installed,
-          authenticated: installed && (await isForgeCliAuthenticated(cli as 'gh' | 'glab'))
+          installed: executable !== null,
+          authenticated:
+            executable !== null && (await isForgeCliAuthenticated(cli as 'gh' | 'glab', executable))
         }
       })
     )
@@ -157,9 +162,9 @@ export class PreflightHandler {
 // non-zero while still logged in, so check output markers on failure too.
 // Markers mirror the main-process per-CLI checks (isGhAuthenticated /
 // isGlabAuthenticated in src/main/ipc/preflight.ts).
-async function isForgeCliAuthenticated(cli: 'gh' | 'glab'): Promise<boolean> {
+async function isForgeCliAuthenticated(cli: 'gh' | 'glab', executable: string): Promise<boolean> {
   try {
-    await execFileAsync(cli, ['auth', 'status'], {
+    await execFileAsync(executable, ['auth', 'status'], {
       encoding: 'utf-8',
       env: buildRelayCommandEnv(),
       timeout: FORGE_AUTH_TIMEOUT_MS
@@ -230,10 +235,15 @@ export function buildCommandLookupSpecs(
   return specs
 }
 
-export async function isCommandOnPathForRelay(
+/**
+ * Resolve `command` to an absolute path using the same shell-aware probes as
+ * detection, so callers that spawn it cannot disagree with detection about
+ * which binary they mean when PATH comes from a shell startup file.
+ */
+export async function resolveRelayCommandPath(
   command: string,
   options: RelayCommandLookupOptions = {}
-): Promise<boolean> {
+): Promise<string | null> {
   const platform = options.platform ?? process.platform
   const env = options.env ?? process.env
   const specs = buildCommandLookupSpecs(command, platform, env, options.accountLoginShell)
@@ -246,31 +256,37 @@ export async function isCommandOnPathForRelay(
         timeout: 5000,
         ...(spec.windowsHide ? { windowsHide: true } : {})
       })
-      if (hasAbsoluteCommandPath(stdout, platform)) {
-        return true
+      const resolved = firstAbsoluteCommandPath(stdout, platform)
+      if (resolved !== null) {
+        return resolved
       }
     } catch {
-      // Try the inherited-PATH fallback before reporting the agent missing.
+      // Try the inherited-PATH fallback before reporting the command missing.
     }
   }
 
-  return false
+  return null
 }
 
 export function hasAbsoluteCommandPath(output: string, platform: NodeJS.Platform): boolean {
+  return firstAbsoluteCommandPath(output, platform) !== null
+}
+
+export function firstAbsoluteCommandPath(output: string, platform: NodeJS.Platform): string | null {
   const pathOps = platform === 'win32' ? win32 : path
-  return output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .some((line) => {
-      const resolvedPath =
-        platform === 'win32'
-          ? line
-          : line.startsWith(AGENT_PATH_PREFIX)
-            ? line.slice(AGENT_PATH_PREFIX.length)
-            : ''
-      return pathOps.isAbsolute(resolvedPath)
-    })
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim()
+    const resolvedPath =
+      platform === 'win32'
+        ? line
+        : line.startsWith(AGENT_PATH_PREFIX)
+          ? line.slice(AGENT_PATH_PREFIX.length)
+          : ''
+    if (pathOps.isAbsolute(resolvedPath)) {
+      return resolvedPath
+    }
+  }
+  return null
 }
 
 function buildPosixCommandLookupSpec(command: string, shell: string): CommandLookupSpec {
