@@ -21,7 +21,7 @@ export type TerminalScrollIntentTarget = {
 
 export type TerminalScrollIntentKey = string
 
-type TerminalScrollIntent = {
+export type TerminalScrollIntent = {
   kind: TerminalScrollIntentKind
   bufferType: TerminalScrollBufferType
   viewportY: number
@@ -100,13 +100,15 @@ function writeIntentSnapshot(
   return intent
 }
 
-function readStoredIntent(terminal: TerminalScrollIntentTarget): TerminalScrollIntent | undefined {
-  const terminalIntent = terminalScrollIntentByTerminal.get(terminal)
-  if (terminalIntent) {
-    return terminalIntent
-  }
-  const key = terminalScrollIntentKeyByTerminal.get(terminal)
-  return key ? terminalScrollIntentByKey.get(key) : undefined
+// Exported read-only: the app-replay repin watcher compares the durable stored
+// pin against the live viewport to detect an output-driven yank. Only this
+// module's write paths may mutate the returned object.
+export function readStoredIntent(
+  terminal: TerminalScrollIntentTarget
+): TerminalScrollIntent | undefined {
+  const direct = terminalScrollIntentByTerminal.get(terminal)
+  const key = direct ? undefined : terminalScrollIntentKeyByTerminal.get(terminal)
+  return direct ?? (key ? terminalScrollIntentByKey.get(key) : undefined)
 }
 
 export function bindTerminalScrollIntentKey(
