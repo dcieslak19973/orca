@@ -171,6 +171,9 @@ export type ManagedPaneInternal = {
   focusClassSyncCleanup?: (() => void) | null
   // Stored so disposePane() can remove user-scroll intent listeners.
   terminalScrollIntentDisposable?: IDisposable | null
+  // Stored so disposePane() can detach the app-replay repin watcher that
+  // restores a pinned viewport after a TUI clears and replays scrollback.
+  terminalScrollIntentAppReplayRepinDisposable?: IDisposable | null
   // Stored so disposePane() can detach the streamed-output hover-cache reset
   // that keeps freshly printed links linkifiable without a scroll.
   linkifierHoverResetDisposable?: IDisposable | null

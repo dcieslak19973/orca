@@ -9,6 +9,7 @@ import { cancelDeferredScrollRestore } from './pane-scroll'
 import { activateOrcaTerminalUnicodeProvider } from '../../../../shared/terminal-unicode-provider'
 import { attachTerminalMouseWheelMultiplier } from './pane-terminal-mouse-wheel'
 import { attachTerminalScrollIntentTracking } from './terminal-scroll-intent-dom-tracking'
+import { attachTerminalScrollIntentAppReplayRepin } from './terminal-scroll-intent-app-replay-repin'
 import {
   installTerminalLinkifierHoverResetOnMouseLeave,
   installTerminalLinkifierHoverResetOnWindowBlur
@@ -61,6 +62,10 @@ export function openTerminal(pane: ManagedPaneInternal): void {
     xtermContainer,
     pane.leafId
   )
+  // Why: inline TUIs (OMP, Pi) repaint on width change by clearing scrollback
+  // and replaying — see terminal-scroll-intent-app-replay-repin.ts (#8715).
+  pane.terminalScrollIntentAppReplayRepinDisposable =
+    attachTerminalScrollIntentAppReplayRepin(terminal)
   // Why: a link streamed into a visible pane under a stationary pointer would
   // otherwise stay un-underlined/un-clickable until the mouse crosses to a new
   // line; invalidate the linkifier hover cache when output lands so the next
@@ -193,6 +198,8 @@ export function disposePane(
   pane.focusClassSyncCleanup = null
   pane.terminalScrollIntentDisposable?.dispose()
   pane.terminalScrollIntentDisposable = null
+  pane.terminalScrollIntentAppReplayRepinDisposable?.dispose()
+  pane.terminalScrollIntentAppReplayRepinDisposable = null
   pane.linkifierHoverResetDisposable?.dispose()
   pane.linkifierHoverResetDisposable = null
   pane.linkifierMouseLeaveResetDisposable?.dispose()

@@ -615,7 +615,9 @@ describe('openTerminal — addon and provider wiring', () => {
     openTerminal(pane)
     const disposable = pane.linkifierHoverResetDisposable
     expect(disposable?.dispose).toBeTypeOf('function')
-    expect(pane.terminal.onWriteParsed).toHaveBeenCalledTimes(1)
+    // Two onWriteParsed consumers: the linkifier hover reset and the
+    // app-replay scroll repin (terminal-scroll-intent-app-replay-repin.ts).
+    expect(pane.terminal.onWriteParsed).toHaveBeenCalledTimes(2)
 
     const disposeSpy = vi.spyOn(disposable!, 'dispose')
     disposePane(pane, new Map([[pane.id, pane]]))
