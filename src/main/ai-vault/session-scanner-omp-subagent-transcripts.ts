@@ -20,8 +20,10 @@ const OMP_SESSION_DIR_NAME = String.raw`\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3
 export const OMP_SESSION_ARTIFACT_DIR_PATTERN = new RegExp(`^${OMP_SESSION_DIR_NAME}$`, 'i')
 
 // Direct child of a session artifact dir: `…/<stamp>_<uuid>/<label>.jsonl`.
-// Greedy prefix means nested task trees attribute to their nearest stamped
-// ancestor, matching the local direct-children-only readdir semantics.
+// A child's own artifact dir is label-named (`<stamp>_<uuid>/<label>/`), so a
+// grandchild is one segment too deep for this pattern and counts toward
+// nobody — matching the local direct-children-only readdir. The greedy prefix
+// only matters for a stamped dir nested under another, which OMP never emits.
 const OMP_SUBAGENT_SUBTREE_PATTERN = new RegExp(String.raw`[\\/]${OMP_SESSION_DIR_NAME}[\\/]`, 'i')
 const OMP_SUBAGENT_DIRECT_CHILD_PATTERN = new RegExp(
   String.raw`^(.*[\\/]${OMP_SESSION_DIR_NAME})[\\/][^\\/]+\.jsonl$`,
