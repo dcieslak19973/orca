@@ -3487,7 +3487,8 @@ export type PreloadApi = {
     resolveConfigHost: (args: { alias: string }) => Promise<SshConfigHostResolution | null>
     connect: (args: { targetId: string }) => Promise<SshConnectionState | null>
     disconnect: (args: { targetId: string }) => Promise<void>
-    terminateSessions: (args: { targetId: string }) => Promise<void>
+    /** `unreachableExpired`: expired-lease sessions terminate could not reach because the relay was offline (#12661). */
+    terminateSessions: (args: { targetId: string }) => Promise<{ unreachableExpired: number }>
     resetRelay: (args: { targetId: string }) => Promise<void>
     getState: (args: { targetId: string }) => Promise<SshConnectionState | null>
     needsPassphrasePrompt: (args: { targetId: string }) => Promise<boolean>

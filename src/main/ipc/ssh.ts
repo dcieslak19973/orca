@@ -1277,6 +1277,11 @@ export function registerSshHandlers(
 
   ipcMain.handle('ssh:terminateSessions', async (_event, args: { targetId: string }) => {
     invalidateConnectAttempt(args.targetId)
+    // Why (#12661): with no provider and only expired leases, nothing below can
+    // reach the remote shells, yet local teardown still succeeds. Report how
+    // many sessions terminate could NOT reach so the renderer never presents
+    // that outcome as a successful remote kill.
+    let unreachableExpired = 0
     await runTargetLifecycle(args.targetId, async () => {
       const provider = getSshPtyProvider(args.targetId)
       const leases = persistedStore!.getSshRemotePtyLeases(args.targetId)
@@ -1314,6 +1319,11 @@ export function registerSshHandlers(
           `${SSH_TERMINATE_RECONNECT_REQUIRED}: SSH relay is not connected; reconnect before terminating remote sessions.`
         )
       }
+      if (!provider) {
+        // Why: past the throw above, every tracked id is an expired lease. The
+        // remote shells stay live; only local transport cleanup happens below.
+        unreachableExpired = ptyIds.length
+      }
       const shutdownResults = provider
         ? await Promise.allSettled(
             ptyIds.map(({ appPtyId }) =>
@@ -1340,6 +1350,7 @@ export function registerSshHandlers(
       }
       await teardownSshTargetTransport(args.targetId, (session) => session.disposeAndPersist())
     })
+    return { unreachableExpired }
   })
 
   async function doResetRelay(targetId: string, target: SshTarget): Promise<void> {

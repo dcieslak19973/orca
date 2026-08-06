@@ -2660,7 +2660,10 @@ describe('SSH IPC handlers', () => {
     await expect(reconnect).resolves.toMatchObject({ targetId: 'ssh-1', status: 'connected' })
   })
 
-  it('ssh:terminateSessions cannot reach expired leases without a relay', async () => {
+  // Why (#12661): offline expired-only terminate must not be mistakable for a
+  // successful remote kill — it reports the sessions it could not reach, and
+  // it must not tombstone leases whose shells are still alive.
+  it('ssh:terminateSessions reports expired leases it cannot reach without a relay', async () => {
     mockStore.getSshRemotePtyLeases.mockReturnValue([
       { targetId: 'ssh-1', ptyId: 'pty-expired', state: 'expired' }
     ])
@@ -2669,9 +2672,14 @@ describe('SSH IPC handlers', () => {
 
     await expect(
       handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual({ unreachableExpired: 1 })
 
     expect(mockPtyProvider.shutdown).not.toHaveBeenCalled()
+    expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalledWith(
+      'ssh-1',
+      expect.anything(),
+      'terminated'
+    )
     expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
   })
 
@@ -2699,7 +2707,9 @@ describe('SSH IPC handlers', () => {
     mockPtyProvider.shutdown.mockResolvedValue(undefined)
 
     await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
-    await handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
+    await expect(
+      handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
+    ).resolves.toEqual({ unreachableExpired: 0 })
 
     expect(mockPtyProvider.shutdown).toHaveBeenCalledWith('ssh:ssh-1@@pty-abandoned', {
       immediate: true,

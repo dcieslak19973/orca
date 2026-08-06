@@ -7284,7 +7284,8 @@
           "4db9afce1c": "Port must be between 1 and 65535",
           "0e5aa04161": "Host or SSH config alias is required",
           "f1fc50dad2": "Failed to load SSH targets",
-          "0cda732f43": "Connection test failed"
+          "0cda732f43": "Connection test failed",
+          "terminateUnreachableExpired": "Local cleanup done, but {{value0}} remote session(s) could not be stopped — the relay is offline. Reconnect and end remote terminals again."
         },
         "SshPassphraseDialog": {
           "d5a234456f": "Cancel",
