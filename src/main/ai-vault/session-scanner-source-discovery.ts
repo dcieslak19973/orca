@@ -3,7 +3,7 @@ import { basename, join } from 'node:path'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import { uniqueCodexSessionsDirs } from './session-scanner-codex-paths'
 import { SUBAGENT_DIR_NAME } from './session-scanner-subagent-transcripts'
-import { OMP_SESSION_ARTIFACT_DIR_PATTERN } from './session-scanner-omp-subagents'
+import { OMP_SESSION_ARTIFACT_DIR_PATTERN } from './session-scanner-omp-subagent-transcripts'
 import { discoverFiles, discoverOpenClawFiles } from './session-scanner-discovery'
 import { droidDiscoveries, kimiDiscoveries } from './session-scanner-droid-kimi-sources'
 import { opencodeDiscoveries } from './session-scanner-opencode-sources'
@@ -273,11 +273,14 @@ function ompDiscoveries(
       issues,
       extensions: ['.jsonl'],
       // Why: task subagent transcripts live inside the session's same-named
-      // artifact directory (`<stamp>_<uuid>/`), share the parent's lineage and
-      // aren't independently resumable — surfaced as top-level rows they
+      // artifact directory (`<stamp>_<uuid>/`); surfaced as top-level rows they
       // drown coordinators under their own workers (#9330). Prune the subtree
-      // and read them on demand under their parent instead.
-      directoryPredicate: (name) => !OMP_SESSION_ARTIFACT_DIR_PATTERN.test(name)
+      // and read them on demand under their parent instead. Unlike Claude's,
+      // these carry their own sessionId and would resume by path — but OMP's
+      // own picker only globs `*/*.jsonl`, so it never offers them either.
+      // Depth 0 is the workspace dir, which is never an artifact dir.
+      directoryPredicate: (name, depth) =>
+        depth === 0 || !OMP_SESSION_ARTIFACT_DIR_PATTERN.test(name)
     })
   )
 }

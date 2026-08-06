@@ -5,7 +5,7 @@ import { normalizeAgentSessionsDir } from './session-scanner-values'
 // The default local roots for the two agents whose subagent transcripts are
 // read back by renderer-supplied path (Claude and OMP). Discovery scans these;
 // the IPC listers use the root enumerations below to reject arbitrary paths.
-export const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 export const OMP_SESSIONS_DIR = normalizeAgentSessionsDir(
   process.env.OMP_CODING_AGENT_DIR?.trim() || join(homedir(), '.omp', 'agent', 'sessions'),
   '.omp'
@@ -29,10 +29,15 @@ export function ompSessionsRootDirs(args: {
   ompSessionsDir?: string
   wslHomeDirs?: readonly string[]
 }): string[] {
-  return sessionRootDirs(
-    args.ompSessionsDir ?? OMP_SESSIONS_DIR,
-    normalizedWslHomeDirs(args.wslHomeDirs),
-    ['.omp', 'agent', 'sessions']
+  return (
+    sessionRootDirs(
+      args.ompSessionsDir ?? OMP_SESSIONS_DIR,
+      normalizedWslHomeDirs(args.wslHomeDirs),
+      ['.omp', 'agent', 'sessions']
+    )
+      // Why: OMP_CODING_AGENT_DIR='/' normalizes to '', which resolve()s to the
+      // process cwd — an empty root would silently allowlist it.
+      .filter((rootDir) => rootDir.trim().length > 0)
   )
 }
 

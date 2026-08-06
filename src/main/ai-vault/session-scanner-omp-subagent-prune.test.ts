@@ -70,4 +70,80 @@ describe('scanAiVaultSessions OMP subagent pruning', () => {
       subagentTranscriptCount: 1
     })
   })
+
+  it('still scans a workspace dir whose name looks like a session stem', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-omp-depth-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    // Depth 0 is the workspace dir. Pruning by name alone would hide every
+    // session in a workspace that happened to be named like a session stem.
+    const workspaceDir = join(roots.ompSessionsDir, SESSION_STEM)
+    await mkdir(workspaceDir, { recursive: true })
+    await writeFile(
+      join(workspaceDir, `${SESSION_STEM}.jsonl`),
+      jsonLines([
+        {
+          type: 'session',
+          version: 3,
+          id: SESSION_ID,
+          cwd: '/repo/app',
+          timestamp: '2026-05-01T10:00:00.000Z'
+        },
+        {
+          type: 'message',
+          timestamp: '2026-05-01T10:00:01.000Z',
+          message: { role: 'user', content: 'Hello from a stem-named workspace' }
+        }
+      ])
+    )
+
+    const result = await scanAiVaultSessions({ ...roots, platform: 'darwin' })
+
+    expect(result.sessions.map((entry) => entry.sessionId)).toContain(SESSION_ID)
+  })
+
+  it('picks up a task transcript written after the coordinator last changed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-omp-late-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    const workspaceDir = join(roots.ompSessionsDir, 'home-app-85dfa2f0')
+    await mkdir(workspaceDir, { recursive: true })
+    // A coordinator that persisted no conversation turns: its file never
+    // changes again, so only the cached-reuse recount can see a late child.
+    await writeFile(
+      join(workspaceDir, `${SESSION_STEM}.jsonl`),
+      jsonLines([
+        {
+          type: 'session',
+          version: 3,
+          id: SESSION_ID,
+          cwd: '/repo/app',
+          timestamp: '2026-05-01T10:00:00.000Z'
+        }
+      ])
+    )
+
+    const first = await scanAiVaultSessions({ ...roots, platform: 'darwin' })
+    expect(first.sessions.find((entry) => entry.sessionId === SESSION_ID)).toMatchObject({
+      messageCount: 0,
+      subagentTranscriptCount: 0
+    })
+
+    await mkdir(join(workspaceDir, SESSION_STEM), { recursive: true })
+    await writeFile(
+      join(workspaceDir, SESSION_STEM, 'AuthAndPreflight.jsonl'),
+      jsonLines([
+        {
+          type: 'message',
+          timestamp: '2026-05-01T10:01:01.000Z',
+          message: { role: 'user', content: 'Late task prompt' }
+        }
+      ])
+    )
+
+    const second = await scanAiVaultSessions({ ...roots, platform: 'darwin' })
+    expect(
+      second.sessions.find((entry) => entry.sessionId === SESSION_ID)?.subagentTranscriptCount
+    ).toBe(1)
+  })
 })

@@ -7,7 +7,10 @@ import type {
 } from '../../shared/ai-vault-types'
 import { sessionIdFromFileName, sessionSortTime } from './session-scanner-accumulator'
 import { parseMessageGraphSessionFile } from './session-scanner-graph-parsers'
-import { isOmpSubagentTranscriptFileName, ompArtifactDirFor } from './session-scanner-omp-subagents'
+import {
+  isOmpSubagentTranscriptFileName,
+  ompArtifactDirFor
+} from './session-scanner-omp-subagent-transcripts'
 import { errorMessage } from './session-scanner-values'
 
 // Match the Claude subagent lister's deliberate parse batching: opening every
@@ -18,8 +21,9 @@ const OMP_SUBAGENT_PARSE_CONCURRENCY = 8
  * List the task-subagent transcripts of one OMP session, on demand. The main
  * scan prunes session artifact directories for speed, so this is the only path
  * that reads them — and only when the user expands a session's details.
- * (Lives apart from session-scanner-omp-subagents.ts so the graph parser can
- * import the count decorator without a parser↔lister import cycle.)
+ * (Lives apart from session-scanner-omp-subagent-transcripts.ts so the graph
+ * parser can import the count decorator without a parser↔lister import cycle —
+ * the same split as Claude's transcripts/lister pair.)
  */
 export async function listOmpSubagentSessions(args: {
   parentFilePath: string

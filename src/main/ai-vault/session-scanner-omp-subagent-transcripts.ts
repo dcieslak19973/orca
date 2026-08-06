@@ -7,10 +7,12 @@ import type { ResumableSessionParseState } from './session-scanner-types'
 // OMP names every session `<ISO-stamp>_<uuidv7>` and stores that session's
 // artifacts — including its task-subagent transcripts — in a sibling directory
 // of the same name (…/<workspace>/<stamp>_<uuid>.jsonl + …/<stamp>_<uuid>/).
-// The name pattern is the classification signal: workspace directories are
-// slug-hashes and task-child transcripts are label-named, so neither can match.
-// This deliberately does not trust a transcript's own parentSession field —
-// that also describes non-task lineage such as forks (#9330).
+// The anchored name pattern is the classification signal: task-child
+// transcripts are label-named, so they can't match. Workspace dirs are encoded
+// from a cwd and can't realistically match either, but the local prune doesn't
+// rely on that — it skips depth 0 outright. This deliberately reads structure
+// rather than a transcript's own records: children carry their own session id
+// and no parentSession field at all, so lineage is not available here (#9330).
 const OMP_SESSION_DIR_NAME = String.raw`\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 
 // Exported so discovery prunes exactly the subtrees this module reads on
@@ -31,7 +33,7 @@ export function ompArtifactDirFor(transcriptFilePath: string): string {
   return join(dirname(transcriptFilePath), stem)
 }
 
-// The count above and the on-demand lister both key off this one predicate so
+// The count below and the on-demand lister both key off this one predicate so
 // the "N subagents" badge can never disagree with the expanded list.
 export function isOmpSubagentTranscriptFileName(name: string, isFile: boolean): boolean {
   return isFile && extname(name).toLowerCase() === '.jsonl'
