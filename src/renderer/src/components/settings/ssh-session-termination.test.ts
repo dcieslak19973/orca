@@ -59,6 +59,8 @@ describe('describeTerminateOutcome', () => {
     expect(outcome.tone).toBe('warning')
     expect(outcome.message).toContain('3')
     expect(outcome.message).toContain('could not be stopped')
+    // The warning must tell the user how to finish the job, not just that it failed.
+    expect(outcome.message).toContain('Reconnect and end remote terminals again')
   })
 
   it('reports success when every session was reachable', () => {
