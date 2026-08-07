@@ -32,7 +32,12 @@ export function useDiffHunkStaging({
   config: DiffHunkStagingConfig | null
 }): void {
   const applyHunkRef = useRef(config?.applyHunk)
-  applyHunkRef.current = config?.applyHunk
+  // Why: writing a ref during render is impure and misbehaves under StrictMode's
+  // double render. The ref is only read from deferred DOM handlers, so syncing
+  // on commit is soon enough, and this runs before the effect below on mount.
+  useEffect(() => {
+    applyHunkRef.current = config?.applyHunk
+  })
   const scope = config?.scope ?? null
   const actionLabel = config?.actionLabel ?? ''
 
