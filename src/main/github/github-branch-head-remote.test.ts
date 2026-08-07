@@ -151,4 +151,88 @@ describe('resolveBranchHeadRemoteName', () => {
     )
     expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
   })
+  // Why: repoPath names the remote host's filesystem. Running local git there
+  // could read an unrelated repo that happens to sit at the same path.
+  it('never falls back to local git when the SSH provider is unavailable', async () => {
+    stubGit({ refs: `refs/remotes/fork/${BRANCH}\n` })
+    getSshGitProviderMock.mockReturnValue(null)
+
+    await expect(
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH, connectionId: 'ssh-1' })
+    ).resolves.toBeNull()
+    expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('branch head remote cache', () => {
+  it('serves a repeat resolution without spawning git again', async () => {
+    stubGit({ refs: `refs/remotes/fork/${BRANCH}\n` })
+
+    await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+    await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches a null answer so an unpushed branch is not re-probed', async () => {
+    stubGit({ refs: '', config: {} })
+
+    await expect(
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+    ).resolves.toBeNull()
+    const callsAfterFirst = gitExecFileAsyncMock.mock.calls.length
+    await expect(
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+    ).resolves.toBeNull()
+
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(callsAfterFirst)
+  })
+
+  it('re-probes once the entry expires', async () => {
+    vi.useFakeTimers()
+    try {
+      stubGit({ refs: `refs/remotes/fork/${BRANCH}\n` })
+      await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+
+      // Past the 30s window: a branch pushed to a new remote must be picked up.
+      vi.advanceTimersByTime(31_000)
+      await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+
+      expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keys separately per branch, per repo, and per connection', async () => {
+    stubGit({ refs: `refs/remotes/fork/${BRANCH}\n` })
+    const exec = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+    getSshGitProviderMock.mockReturnValue({ exec })
+
+    await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+    await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: 'other/branch' })
+    await resolveBranchHeadRemoteName({ repoPath: '/repo/other', branchName: BRANCH })
+    await resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH, connectionId: 'ssh-1' })
+
+    // Three distinct local keys, and the SSH runtime is a fourth.
+    expect(
+      gitExecFileAsyncMock.mock.calls.filter(([args]) => args[0] === 'for-each-ref')
+    ).toHaveLength(3)
+    // The SSH runtime is a fourth key, so it probes on its own transport
+    // (its empty result then falls through to config, which is expected).
+    expect(exec.mock.calls.filter(([args]) => args[0] === 'for-each-ref')).toHaveLength(1)
+  })
+
+  it('coalesces concurrent misses into one probe', async () => {
+    stubGit({ refs: `refs/remotes/fork/${BRANCH}\n` })
+
+    const [a, b, c] = await Promise.all([
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH }),
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH }),
+      resolveBranchHeadRemoteName({ repoPath: REPO, branchName: BRANCH })
+    ])
+
+    expect([a, b, c]).toEqual(['fork', 'fork', 'fork'])
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+  })
 })

@@ -19,6 +19,9 @@ const REMOTE_REF_PREFIX = 'refs/remotes/'
 const HEAD_REMOTE_CACHE_TTL_MS = 30_000
 const HEAD_REMOTE_CACHE_MAX_ENTRIES = 512
 const headRemoteCache = new Map<string, { value: string | null; expiresAt: number }>()
+// Why: several surfaces can miss the same branch in the same tick. Without
+// this, each spawns its own git process for an answer they all share.
+const headRemoteInFlight = new Map<string, Promise<string | null>>()
 
 function headRemoteCacheKey(query: BranchHeadRemoteQuery): string {
   const runtime = query.connectionId
@@ -30,6 +33,7 @@ function headRemoteCacheKey(query: BranchHeadRemoteQuery): string {
 /** @internal - exposed for tests only */
 export function _resetBranchHeadRemoteCache(): void {
   headRemoteCache.clear()
+  headRemoteInFlight.clear()
 }
 
 function readCachedHeadRemote(key: string, now: number): { value: string | null } | null {
@@ -59,14 +63,18 @@ async function readGitStdout(
   query: BranchHeadRemoteQuery
 ): Promise<string | null> {
   try {
-    const provider = query.connectionId ? getSshGitProvider(query.connectionId) : null
+    if (query.connectionId) {
+      // Why: repoPath addresses the remote host's filesystem. Falling back to
+      // local git here would run against whatever happens to sit at the same
+      // path on this machine, which can name a remote from an unrelated repo.
+      const provider = getSshGitProvider(query.connectionId)
+      return provider ? (await provider.exec([...args], query.repoPath)).stdout : null
+    }
     const wslDistro = query.localGitOptions?.wslDistro
-    const result = provider
-      ? await provider.exec([...args], query.repoPath)
-      : await gitExecFileAsync([...args], {
-          cwd: query.repoPath,
-          ...(wslDistro ? { wslDistro } : {})
-        })
+    const result = await gitExecFileAsync([...args], {
+      cwd: query.repoPath,
+      ...(wslDistro ? { wslDistro } : {})
+    })
     return result.stdout
   } catch {
     // Why: a missing config key exits non-zero, and an unreachable SSH host
@@ -140,14 +148,27 @@ export async function resolveBranchHeadRemoteName(
     return null
   }
   const cacheKey = headRemoteCacheKey(query)
-  const now = Date.now()
-  const cached = readCachedHeadRemote(cacheKey, now)
+  const cached = readCachedHeadRemote(cacheKey, Date.now())
   if (cached) {
     return cached.value
   }
-  const resolved = await resolveUncachedBranchHeadRemoteName(query)
-  storeHeadRemote(cacheKey, resolved, Date.now())
-  return resolved
+  const pending = headRemoteInFlight.get(cacheKey)
+  if (pending) {
+    return pending
+  }
+  const probe = (async () => {
+    const resolved = await resolveUncachedBranchHeadRemoteName(query)
+    storeHeadRemote(cacheKey, resolved, Date.now())
+    return resolved
+  })()
+  headRemoteInFlight.set(cacheKey, probe)
+  try {
+    return await probe
+  } finally {
+    if (headRemoteInFlight.get(cacheKey) === probe) {
+      headRemoteInFlight.delete(cacheKey)
+    }
+  }
 }
 
 async function resolveUncachedBranchHeadRemoteName(
