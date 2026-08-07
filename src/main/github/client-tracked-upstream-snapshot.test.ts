@@ -733,4 +733,26 @@ describe('getPRForBranch', () => {
       vi.useRealTimers()
     }
   })
+
+  // Why: a disconnected result must not block the provider-backed probe after reconnect.
+  it('re-probes tracked upstreams once the SSH provider reconnects', async () => {
+    getSshGitProviderMock.mockReturnValue(undefined)
+    getOwnerRepoMock.mockResolvedValue({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: JSON.stringify([]) })
+    gitExecFileAsyncMock.mockResolvedValue({ stdout: 'feature\0\n', stderr: '' })
+
+    await getPRForBranch('/repo-root', 'feature', null, 'ssh-1')
+    expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
+
+    const sshGitProvider = {
+      exec: vi
+        .fn()
+        .mockResolvedValue({ stdout: 'feature\0refs/remotes/origin/feature\n', stderr: '' })
+    }
+    getSshGitProviderMock.mockReturnValue(sshGitProvider)
+
+    await getPRForBranch('/repo-root', 'feature', null, 'ssh-1')
+
+    expect(sshGitProvider.exec).toHaveBeenCalled()
+  })
 })
