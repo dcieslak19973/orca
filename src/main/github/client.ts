@@ -2238,6 +2238,12 @@ async function getCurrentHeadOid(
 ): Promise<string | null> {
   try {
     const provider = connectionId ? getSshGitProvider(connectionId) : null
+    if (connectionId && !provider) {
+      // Why: a dropped SSH provider must not fall back to local git — the
+      // repoPath is remote, so a local run could answer for the wrong repo
+      // (#12977). Mirrors the guard in source-control/repo-default-branch.ts.
+      return null
+    }
     const result = provider
       ? await provider.exec(['rev-parse', 'HEAD'], repoPath)
       : await gitExecFileAsync(['rev-parse', 'HEAD'], {
@@ -2718,6 +2724,13 @@ async function probeTrackedUpstreamBranches(
   const args = ['for-each-ref', '--format=%(refname)%00%(upstream)', 'refs/heads']
   try {
     const provider = connectionId ? getSshGitProvider(connectionId) : null
+    if (connectionId && !provider) {
+      // Why: a dropped SSH provider must not fall back to local git — the
+      // repoPath is remote, so a local run could answer for the wrong repo
+      // (#12977). probeFailed keeps the empty map out of the snapshot cache,
+      // so the real mapping is read once the target reconnects.
+      return { probeFailed: true, upstreamsByBranchName: new Map() }
+    }
     const result = provider
       ? await provider.exec(args, repoPath)
       : await gitExecFileAsync(args, {

@@ -1948,6 +1948,42 @@ describe('getPRForBranch', () => {
     expect(sshGitProvider.exec).toHaveBeenCalledTimes(1)
   })
 
+  // Why (#12977): repoPath addresses the remote host. With the SSH provider
+  // unregistered — a dropped or not-yet-reconnected target — a local git run
+  // would answer from whatever repository sits at that same path on this
+  // machine, silently and without an error.
+  it('never reads HEAD or tracked upstreams with local git for a disconnected SSH repo', async () => {
+    getSshGitProviderMock.mockReturnValue(undefined)
+    getOwnerRepoMock.mockResolvedValue({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: JSON.stringify([]) })
+    // A local repository at the same path, ready to answer if consulted.
+    gitExecFileAsyncMock.mockResolvedValue({
+      stdout: 'wrong-repo-oid\nfeature\0refs/remotes/origin/wrong-branch\n',
+      stderr: ''
+    })
+
+    await getPRForBranch('/repo-root', 'feature', null, 'ssh-1')
+
+    const localProbes = gitExecFileAsyncMock.mock.calls.filter(([args]) =>
+      ['rev-parse', 'for-each-ref'].includes((args as string[])[0] ?? '')
+    )
+    expect(localProbes).toEqual([])
+  })
+
+  it('still probes with local git when the repo is not connection-backed', async () => {
+    getSshGitProviderMock.mockReturnValue(undefined)
+    getOwnerRepoMock.mockResolvedValue({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: JSON.stringify([]) })
+    gitExecFileAsyncMock.mockResolvedValue({ stdout: 'feature\0\n', stderr: '' })
+
+    await getPRForBranch('/repo-root', 'feature')
+
+    const localProbes = gitExecFileAsyncMock.mock.calls.filter(([args]) =>
+      ['rev-parse', 'for-each-ref'].includes((args as string[])[0] ?? '')
+    )
+    expect(localProbes.length).toBeGreaterThan(0)
+  })
+
   it('bounds unique tracked-upstream snapshots and sweeps expired identities', async () => {
     vi.useFakeTimers()
     try {
