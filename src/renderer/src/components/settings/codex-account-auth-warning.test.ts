@@ -105,6 +105,22 @@ describe('codex account auth warning', () => {
     ).toBeNull()
   })
 
+  // Why: AccountsPane can only resolve authKind for the host home, so a WSL
+  // system default arrives with authKind undefined (#9313). The ChatGPT-only
+  // rate-limit rejection must still not read as a re-auth the user can act on.
+  it('does not mislabel a WSL system default with unresolved identity as needing re-authentication', () => {
+    expect(
+      getCodexAccountAuthWarning({
+        limits: codexLimits('chatgpt authentication required to read rate limits'),
+        target: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        runtime: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        activeAccountId: null,
+        accountId: null,
+        authKind: undefined
+      })
+    ).toBeNull()
+  })
+
   it('warns only when the active system default has no usable login', () => {
     const getWarning = (authKind: 'none' | 'api-key' | 'oauth') =>
       getCodexAccountAuthWarning({
