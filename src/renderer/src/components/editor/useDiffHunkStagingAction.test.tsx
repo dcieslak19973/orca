@@ -11,6 +11,7 @@ const { storeState, stageHunkMock, unstageHunkMock, refreshMock, toastErrorMock 
     storeState: {
       settings: { activeRuntimeEnvironmentId: null },
       gitStatusByWorktree: {} as Record<string, GitStatusEntry[]>,
+      worktreesByRepo: {} as Record<string, { id: string; path: string }[]>,
       setGitStatus: vi.fn(),
       updateWorktreeGitIdentity: vi.fn(),
       setUpstreamStatus: vi.fn(),
@@ -66,6 +67,7 @@ describe('useDiffHunkStagingAction', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     storeState.gitStatusByWorktree = { [WORKTREE]: [entry('unstaged')] }
+    storeState.worktreesByRepo = {}
     refreshMock.mockResolvedValue(undefined)
     stageHunkMock.mockResolvedValue(undefined)
   })
@@ -104,6 +106,39 @@ describe('useDiffHunkStagingAction', () => {
 
     expect(stageHunkMock).toHaveBeenCalledWith(expect.anything(), 'src/a.ts', RANGE)
     expect(reloadContent).toHaveBeenCalledTimes(1)
+  })
+
+  // Why: slicing filePath by relativePath length yields a truncated root whenever the
+  // two disagree on separators or casing; the worktree record is authoritative.
+  it('takes the worktree root from the worktree record, not a suffix slice', async () => {
+    storeState.worktreesByRepo = { 'repo-1': [{ id: WORKTREE, path: 'C:\\repo' }] }
+    const file = { ...unstagedDiffFile(), filePath: 'C:\\repo\\src\\a.ts' } as OpenFile
+    const { result } = renderHook(() =>
+      useDiffHunkStagingAction(file, [entry('unstaged')], vi.fn())
+    )
+
+    await act(async () => {
+      await result.current?.applyHunk(RANGE)
+    })
+
+    expect(stageHunkMock).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreePath: 'C:\\repo' }),
+      'src/a.ts',
+      RANGE
+    )
+  })
+
+  it('skips the apply when no worktree record and the paths do not line up', async () => {
+    const file = { ...unstagedDiffFile(), filePath: '/elsewhere/other.ts' } as OpenFile
+    const { result } = renderHook(() =>
+      useDiffHunkStagingAction(file, [entry('unstaged')], vi.fn())
+    )
+
+    await act(async () => {
+      await result.current?.applyHunk(RANGE)
+    })
+
+    expect(stageHunkMock).not.toHaveBeenCalled()
   })
 
   it('forces a reload when the status refresh fails', async () => {

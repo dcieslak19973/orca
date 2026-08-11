@@ -13,6 +13,30 @@ import { shouldReloadDiffOnGitStatusChange } from './editor-panel-diff-reload'
 import type { DiffHunkStagingConfig } from './useDiffHunkStaging'
 
 /**
+ * Worktree root for the file. Prefers the worktree record; the suffix slice is a
+ * fallback and is rejected unless filePath actually ends with relativePath, since
+ * separator or casing drift would otherwise yield a truncated root.
+ */
+function resolveWorktreePath(
+  state: ReturnType<typeof useAppStore.getState>,
+  activeFile: OpenFile
+): string | null {
+  for (const worktrees of Object.values(state.worktreesByRepo ?? {})) {
+    const worktree = worktrees?.find((w) => w.id === activeFile.worktreeId)
+    if (worktree?.path) {
+      return worktree.path
+    }
+  }
+  const { filePath, relativePath } = activeFile
+  const suffix = filePath.slice(filePath.length - relativePath.length)
+  const separator = filePath[filePath.length - relativePath.length - 1]
+  if (suffix !== relativePath || (separator !== '/' && separator !== '\\')) {
+    return null
+  }
+  return filePath.slice(0, filePath.length - relativePath.length - 1)
+}
+
+/**
  * Per-hunk stage/unstage action for the active diff tab, or undefined when the
  * tab isn't an unstaged/staged diff with a matching tracked status row.
  */
@@ -37,13 +61,14 @@ export function useDiffHunkStagingAction(
       if (!scope) {
         return
       }
-      const worktreePath = activeFile.filePath.slice(
-        0,
-        activeFile.filePath.length - activeFile.relativePath.length - 1
-      )
+      const preApplyState = useAppStore.getState()
+      const worktreePath = resolveWorktreePath(preApplyState, activeFile)
+      if (!worktreePath) {
+        return
+      }
       const connectionId = getConnectionIdForFile(activeFile.worktreeId, activeFile.filePath)
       const settings = settingsForRuntimeOwner(
-        useAppStore.getState().settings,
+        preApplyState.settings,
         activeFile.runtimeEnvironmentId
       )
       const context = {

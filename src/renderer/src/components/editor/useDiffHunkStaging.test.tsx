@@ -94,9 +94,8 @@ describe('useDiffHunkStaging', () => {
     expect(button(host).style.display).toBe('none')
   })
 
-  // Why: hoverLineRef intentionally survives mouse-leave so a click in the gap between the content
-  // area and the button still resolves to a line. That means a scroll must not treat a live ref as
-  // permission to re-show, or keyboard/programmatic scrolling pops the button up under no cursor.
+  // Why: hoverLineRef survives mouse-leave by design, so a scroll must not read a live ref as
+  // permission to re-show — that pops the button up under no cursor.
   it('stays hidden when a scroll arrives after the pointer left the editor', () => {
     const { host, handlers, scrollTo } = setup()
     handlers.mouseMove({ target: { position: { lineNumber: 5 } }, event: {} })
