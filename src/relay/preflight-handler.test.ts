@@ -169,12 +169,12 @@ describe('resolveRelayCommandPath', () => {
     expect(execFileAsyncMock).toHaveBeenNthCalledWith(1, '/bin/zsh', lookupArgs('codex', '-ilc'), {
       encoding: 'utf-8',
       env: expect.objectContaining({ SHELL: '/bin/zsh' }),
-      timeout: 5000
+      timeout: 2000
     })
     expect(execFileAsyncMock).toHaveBeenNthCalledWith(2, '/bin/sh', lookupArgs('codex'), {
       encoding: 'utf-8',
       env: expect.objectContaining({ SHELL: '/bin/zsh' }),
-      timeout: 5000
+      timeout: 2000
     })
   })
 
@@ -207,7 +207,7 @@ describe('resolveRelayCommandPath', () => {
     expect(execFileAsyncMock).toHaveBeenCalledWith('/bin/sh', lookupArgs('codex'), {
       encoding: 'utf-8',
       env: expect.objectContaining({ SHELL: '/tmp/zsh' }),
-      timeout: 5000
+      timeout: 2000
     })
   })
 })
@@ -419,8 +419,8 @@ describe('preflight.detectForgeClis', () => {
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       '/usr/local/bin/forge-cli',
       ['auth', 'status'],
-      // Why: must stay under the caller's 8s REMOTE_FORGE_PROBE_TIMEOUT_MS.
-      expect.objectContaining({ timeout: 6_000 })
+      // Why: lookup + auth together must stay under the caller's 8s budget.
+      expect.objectContaining({ timeout: 5_000 })
     )
   })
 

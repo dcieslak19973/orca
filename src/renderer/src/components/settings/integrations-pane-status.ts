@@ -85,19 +85,13 @@ function bitbucketStatusFromPreflight(status: PreflightStatus['bitbucket']): Bit
   return status.authenticated ? 'connected' : 'not-authenticated'
 }
 
-// Local card state as reported by the two CLI cards; kept structurally
-// compatible with CliProviderCardState (source-control-preflight-card-status.ts)
-// without importing it, to avoid a cross-module type cycle.
+// Structurally compatible with CliProviderCardState, not imported, to avoid a type cycle.
 type LocalCliCardState = GhStatus | 'unavailable'
 
 /** Host answer for one CLI, as attached to `PreflightStatus.hostForge`. */
 type HostForgeStatus = NonNullable<PreflightStatus['hostForge']>
 
-/**
- * Hint to show on a CLI card when the SSH execution host already has the
- * CLI installed and authenticated, but the local card state hasn't caught
- * up yet — i.e. the host answer is strictly better than the local one.
- */
+/** Hint for a CLI card when the SSH host's answer is strictly better than the local one. */
 export function deriveHostForgeHint(
   cli: ForgeCliName,
   cardState: LocalCliCardState,
