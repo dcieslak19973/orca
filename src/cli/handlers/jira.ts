@@ -187,11 +187,7 @@ export const JIRA_HANDLERS: Record<string, CommandHandler> = {
     if (!response.result.ok) {
       throw new RuntimeClientError('invalid_argument', response.result.error)
     }
-    printResult(
-      response as { result: { ok: true } } & typeof response,
-      ctx.json,
-      () => `Commented on ${key}`
-    )
+    printResult(response, ctx.json, () => `Commented on ${key}`)
   },
   'jira status list': async (ctx) => {
     const response = await ctx.client.call<JiraTransition[]>('jira.listTransitions', {
