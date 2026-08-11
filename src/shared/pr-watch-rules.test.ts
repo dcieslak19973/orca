@@ -164,6 +164,16 @@ describe('validateWatchRules', () => {
     )
   })
 
+  it('rejects non-string regex conditions instead of coercing them', () => {
+    for (const key of ['title', 'branch'] as const) {
+      for (const bad of [42, null, {}, ['a']]) {
+        expect(() => validateWatchRules([{ name: 'X', when: { [key]: bad } }])).toThrow(
+          /must be a string/
+        )
+      }
+    }
+  })
+
   it('validates nested any groups and rejects mode-specific keys', () => {
     expect(() => validateWatchRules([{ name: 'X', when: { any: [] } }])).toThrow(/non-empty/)
     expect(() => validateWatchRules([{ name: 'X', when: { any: [{ bogus: 1 }] } }])).toThrow(

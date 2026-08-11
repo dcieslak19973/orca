@@ -244,12 +244,18 @@ function validateConditions(when: unknown, where: string): asserts when is PRWat
     }
   }
   for (const key of ['title', 'branch'] as const) {
-    if (rec[key] !== undefined) {
-      try {
-        new RegExp(rec[key] as string)
-      } catch {
-        throw new Error(`${where}: "${key}" is not a valid regex`)
-      }
+    const value = rec[key]
+    if (value === undefined) {
+      continue
+    }
+    // RegExp coerces: `title: 42` would silently compile as /42/ instead of failing.
+    if (typeof value !== 'string') {
+      throw new Error(`${where}: "${key}" must be a string`)
+    }
+    try {
+      new RegExp(value)
+    } catch {
+      throw new Error(`${where}: "${key}" is not a valid regex`)
     }
   }
   for (const key of ['labels', 'author', 'paths'] as const) {
