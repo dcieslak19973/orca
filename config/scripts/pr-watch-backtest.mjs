@@ -18,10 +18,22 @@ const { identifyMergedPR, extractRevertTargets } = await import(sharedUrl('forge
 const args = process.argv.slice(2)
 const argOf = (flag, fallback) => {
   const i = args.indexOf(flag)
-  return i >= 0 ? args[i + 1] : fallback
+  if (i < 0) {
+    return fallback
+  }
+  const value = args[i + 1]
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`${flag} requires a value`)
+    process.exit(1)
+  }
+  return value
 }
 const rulesPath = argOf('--rules', join(repoRoot, 'config', 'pr-watch-rules.example.yaml'))
 const windowSize = Number(argOf('--window', '8000'))
+if (!Number.isInteger(windowSize) || windowSize <= 0) {
+  console.error('--window must be a positive integer')
+  process.exit(1)
+}
 const historyRepo = argOf('--repo', repoRoot)
 
 const config = parseYaml(readFileSync(rulesPath, 'utf8'))
@@ -49,7 +61,7 @@ const log = execFileSync(
     '--date=short',
     // %b on its own lines: the record parser folds any non-numstat line into the
     // body, which is where GitLab's "See merge request !N" trailer lives.
-    '--format=@@@%an|%ad|%s%n%b'
+    '--format=@@@%H|%an|%ad|%s%n%b'
   ],
   { encoding: 'utf8', maxBuffer: 1 << 28 }
 )
@@ -59,17 +71,18 @@ const commits = []
 let cur = null
 for (const line of log.split('\n')) {
   if (line.startsWith('@@@')) {
-    const [author, date, ...rest] = line.slice(3).split('|')
+    const [hash, author, date, ...rest] = line.slice(3).split('|')
     const subject = rest.join('|')
-    // Old git can emit one header per merge parent under -m; keep the
-    // first-parent record and fold duplicates.
-    if (cur && cur.author === author && cur.date === date && cur.subject === subject) {
+    // Under -m git emits one diff section per merge parent (repeating the header);
+    // --first-parent limits the walk, and the mainline diff is always first. Fold
+    // repeat headers by commit hash, keeping that first (first-parent) section.
+    if (cur && cur.hash === hash) {
       continue
     }
     if (cur) {
       commits.push(cur)
     }
-    cur = { author, date, subject, body: [], paths: [], churn: 0 }
+    cur = { hash, author, date, subject, body: [], paths: [], churn: 0 }
     continue
   }
   if (!cur) {
@@ -166,9 +179,16 @@ const dist = (values) => {
 }
 const percentiles = {
   files: dist(prs.map((p) => p.input.files)),
-  churn: dist(prs.map((p) => p.input.churn))
+  churn: dist(prs.map((p) => p.input.churn)),
+  authorMergedPRs: dist(prs.map((p) => p.input.authorMergedPRs))
 }
 
+if (prs.length === 0) {
+  console.error(
+    `no merged PRs identified in the last ${windowSize} commits (unattributable merges: ${unidentified})`
+  )
+  process.exit(1)
+}
 const totalReverts = prs.filter((p) => p.reverted).length
 const months = ((new Date(prs.at(-1).date) - new Date(prs[0].date)) / 2.63e9).toFixed(1)
 const forgeSummary = [...forgeCounts.entries()].map(([f, n]) => `${f}:${n}`).join(' ')
@@ -193,9 +213,9 @@ if (chipRules.length) {
   const header = `${'rule'.padEnd(24)}${'fires'.padStart(7)}   % of PRs${showReverts ? '   reverts caught' : ''}`
   console.log(`${header}\n${'-'.repeat(header.length + 4)}`)
   for (const rule of chipRules) {
-    const hits = prs.filter((p) =>
-      evaluateWatchRules([rule], p.input, { percentiles }).some((m) => !m.pending)
-    )
+    const verdicts = prs.map((p) => evaluateWatchRules([rule], p.input, { percentiles })[0])
+    const hits = prs.filter((_, i) => verdicts[i] && !verdicts[i].pending)
+    const pendingCount = verdicts.filter((v) => v?.pending).length
     const caught = hits.filter((p) => p.reverted).length
     let line = `${rule.name.slice(0, 23).padEnd(24)}${String(hits.length).padStart(7)}${pct(hits.length, prs.length).padStart(11)}`
     if (showReverts) {
@@ -203,6 +223,10 @@ if (chipRules.length) {
     }
     console.log(line)
     if (hits.length === 0) {
+      if (pendingCount === prs.length) {
+        console.log('    UNEVALUABLE: needs data the backtest does not collect (labels/branch)')
+        continue
+      }
       console.log(
         prs.length >= 200
           ? '    DEAD: matched nothing across a large history — delete or fix it'

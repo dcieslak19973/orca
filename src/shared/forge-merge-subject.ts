@@ -20,6 +20,8 @@ const SUBJECT_FORMS: { re: RegExp; forge: MergedPRIdentity['forge'] }[] = [
 ]
 const GITLAB_BODY_RE = /See merge request (?:[\w./-]+)?!(\d+)/i
 const GITLAB_REVERT_BODY_RE = /This reverts merge request !(\d+)/i
+// GitHub PR-UI reverts carry `Reverts owner/repo#123` in the body, no subject number.
+const GITHUB_REVERT_BODY_RE = /Reverts\s+[\w.-]+\/[\w.-]+#(\d+)/i
 
 export function identifyMergedPR(subject: string, body?: string): MergedPRIdentity {
   for (const { re, forge } of SUBJECT_FORMS) {
@@ -64,6 +66,8 @@ export function extractRevertTargets(subject: string, body?: string): RevertTarg
     return { targets: unquoted, quotedTitle }
   }
 
-  const fromBody = body ? GITLAB_REVERT_BODY_RE.exec(body) : null
+  const fromBody = body
+    ? (GITLAB_REVERT_BODY_RE.exec(body) ?? GITHUB_REVERT_BODY_RE.exec(body))
+    : null
   return { targets: fromBody ? [Number(fromBody[1])] : [], quotedTitle }
 }

@@ -12,7 +12,7 @@ pr_watch:
     note: New stream opcodes must be capability-negotiated — decoders drop unknown ones silently
 
   - name: Windows setup shell
-    when: { paths: ["src/main/wsl*", "docs/reference/windows-setup-shell.md"] }
+    when: { paths: ["src/main/**/wsl*", "docs/reference/windows-setup-shell.md"] }
     note: .cmd runner rules — never derive from terminal-shell preference (AGENTS.md)
 
 review_queue:

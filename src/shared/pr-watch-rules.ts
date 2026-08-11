@@ -4,61 +4,33 @@
  * docs/superpowers/specs/2026-08-07-pr-watch-rules-design.md.
  */
 
-export type PRWatchInput = {
-  title: string
-  labels?: string[]
-  author?: string | null
-  branchName?: string
-  /** undefined = not fetched yet; [] = fetched and genuinely empty */
-  paths?: string[]
-  draft?: boolean
-  mergeable?: 'conflicting' | 'mergeable' | 'unknown'
-  files?: number
-  churn?: number
-  /** undefined = not loaded; 0 = loaded, author has no merged PRs */
-  authorMergedPRs?: number
-}
-
-export type PRWatchConditions = {
-  scope?: string | string[]
-  type?: string | string[]
-  title?: string
-  labels?: string[]
-  author?: string[]
-  branch?: string
-  paths?: string[]
-  draft?: boolean
-  mergeable?: 'conflicting' | 'mergeable' | 'unknown'
-  files?: string
-  churn?: string
-  authorMergedPRs?: string
-  /** ORed condition groups, ANDed with any sibling conditions. */
-  any?: PRWatchConditions[]
-}
-
-export type PRWatchRule = { name: string; when: PRWatchConditions; note?: string }
-export type PRWatchTierRule = PRWatchRule & {
-  action?: 'bounce'
-  slot?: 'deep'
-  batchBy?: 'author'
-}
-
-export type PRWatchMatch = { rule: string; note?: string; pending: boolean }
-
-export type PercentileDistribution = Partial<
-  Record<
-    'files' | 'churn' | 'authorMergedPRs',
-    Partial<Record<'p50' | 'p75' | 'p90' | 'p95', number>>
-  >
->
-export type EvaluateOptions = { percentiles?: PercentileDistribution }
+import type {
+  EvaluateOptions,
+  PRWatchConditions,
+  PRWatchInput,
+  PRWatchMatch,
+  PRWatchRule,
+  PRWatchTierRule,
+  TierResult
+} from './pr-watch-rules-types'
 
 // 'no' beats 'pending' under AND (a definite miss can't become a match);
 // 'match' beats 'pending' under OR.
 type Verdict = 'match' | 'no' | 'pending'
 
 const COMPARISON_RE = /^(>=|<=|>|<|==)\s*(p50|p75|p90|p95|\d+)$/
-const CONVENTIONAL_RE = /^([a-z]+)(?:\(([a-z0-9/._-]+)\))?\s*:/i
+const CONVENTIONAL_RE = /^([a-z]+)(?:\(([a-z0-9/._-]+)\))?!?\s*:/i
+
+// Rule regexes/globs are recompiled per PR by the backtest; memoize by source.
+const regexCache = new Map<string, RegExp>()
+const regexFor = (pattern: string): RegExp => {
+  let re = regexCache.get(pattern)
+  if (re === undefined) {
+    re = new RegExp(pattern, 'i')
+    regexCache.set(pattern, re)
+  }
+  return re
+}
 
 export function parseConventionalTitle(title: string): {
   type: string | null
@@ -68,7 +40,12 @@ export function parseConventionalTitle(title: string): {
   return { type: m?.[1]?.toLowerCase() ?? null, scope: m?.[2]?.toLowerCase() ?? null }
 }
 
+const globCache = new Map<string, RegExp>()
 function globToRegExp(glob: string): RegExp {
+  const cached = globCache.get(glob)
+  if (cached !== undefined) {
+    return cached
+  }
   let out = '^'
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]
@@ -83,10 +60,12 @@ function globToRegExp(glob: string): RegExp {
     } else if (c === '?') {
       out += '[^/]'
     } else {
-      out += /[a-zA-Z0-9/_-]/.test(c) ? c : `\\${c}`
+      out += /[.*+?^${}()|[\]\\]/.test(c) ? `\\${c}` : c
     }
   }
-  return new RegExp(`${out}$`)
+  const re = new RegExp(`${out}$`)
+  globCache.set(glob, re)
+  return re
 }
 
 const eqFold = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
@@ -147,10 +126,10 @@ function evaluateConditions(
     )
   }
   if (when.title !== undefined) {
-    verdicts.push(bool(new RegExp(when.title, 'i').test(input.title)))
+    verdicts.push(bool(regexFor(when.title).test(input.title)))
   }
   if (when.branch !== undefined) {
-    verdicts.push(known(input.branchName, (b) => bool(new RegExp(when.branch!, 'i').test(b))))
+    verdicts.push(known(input.branchName, (b) => bool(regexFor(when.branch!).test(b))))
   }
   if (when.labels !== undefined) {
     verdicts.push(
@@ -158,8 +137,11 @@ function evaluateConditions(
     )
   }
   if (when.author !== undefined) {
+    // null = no author (deleted account): a definite miss, not pending.
     verdicts.push(
-      known(input.author ?? undefined, (a) => bool(when.author!.some((w) => eqFold(w, a))))
+      input.author === null
+        ? 'no'
+        : known(input.author, (a) => bool(when.author!.some((w) => eqFold(w, a))))
     )
   }
   if (when.paths !== undefined) {
@@ -208,8 +190,6 @@ export function evaluateWatchRules(
   return out
 }
 
-export type TierResult = { tier: string | null; pending: boolean }
-
 /**
  * Tier mode: ordered, first-match-wins, implicit catch-all (tier: null). A pending
  * rule stops the walk with a tentative assignment — absence of data must never let
@@ -231,6 +211,8 @@ export function classifyReviewQueueTier(
 
 const RULE_KEYS = new Set(['name', 'when', 'note'])
 const TIER_KEYS = new Set(['name', 'when', 'note', 'action', 'slot', 'batchBy'])
+// Untrusted YAML keys: Set membership avoids the prototype-chain hits a plain
+// object would report as valid (e.g. `constructor`, `toString`).
 const CONDITION_KEYS = new Set([
   'scope',
   'type',
@@ -270,6 +252,33 @@ function validateConditions(when: unknown, where: string): asserts when is PRWat
       }
     }
   }
+  for (const key of ['labels', 'author', 'paths'] as const) {
+    const v = rec[key]
+    if (v !== undefined && !(Array.isArray(v) && v.every((e) => typeof e === 'string'))) {
+      throw new Error(`${where}: "${key}" must be an array of strings`)
+    }
+  }
+  for (const key of ['scope', 'type'] as const) {
+    const v = rec[key]
+    if (
+      v !== undefined &&
+      typeof v !== 'string' &&
+      !(Array.isArray(v) && v.every((e) => typeof e === 'string'))
+    ) {
+      throw new Error(`${where}: "${key}" must be a string or an array of strings`)
+    }
+  }
+  if (rec.draft !== undefined && typeof rec.draft !== 'boolean') {
+    throw new Error(`${where}: "draft" must be true or false`)
+  }
+  if (
+    rec.mergeable !== undefined &&
+    rec.mergeable !== 'conflicting' &&
+    rec.mergeable !== 'mergeable' &&
+    rec.mergeable !== 'unknown'
+  ) {
+    throw new Error(`${where}: "mergeable" must be conflicting, mergeable, or unknown`)
+  }
   for (const key of ['files', 'churn', 'authorMergedPRs'] as const) {
     if (rec[key] !== undefined && !COMPARISON_RE.test(String(rec[key]))) {
       throw new Error(`${where}: "${key}" must be a comparison like ">=19" or ">=p90"`)
@@ -288,16 +297,13 @@ function validateRuleList(raw: unknown, allowedKeys: Set<string>, label: string)
     throw new Error(`${label} must be an array of rules`)
   }
   const seen = new Set<string>()
-  for (const [i, rule] of raw.entries()) {
+  for (let i = 0; i < raw.length; i++) {
+    const rule: unknown = raw[i]
     const where = `${label}[${i}]`
-    if (
-      !rule ||
-      typeof rule !== 'object' ||
-      typeof (rule as { name?: unknown }).name !== 'string'
-    ) {
+    if (!rule || typeof rule !== 'object' || !('name' in rule) || typeof rule.name !== 'string') {
       throw new Error(`${where}: every rule needs a string "name"`)
     }
-    const name = (rule as { name: string }).name
+    const name = rule.name
     if (seen.has(name)) {
       throw new Error(`${label}: duplicate rule name "${name}"`)
     }
@@ -307,7 +313,7 @@ function validateRuleList(raw: unknown, allowedKeys: Set<string>, label: string)
         throw new Error(`${where} ("${name}"): unknown key "${key}"`)
       }
     }
-    validateConditions((rule as { when?: unknown }).when, `${where} ("${name}")`)
+    validateConditions('when' in rule ? rule.when : undefined, `${where} ("${name}")`)
   }
 }
 

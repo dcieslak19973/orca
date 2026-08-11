@@ -72,6 +72,13 @@ describe('extractRevertTargets', () => {
     ).toEqual({ targets: [456], quotedTitle: 'Resolve login bug' })
   })
 
+  it('extracts GitHub revert targets from the PR-UI body trailer', () => {
+    expect(extractRevertTargets('Revert "feat: x" (#456)', 'Reverts stablyai/orca#123')).toEqual({
+      targets: [123],
+      quotedTitle: 'feat: x'
+    })
+  })
+
   it('returns the quoted title alone when no number is recoverable', () => {
     expect(extractRevertTargets('Revert "Improve startup timing"')).toEqual({
       targets: [],

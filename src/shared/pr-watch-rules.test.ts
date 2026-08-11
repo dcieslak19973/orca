@@ -18,6 +18,8 @@ describe('parseConventionalTitle', () => {
     expect(parseConventionalTitle('Feat(SSH): y')).toEqual({ type: 'feat', scope: 'ssh' })
     expect(parseConventionalTitle('docs: z')).toEqual({ type: 'docs', scope: null })
     expect(parseConventionalTitle('Add a thing')).toEqual({ type: null, scope: null })
+    expect(parseConventionalTitle('feat(api)!: drop v1')).toEqual({ type: 'feat', scope: 'api' })
+    expect(parseConventionalTitle('feat!: drop v1')).toEqual({ type: 'feat', scope: null })
   })
 })
 
@@ -120,6 +122,14 @@ describe('evaluateWatchRules (chip mode)', () => {
       { rule: 'New', note: undefined, pending: true }
     ])
   })
+
+  it('treats a null author as a definite miss, not pending', () => {
+    const r = validateWatchRules([{ name: 'A', when: { author: ['nwparker'] } }])
+    expect(evaluateWatchRules(r, input({ author: null }))).toEqual([])
+    expect(evaluateWatchRules(r, input({}))).toEqual([
+      { rule: 'A', note: undefined, pending: true }
+    ])
+  })
 })
 
 describe('validateWatchRules', () => {
@@ -134,6 +144,35 @@ describe('validateWatchRules', () => {
     expect(() => validateWatchRules([{ name: 'X', when: {} }])).toThrow(/condition/i)
     expect(() => validateWatchRules([{ name: 'X', when: { title: '(' } }])).toThrow(/regex/i)
     expect(() => validateWatchRules([{ name: 'X', when: { files: 'p90' } }])).toThrow(/comparison/i)
+  })
+
+  it('rejects malformed condition value shapes', () => {
+    expect(() => validateWatchRules([{ name: 'X', when: { labels: 'bug' } }])).toThrow(
+      /array of strings/
+    )
+    expect(() => validateWatchRules([{ name: 'X', when: { paths: 'src/**' } }])).toThrow(
+      /array of strings/
+    )
+    expect(() => validateWatchRules([{ name: 'X', when: { scope: [1] } }])).toThrow(
+      /string or an array/
+    )
+    expect(() => validateWatchRules([{ name: 'X', when: { draft: 'yes' } }])).toThrow(
+      /true or false/
+    )
+    expect(() => validateWatchRules([{ name: 'X', when: { mergeable: 'conflict' } }])).toThrow(
+      /conflicting/
+    )
+  })
+
+  it('validates nested any groups and rejects mode-specific keys', () => {
+    expect(() => validateWatchRules([{ name: 'X', when: { any: [] } }])).toThrow(/non-empty/)
+    expect(() => validateWatchRules([{ name: 'X', when: { any: [{ bogus: 1 }] } }])).toThrow(
+      /bogus/
+    )
+    expect(() => validateWatchRules([{ name: 'X', when: { scope: 'a' }, slot: 'deep' }])).toThrow(
+      /unknown key/
+    )
+    expect(validateTierRules([{ name: 'X', when: { scope: 'a' }, slot: 'deep' }])).toHaveLength(1)
   })
 })
 
