@@ -36,10 +36,11 @@ const SUPPORTED_POSIX_SHELLS = new Set(['sh', 'dash', 'bash', 'zsh', 'fish'])
 const CONSERVATIVE_SYSTEM_SHELL_DIRS = new Set(['/bin', '/usr/bin'])
 const AGENT_PATH_PREFIX = '__ORCA_AGENT_PATH__'
 const FORGE_CLI_ALLOWLIST = new Set(['gh', 'glab'])
-// Why: the caller (REMOTE_FORGE_PROBE_TIMEOUT_MS in src/main/ipc/preflight.ts)
-// abandons this request at 8s. Finishing under that leaves the relay a window
-// to answer instead of working on a result nobody is waiting for.
-const FORGE_AUTH_TIMEOUT_MS = 6_000
+// Why: the caller abandons at 8s (REMOTE_FORGE_PROBE_TIMEOUT_MS in
+// src/main/ipc/preflight.ts), and a forge probe pays lookup then auth, so both
+// budgets together must stay under it.
+const RELAY_COMMAND_LOOKUP_TIMEOUT_MS = 2_000
+const FORGE_AUTH_TIMEOUT_MS = 5_000
 
 export class PreflightHandler {
   private dispatcher: RelayDispatcher
@@ -171,9 +172,8 @@ async function isForgeCliAuthenticated(cli: 'gh' | 'glab', executable: string): 
     })
     return true
   } catch (error) {
-    // Why: execFile preserves stdout/stderr when `timeout` kills the child, so
-    // a hung `auth status` that had already printed "Logged in" would otherwise
-    // read as authenticated. A killed probe is "unknown", never a yes.
+    // Why: killed or timed-out probes keep partial output, so a hung `auth status`
+    // that already printed "Logged in" must read as unknown, never a yes.
     const failure = error as {
       stdout?: string
       stderr?: string
@@ -253,7 +253,7 @@ export async function resolveRelayCommandPath(
       const { stdout } = await execFileAsync(spec.file, spec.args, {
         encoding: 'utf-8',
         env: buildRelayCommandEnv(env, platform),
-        timeout: 5000,
+        timeout: RELAY_COMMAND_LOOKUP_TIMEOUT_MS,
         ...(spec.windowsHide ? { windowsHide: true } : {})
       })
       const resolved = firstAbsoluteCommandPath(stdout, platform)
