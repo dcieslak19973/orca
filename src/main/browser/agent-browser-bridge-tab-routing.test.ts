@@ -247,6 +247,17 @@ describe('AgentBrowserBridge', () => {
     )
     expect(closeCall).toBeTruthy()
     expect(closeCall![1]).toEqual(['--session', 'orca-tab-tab-1', 'close'])
+    expect(closeCall![2]).toEqual(expect.objectContaining({ windowsHide: true }))
+  })
+
+  it('hides the agent-browser console window for ordinary commands', async () => {
+    succeedWith({ snapshot: 'tree' })
+    await bridge.snapshot()
+
+    const snapshotCall = execFileMock.mock.calls.find((call: unknown[]) =>
+      (call[1] as string[]).includes('snapshot')
+    )
+    expect(snapshotCall?.[2]).toEqual(expect.objectContaining({ windowsHide: true }))
   })
 
   it('repairs per-worktree active routing when the active tab closes', async () => {

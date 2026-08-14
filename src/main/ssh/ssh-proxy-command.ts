@@ -103,7 +103,8 @@ export function spawnProxyCommand(
       ? // Why: ProxyJump is structured input, not a shell snippet. Spawn ssh
         // directly so jump-host values cannot escape through shell parsing.
         spawn('ssh', jumpHostSpawnArgs(proxy.jumpHost, host, port), {
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
         })
       : (() => {
           const escape = process.platform === 'win32' ? cmdEscape : shellEscape
@@ -114,6 +115,7 @@ export function spawnProxyCommand(
           const shell = getShellSpawnConfig(expanded)
           return spawn(shell.file, shell.args, {
             stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true,
             windowsVerbatimArguments: shell.windowsVerbatimArguments
           })
         })()

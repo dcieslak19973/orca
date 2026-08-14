@@ -601,6 +601,41 @@ describe('importCookiesFromBrowser Chromium', () => {
     }
   })
 
+  it('hides the DPAPI PowerShell console window on Windows', async () => {
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    createChromiumCookieTestDatabase(sourceCookiesPath, [
+      { name: 'sid', value: '', encryptedValue: Buffer.from('v10-encrypted') }
+    ]).close()
+    createChromiumCookieTestDatabase(targetCookiesPath, []).close()
+    const localState = join(tmpDir, 'localappdata', 'Google', 'Chrome', 'User Data', 'Local State')
+    mkdirSync(join(localState, '..'), { recursive: true })
+    writeFileSync(
+      localState,
+      JSON.stringify({
+        os_crypt: { encrypted_key: Buffer.from('DPAPIsealed-key').toString('base64') }
+      })
+    )
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const previousLocalAppData = process.env.LOCALAPPDATA
+    process.env.LOCALAPPDATA = join(tmpDir, 'localappdata')
+
+    try {
+      await importCookiesFromBrowser(chromeBrowser(sourceCookiesPath), 'persist:test')
+      const powershellCall = execFileSyncMock.mock.calls.find(
+        ([command]) => command === 'powershell'
+      )
+      expect(powershellCall?.[2]).toEqual(expect.objectContaining({ windowsHide: true }))
+    } finally {
+      platformSpy.mockRestore()
+      if (previousLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA
+      } else {
+        process.env.LOCALAPPDATA = previousLocalAppData
+      }
+    }
+  })
+
   it('removes staging data when the OS key is unavailable', async () => {
     const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
     const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')

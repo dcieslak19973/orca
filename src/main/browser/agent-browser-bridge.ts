@@ -2604,7 +2604,7 @@ export class AgentBrowserBridge {
         child = execFile(
           this.agentBrowserBin,
           ['--session', sessionName, 'close'],
-          { timeout: STALE_SESSION_CLOSE_TIMEOUT_MS },
+          { timeout: STALE_SESSION_CLOSE_TIMEOUT_MS, windowsHide: true },
           (error) =>
             finish(
               error
@@ -2667,6 +2667,7 @@ export class AgentBrowserBridge {
         {
           timeout: execOptions?.timeoutMs ?? EXEC_TIMEOUT_MS,
           maxBuffer: 50 * 1024 * 1024,
+          windowsHide: true,
           env: execOptions?.envOverrides
             ? { ...process.env, ...execOptions.envOverrides }
             : process.env

@@ -118,6 +118,35 @@ describe('spawnProxyCommand', () => {
     )
   })
 
+  it('hides console windows for jump-host and ProxyCommand spawns', () => {
+    spawnMock.mockReturnValue(createMockProxyProcess())
+
+    spawnProxyCommand(
+      { kind: 'jump-host', jumpHost: 'bastion.example.com' },
+      'target.example.com',
+      22,
+      'deploy'
+    )
+    expect(spawnMock).toHaveBeenCalledWith(
+      'ssh',
+      ['-W', 'target.example.com:22', '--', 'bastion.example.com'],
+      expect.objectContaining({ windowsHide: true })
+    )
+
+    spawnMock.mockClear()
+    spawnProxyCommand(
+      { kind: 'proxy-command', command: 'nc %h %p' },
+      'target.example.com',
+      22,
+      'deploy'
+    )
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({ windowsHide: true })
+    )
+  })
+
   it('pauses the proxy stdout when the transport stream applies backpressure', () => {
     const proc = createMockProxyProcess()
     spawnMock.mockReturnValue(proc)

@@ -276,7 +276,7 @@ export function resolveWithSshG(host: string): Promise<SshResolvedConfig | null>
       child = execFile(
         'ssh',
         sshGArgsForHost(host),
-        { timeout: SSH_G_TIMEOUT_MS },
+        { timeout: SSH_G_TIMEOUT_MS, windowsHide: true },
         (err, stdout) => {
           if (err) {
             settle(() => resolve(null))
