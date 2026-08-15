@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { renderHook, act } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GitStatusEntry } from '../../../../shared/types'
+import type { GitStatusEntry } from '../../../../shared/git-status-types'
 import type { OpenFile } from '@/store/slices/editor'
 
 const { storeState, stageHunkMock, unstageHunkMock, refreshMock, toastErrorMock } = vi.hoisted(
