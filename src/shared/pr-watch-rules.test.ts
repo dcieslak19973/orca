@@ -54,6 +54,24 @@ describe('evaluateWatchRules (chip mode)', () => {
     ).toEqual(['Big fix'])
   })
 
+  it('sizes a deletion-heavy PR by additions, not by additions plus deletions', () => {
+    const r = validateWatchRules([
+      { name: 'Deep', when: { additions: '>=p90' } },
+      { name: 'Pruning', when: { deletions: '>=500' } }
+    ])
+    const percentiles = { additions: { p90: 1183 }, churn: { p90: 1405 } }
+    const simplification = input({ additions: 20, deletions: 1400, churn: 1420 })
+
+    expect(evaluateWatchRules(r, simplification, { percentiles }).map((m) => m.rule)).toEqual([
+      'Pruning'
+    ])
+    expect(
+      evaluateWatchRules(r, input({ additions: 1200, deletions: 10, churn: 1210 }), {
+        percentiles
+      }).map((m) => m.rule)
+    ).toEqual(['Deep'])
+  })
+
   it('matches scope, type, labels, and author case-insensitively', () => {
     const r = validateWatchRules([
       { name: 'L', when: { labels: ['Needs-QA'] } },

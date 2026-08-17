@@ -341,7 +341,7 @@ async function main() {
       if (cur) {
         commits.push(cur)
       }
-      cur = { hash, author, date, iso, subject, body: [], paths: [], churn: 0 }
+      cur = { hash, author, date, iso, subject, body: [], paths: [], additions: 0, deletions: 0 }
       continue
     }
     if (!cur) {
@@ -356,10 +356,10 @@ async function main() {
     }
     cur.paths.push(normalizeNumstatPath(m[3]))
     if (m[1] !== '-') {
-      cur.churn += Number(m[1])
+      cur.additions += Number(m[1])
     }
     if (m[2] !== '-') {
-      cur.churn += Number(m[2])
+      cur.deletions += Number(m[2])
     }
   }
   if (cur) {
@@ -413,7 +413,11 @@ async function main() {
         author: c.author,
         paths: c.paths,
         files: c.paths.length,
-        churn: c.churn,
+        additions: c.additions,
+        deletions: c.deletions,
+        // Why keep churn: rules that genuinely want one magnitude still resolve, but the
+        // split lets a deletion-heavy simplification stop sizing like an equal-sized rewrite.
+        churn: c.additions + c.deletions,
         draft: false, // merged history: never draft, never conflicting
         mergeable: 'mergeable',
         authorMergedPRs: prior
@@ -423,6 +427,8 @@ async function main() {
 
   const percentiles = {
     files: dist(prs.map((p) => p.input.files)),
+    additions: dist(prs.map((p) => p.input.additions)),
+    deletions: dist(prs.map((p) => p.input.deletions)),
     churn: dist(prs.map((p) => p.input.churn)),
     authorMergedPRs: dist(prs.map((p) => p.input.authorMergedPRs))
   }
@@ -443,7 +449,7 @@ async function main() {
     `merge subjects: ${forgeSummary || 'none identified'}${unidentified ? ` · unattributable merges excluded: ${unidentified}` : ''}`
   )
   console.log(
-    `calibration: files p50=${percentiles.files.p50} p90=${percentiles.files.p90} · churn p50=${percentiles.churn.p50} p90=${percentiles.churn.p90}`
+    `calibration: files p50=${percentiles.files.p50} p90=${percentiles.files.p90} · additions p50=${percentiles.additions.p50} p90=${percentiles.additions.p90} · deletions p50=${percentiles.deletions.p50} p90=${percentiles.deletions.p90} · churn p50=${percentiles.churn.p50} p90=${percentiles.churn.p90}`
   )
   const showReverts = totalReverts >= 20
   console.log(

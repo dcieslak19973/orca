@@ -6,6 +6,7 @@
 
 import type {
   EvaluateOptions,
+  NumericConditionKey,
   PRWatchConditions,
   PRWatchInput,
   PRWatchMatch,
@@ -19,6 +20,8 @@ import type {
 type Verdict = 'match' | 'no' | 'pending'
 
 const COMPARISON_RE = /^(>=|<=|>|<|==)\s*(p50|p75|p90|p95|\d+)$/
+// Superset of NumericConditionKey is caught by compare()'s parameter type.
+const NUMERIC_KEYS = ['files', 'additions', 'deletions', 'churn', 'authorMergedPRs'] as const
 const CONVENTIONAL_RE = /^([a-z]+)(?:\(([a-z0-9/._-]+)\))?!?\s*:/i
 
 // Rule regexes/globs are recompiled per PR by the backtest; memoize by source.
@@ -74,7 +77,7 @@ const anyOf = (v: string | string[]): string[] => (Array.isArray(v) ? v : [v])
 function compare(
   spec: string,
   value: number | undefined,
-  key: 'files' | 'churn' | 'authorMergedPRs',
+  key: NumericConditionKey,
   opts: EvaluateOptions
 ): Verdict {
   if (value === undefined) {
@@ -158,7 +161,7 @@ function evaluateConditions(
   if (when.mergeable !== undefined) {
     verdicts.push(known(input.mergeable, (s) => bool(s === when.mergeable)))
   }
-  for (const key of ['files', 'churn', 'authorMergedPRs'] as const) {
+  for (const key of NUMERIC_KEYS) {
     if (when[key] !== undefined) {
       verdicts.push(compare(when[key]!, input[key], key, opts))
     }
@@ -213,7 +216,7 @@ const RULE_KEYS = new Set(['name', 'when', 'note'])
 const TIER_KEYS = new Set(['name', 'when', 'note', 'action', 'slot', 'batchBy'])
 // Untrusted YAML keys: Set membership avoids the prototype-chain hits a plain
 // object would report as valid (e.g. `constructor`, `toString`).
-const CONDITION_KEYS = new Set([
+const CONDITION_KEYS = new Set<string>([
   'scope',
   'type',
   'title',
@@ -223,10 +226,8 @@ const CONDITION_KEYS = new Set([
   'paths',
   'draft',
   'mergeable',
-  'files',
-  'churn',
-  'authorMergedPRs',
-  'any'
+  'any',
+  ...NUMERIC_KEYS
 ])
 
 function validateConditions(when: unknown, where: string): asserts when is PRWatchConditions {
@@ -285,7 +286,7 @@ function validateConditions(when: unknown, where: string): asserts when is PRWat
   ) {
     throw new Error(`${where}: "mergeable" must be conflicting, mergeable, or unknown`)
   }
-  for (const key of ['files', 'churn', 'authorMergedPRs'] as const) {
+  for (const key of NUMERIC_KEYS) {
     if (rec[key] !== undefined && !COMPARISON_RE.test(String(rec[key]))) {
       throw new Error(`${where}: "${key}" must be a comparison like ">=19" or ">=p90"`)
     }

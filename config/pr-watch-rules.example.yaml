@@ -8,11 +8,11 @@ pr_watch:
     note: 9 reverts in 4 months — WebGL/repaint changes are hard to test
 
   - name: Remote wire
-    when: { paths: ["src/shared/rpc/**", "src/main/runtime/rpc/**"] }
+    when: { paths: ['src/shared/rpc/**', 'src/main/runtime/rpc/**'] }
     note: New stream opcodes must be capability-negotiated — decoders drop unknown ones silently
 
   - name: Windows setup shell
-    when: { paths: ["src/main/**/wsl*", "docs/reference/windows-setup-shell.md"] }
+    when: { paths: ['src/main/**/wsl*', 'docs/reference/windows-setup-shell.md'] }
     note: .cmd runner rules — never derive from terminal-shell preference (AGENTS.md)
 
 review_queue:
@@ -21,11 +21,12 @@ review_queue:
       when: { any: [{ draft: true }, { mergeable: conflicting }] }
       action: bounce
     - name: Deep review
-      when: { any: [{ files: ">=p90" }, { churn: ">=p90" }, { scope: terminal }] }
+      # Sized on additions, not additions+deletions: a large removal is not a large read.
+      when: { any: [{ files: '>=p90' }, { additions: '>=p90' }, { scope: terminal }] }
       slot: deep
     - name: New contributor
-      when: { authorMergedPRs: "==0" }
+      when: { authorMergedPRs: '==0' }
       note: First PR — calibration review; check workflows/CI files
     - name: Fast track
-      when: { files: "<=p50", churn: "<=p50", type: [fix, test, docs] }
+      when: { files: '<=p50', additions: '<=p50', type: [fix, test, docs] }
       batchBy: author
