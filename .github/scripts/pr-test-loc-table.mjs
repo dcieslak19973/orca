@@ -39,6 +39,7 @@ export function sumChangedFiles(files) {
 const COLOR_ADDED = '#1a7f37'
 const COLOR_DELETED = '#cf222e'
 
+// Added/Deleted keep the diffstat convention: the colour marks direction, not merit.
 function diffCell(count) {
   if (count === 0) {
     return '0'
@@ -49,10 +50,21 @@ function diffCell(count) {
   return `$\\color{${COLOR_DELETED}}{\\Huge{\\mathbf{−}}}$\u200b${Math.abs(count)}`
 }
 
+// Why uncoloured: Net is a derived judgement, and red-on-negative scored deletion as a
+// defect — backwards, since removal is usually the cheaper change. Green-on-positive is
+// no better: growth is not merit either. Sign shows direction; no colour scores it.
+function netCell(count) {
+  if (count === 0) {
+    return '0'
+  }
+  const sign = count > 0 ? '+' : '−'
+  return `$\\Huge{\\mathbf{${sign}}}$\u200b${Math.abs(count)}`
+}
+
 function locTableRow(label, bucket) {
   const added = bucket.added ?? 0
   const deleted = bucket.deleted ?? 0
-  return `| ${label} | ${bucket.files ?? 0} | ${diffCell(added)} | ${diffCell(-deleted)} | ${diffCell(added - deleted)} |`
+  return `| ${label} | ${bucket.files ?? 0} | ${diffCell(added)} | ${diffCell(-deleted)} | ${netCell(added - deleted)} |`
 }
 
 export function formatLocTable({ test, nonTest }) {

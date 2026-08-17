@@ -156,17 +156,17 @@ describe('PR test LoC summary', () => {
     expect(requests[2].options.method).toBe('PATCH')
   })
 
-  it('colors added cells green and deleted or negative-net cells red', () => {
+  it('colors added and deleted cells but leaves the net judgement uncolored', () => {
     const block = renderLocBlock({
       test: { files: 1, added: 2, deleted: 5 },
       nonTest: { files: 1, added: 0, deleted: 4 }
     })
 
     expect(block).toContain(
-      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b5 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b3 |'
+      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b5 | $\\Huge{\\mathbf{−}}$\u200b3 |'
     )
     expect(block).toContain(
-      '| Prod | 1 | 0 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b4 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b4 |'
+      '| Prod | 1 | 0 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b4 | $\\Huge{\\mathbf{−}}$\u200b4 |'
     )
   })
 
@@ -179,10 +179,10 @@ describe('PR test LoC summary', () => {
 
     expect(block).toContain(LOC_HANDS_OFF_COMMENT)
     expect(block).toContain(
-      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b1 |'
+      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b1 | $\\Huge{\\mathbf{+}}$\u200b1 |'
     )
     expect(block).toContain(
-      '| Prod | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b4 | 0 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b4 |'
+      '| Prod | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b4 | 0 | $\\Huge{\\mathbf{+}}$\u200b4 |'
     )
     expect(block).not.toContain('| Total |')
     expect(mergeLocBlock('## ELI5\n\nHello\n', totals)).toBe(`${block}\n\n## ELI5\n\nHello\n`)
@@ -215,10 +215,10 @@ describe('PR test LoC summary', () => {
     expect(result.stdout.startsWith('<!-- orca-pr-loc -->')).toBe(true)
     expect(result.stdout).toContain(LOC_HANDS_OFF_COMMENT)
     expect(result.stdout).toContain(
-      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b6 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b5 |'
+      '| Test | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b6 | $\\color{#cf222e}{\\Huge{\\mathbf{−}}}$\u200b1 | $\\Huge{\\mathbf{+}}$\u200b5 |'
     )
     expect(result.stdout).toContain(
-      '| Prod | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | 0 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 |'
+      '| Prod | 1 | $\\color{#1a7f37}{\\Huge{\\mathbf{+}}}$\u200b2 | 0 | $\\Huge{\\mathbf{+}}$\u200b2 |'
     )
     expect(result.stdout).not.toContain('| Total |')
     expect(result.stdout).toContain('## ELI5\n\nHello\n')
