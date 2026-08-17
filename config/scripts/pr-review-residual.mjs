@@ -115,9 +115,11 @@ const designRow = (pr) => [
   pr.files > 0 ? pr.testFiles / pr.files : 0
 ]
 
-// Why: an LLM review bot reviews nearly everything here, so treating it as "the reviewer"
-// would define away the human judgement the metric claims to instrument.
-const BOT_REVIEWER_RE = /\[bot\]$|^(coderabbitai|github-actions|dependabot|copilot)/i
+// Why: AI review bots review nearly everything here, and none of them carry a [bot] suffix
+// on their login. Treating one as "the reviewer" would define away the human judgement the
+// metric claims to instrument.
+const BOT_REVIEWER_RE =
+  /\[bot\]$|^(coderabbitai|greptile|pullfrog|github-actions|dependabot|copilot)/i
 
 export const humanReviewersOf = (review) =>
   (review.reviewers ?? []).filter((login) => !BOT_REVIEWER_RE.test(login))

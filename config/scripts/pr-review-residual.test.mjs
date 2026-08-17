@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { olsFit, predict, rSquared, reviewerDemean, spearman } from './pr-review-residual.mjs'
+import {
+  humanReviewersOf,
+  olsFit,
+  predict,
+  rSquared,
+  reviewerDemean,
+  spearman
+} from './pr-review-residual.mjs'
 import { summarizeReviews } from './pr-review-timeline.mjs'
 
 describe('olsFit', () => {
@@ -55,6 +62,29 @@ describe('reviewerDemean', () => {
     expect(out[10].eps).toBeCloseTo(0, 10)
     expect(out.at(-1).reviewerCell).toBe('(other)')
     expect(out.at(-2).eps).toBeCloseTo(0.5, 10)
+  })
+})
+
+describe('humanReviewersOf', () => {
+  // Why: none of the AI reviewers in this repo carry a [bot] login suffix.
+  it('treats every AI reviewer as non-human regardless of login suffix', () => {
+    expect(
+      humanReviewersOf({
+        reviewers: [
+          'coderabbitai',
+          'greptile-apps',
+          'pullfrog',
+          'copilot-pull-request-reviewer',
+          'dependabot[bot]',
+          'nwparker'
+        ]
+      })
+    ).toEqual(['nwparker'])
+  })
+
+  it('reports no human reviewer for a bot-only review', () => {
+    expect(humanReviewersOf({ reviewers: ['coderabbitai'] })).toEqual([])
+    expect(humanReviewersOf({})).toEqual([])
   })
 })
 
