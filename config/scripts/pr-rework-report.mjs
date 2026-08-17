@@ -99,6 +99,15 @@ export function quintileLines(title, rows, { rounds = 200, strata = 4, minPRs = 
     lines.push('  UNEVALUABLE: fewer than 5 rows')
     return lines
   }
+  // Why: a predictor with no spread still sorts into five buckets, and the resulting table
+  // looks like a finding when it is only the tie-break order of the sort.
+  const spread = sorted.at(-1).predictor - sorted[0].predictor
+  if (!(spread > 1e-9)) {
+    lines.push(
+      `  UNEVALUABLE: the predictor is constant (range ${spread.toExponential(2)}) — no quintiles exist`
+    )
+    return lines
+  }
   const cuts = [0.2, 0.4, 0.6, 0.8].map((p) =>
     percentileOf(
       sorted.map((r) => r.predictor),

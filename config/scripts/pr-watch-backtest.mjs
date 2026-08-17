@@ -475,6 +475,7 @@ async function main() {
           horizons: [horizonDays, horizon2Days],
           halfLifeHours,
           stackWindowHours,
+          baseline,
           spanDays,
           prs: rows
         },
