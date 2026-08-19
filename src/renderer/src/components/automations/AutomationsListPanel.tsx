@@ -10,7 +10,9 @@ import type {
   ExternalAutomationManager
 } from '../../../../shared/automations-types'
 import type { SshConnectionState } from '../../../../shared/ssh-types'
-import type { ProjectHostSetup, Repo, Worktree } from '../../../../shared/types'
+import type { ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import type { RuntimeStatus } from '../../../../shared/runtime-types'
 import type { TaskSourceHostAvailability } from '../task-source-context-summary'
 import type { AutomationHostTarget } from './automation-host-client'
@@ -18,7 +20,7 @@ import type { AutomationPaneTab } from './automation-page-state'
 import { getAutomationTemplates, type AutomationTemplate } from './automation-templates'
 import { AutomationListLocalRows } from './AutomationListLocalRows'
 import { AutomationListExternalRows } from './AutomationListExternalRows'
-import { AUTOMATIONS_TABLE_CONTAINER_CLASS } from './automations-table-layout'
+import { LIST_TABLE_CONTAINER_CLASS } from '@/lib/list-table-layout'
 import { translate } from '@/i18n/i18n'
 import type {
   AutomationListFilter,
@@ -181,7 +183,7 @@ export function AutomationsListPanel({
           <div
             className={cn(
               'scrollbar-sleek min-h-0 flex-1 overflow-auto',
-              AUTOMATIONS_TABLE_CONTAINER_CLASS
+              LIST_TABLE_CONTAINER_CLASS
             )}
           >
             {hasFilteredListItems ? (
