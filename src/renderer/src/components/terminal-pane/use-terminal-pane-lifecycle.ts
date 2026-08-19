@@ -57,13 +57,10 @@ import {
 } from '@/lib/http-link-routing'
 import { resolveTerminalHttpLinkSourceOwner } from './terminal-http-link-source-owner'
 import { canOpenWorkspaceBrowserTabOnRuntime } from '@/lib/workspace-browser-tab-open'
-import type {
-  GlobalSettings,
-  SetupSplitDirection,
-  TerminalTab,
-  TerminalLayoutSnapshot,
-  TuiAgent
-} from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/terminal-tab-types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
+import type { SetupSplitDirection } from '../../../../shared/worktree/launch-types'
 import type { TerminalPaneSplitSource } from '../../../../shared/feature-education-telemetry'
 import type { EventProps } from '../../../../shared/telemetry-events'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
@@ -92,6 +89,10 @@ import { copyTerminalSelection } from './terminal-selection-copy'
 import { parseOsc7 } from './parse-osc7'
 import { guardParserHandler } from './terminal-parser-handler-guard'
 import { resolveTerminalJisYenInput } from './terminal-jis-yen-input'
+import {
+  isNonLatinControlChordKeyup,
+  resolveNonLatinControlChordInput
+} from './terminal-non-latin-control-chord'
 import { installTerminalImeCompositionTracker } from './terminal-ime-composition-tracker'
 import { installTerminalImeLinuxCandidateState } from './terminal-ime-linux-candidate-state'
 import {
@@ -145,7 +146,7 @@ import {
   type CloseTerminalPaneDetail,
   type WakeHibernatedAgentsWorktreeDetail
 } from '@/constants/terminal'
-import { acquireWebviewsDragPassthrough } from '../browser-pane/webview-registry'
+import { acquireWebviewsDragPassthrough } from '../browser-pane/host-guest/webview-registry'
 import { recordCreatedTerminalPaneSplit } from './terminal-pane-split-completion'
 import { closeTerminalTab } from '../terminal/terminal-tab-actions'
 import {
@@ -448,6 +449,13 @@ export function resolvePaneLinkCwd(
 
 export function resolvePaneSeedCwd(splitPaneCwd: string | undefined, fallbackCwd: string): string {
   return splitPaneCwd ?? fallbackCwd
+}
+
+// Why > 1, matching isIOSWebView in mobile/src/terminal/terminal-webview-html.ts: a Mac with a
+// touch peripheral can report exactly 1, and it must keep the forwarder. Real iPads report 5.
+// Why UA rather than that helper's platform check: an iPhone reports platform "iPhone", not "MacIntel".
+export function isTouchIOSUserAgent(userAgent: string, maxTouchPoints: number): boolean {
+  return userAgent.includes('Mac') && maxTouchPoints > 1
 }
 
 type SplitStartupPayload = { command: string; env?: Record<string, string> }
@@ -985,6 +993,7 @@ export function useTerminalPaneLifecycle({
 
         // Why: let host-handled keys bypass xterm's kitty CSI-u encoder — with kittyKeyboard on it preventDefaults Cmd+C and blocks Chromium's native copy. See xterm-bypass-policy.ts.
         let pendingTerminalInterruptKeyup = false
+        let claimedNonLatinControlChordCode: string | null = null
         const pendingTerminalImeCandidateKeyReleases =
           createTerminalImePendingCandidateKeyReleases()
         const isMac = navigator.userAgent.includes('Mac')
@@ -993,6 +1002,8 @@ export function useTerminalPaneLifecycle({
           !isMac &&
           navigator.userAgent.includes('Linux') &&
           !/Android|CrOS/.test(navigator.userAgent)
+        // Why: gates the forwarder only — isMac stays as-is for the Ctrl+C, clipboard, JIS-yen and 229 policies.
+        const isTouchIOS = isTouchIOSUserAgent(navigator.userAgent, navigator.maxTouchPoints)
         const linuxImeCandidateState = isLinux
           ? installTerminalImeLinuxCandidateState(pane.terminal.element)
           : null
@@ -1004,18 +1015,20 @@ export function useTerminalPaneLifecycle({
           }
         })
         // Why: macOS commits an input source's substituted text through the input event alone, so printable keydowns must not reach xterm's encoder.
-        const imeNativeTextForwarder = isMac
-          ? installTerminalImeNativeTextForwarder({
-              terminalElement: pane.terminal.element,
-              isComposing: () => imeCompositionTracker.isActive(),
-              sendInput: (data) => pane.terminal.input(data),
-              getKittyKeyboardFlags: () =>
-                paneKittyKeyboardModesRef.current.get(pane.id)?.flags ?? 0
-            })
-          : {
-              claimKeyEvent: () => false,
-              dispose: () => undefined
-            }
+        // Not on touch iOS/iPadOS: the forwarder stands aside for IME input via composition events, which iPad Hangul appears not to fire (#13345).
+        const imeNativeTextForwarder =
+          isMac && !isTouchIOS
+            ? installTerminalImeNativeTextForwarder({
+                terminalElement: pane.terminal.element,
+                isComposing: () => imeCompositionTracker.isActive(),
+                sendInput: (data) => pane.terminal.input(data),
+                getKittyKeyboardFlags: () =>
+                  paneKittyKeyboardModesRef.current.get(pane.id)?.flags ?? 0
+              })
+            : {
+                claimKeyEvent: () => false,
+                dispose: () => undefined
+              }
         imeNativeTextForwarderDisposablesRef.current.set(pane.id, imeNativeTextForwarder)
         pane.terminal.attachCustomKeyEventHandler((e) => {
           const linuxCandidateClassification = linuxImeCandidateState?.classifyKeyboardEvent(e) ?? {
@@ -1079,6 +1092,22 @@ export function useTerminalPaneLifecycle({
             } else {
               pendingTerminalInterruptKeyup = false
             }
+            observeLinuxCandidateEvent()
+            return false
+          }
+          // Why here: after the Ctrl+C interrupt arm, which owns its own ETX and kitty reset.
+          // This covers the other 25 letters, whose only failure is the kitty encoder reading
+          // the layout glyph out of `key`. Sending the C0 byte reproduces what the OS control
+          // table produces for that physical key on any layout.
+          if (isNonLatinControlChordKeyup(e, claimedNonLatinControlChordCode)) {
+            claimedNonLatinControlChordCode = null
+            observeLinuxCandidateEvent()
+            return false
+          }
+          const nonLatinControlChord = resolveNonLatinControlChordInput(e)
+          if (nonLatinControlChord) {
+            claimedNonLatinControlChordCode = e.code
+            pane.terminal.input(nonLatinControlChord)
             observeLinuxCandidateEvent()
             return false
           }
