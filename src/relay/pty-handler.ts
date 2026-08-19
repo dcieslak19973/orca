@@ -2,7 +2,7 @@
 import type { IPty } from 'node-pty'
 import type * as NodePty from 'node-pty'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { resolveWindowsGitBashShellPath } from '../main/git-bash'
 import { WINDOWS_GIT_BASH_SHELL } from '../shared/windows-terminal-shell'
@@ -16,7 +16,9 @@ import {
   isProcessAlive,
   listShellProfiles
 } from './pty-shell-utils'
-import { getRelayShellLaunchConfig } from './pty-shell-launch'
+import { getRelayShellLaunchConfig, isRelayWslShell } from './pty-shell-launch'
+import { addWslEnvKeys } from '../shared/wsl-env'
+import { SHELL_STARTUP_FEATURE_ENV } from '../main/shell-startup-features'
 import { DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS } from '../shared/ssh-types'
 import { shouldUseShellReadyStartupDelivery } from '../shared/codex-startup-delivery'
 import { buildStartupCommandSubmission } from '../shared/startup-command-submission'
@@ -25,8 +27,7 @@ import {
   isPathInsideOrEqual,
   normalizeRuntimePathForComparison
 } from '../shared/cross-platform-path'
-import { splitWorktreeId } from '../shared/worktree-id'
-import { formatPtyExitedError } from '../shared/ssh-pty-failure-tokens'
+import { splitWorktreeId } from '../shared/worktree/id'
 import { PhysicalExitTracker } from '../shared/physical-exit-tracker'
 import { SHELL_READY_MARKER_PREFIX } from '../main/shell-ready-marker-scanner'
 import {
@@ -45,10 +46,12 @@ import {
   mergeGitConfigEnvProtocol
 } from '../shared/git-credential-prompt-env'
 import { isTuiAgent } from '../shared/tui-agent-config'
-import type { TuiAgent } from '../shared/types'
+import type { TuiAgent } from '../shared/tui-agent'
 import { forceKillPosixPtyProcessGroups } from '../main/pty/posix-pty-process-groups'
 import { stripInheritedBuildModeEnv } from '../main/pty/build-mode-env'
 import { stripLegacyTerminalShimEnv } from '../main/pty/legacy-terminal-shim-dir'
+import { dropInheritedOrcaFishHistory } from '../main/fish-history-session'
+import { dropInheritedOrcaHistFile } from '../main/worktree-history-file-path'
 import {
   PTY_STARTUP_INGRESS_VERSION,
   PtyStartupIngress,
@@ -80,6 +83,12 @@ import {
   type AgentSessionOwnerBinding
 } from '../shared/agent-session-host-authority'
 import { createPtySlaveEchoProbe, readPtySlavePath } from '../shared/pty-slave-line-discipline-echo'
+import {
+  deleteRelayFishHistory,
+  deleteRelayHistory,
+  injectRelayFishHistoryEnv,
+  injectRelayHistoryEnv
+} from './terminal-history'
 
 // Why: only Linux compiles node-pty (no prebuilt), so the build-tools remedy is a closable setup gap
 // there and wrong advice anywhere node-pty ships one. The relay only sees an unloadable binding, never
@@ -155,10 +164,15 @@ type ManagedPty = {
   terminalHandle?: string
   explicitTerm?: string
   shellPath?: string
+  /** The raw client-requested shell override, kept so revive can re-resolve it on this host. */
+  shellOverride?: string
+  /** Requested WSL distro; only meaningful when the override launched wsl.exe. */
+  wslDistro?: string
   shellCwd?: string
   shellPathEnv?: string
   envToDelete: string[]
   gitCredentialPromptGuarded: boolean
+  historyIsolationEnabled?: boolean
   startupCommand?: ManagedStartupCommand
   physicalExit?: PhysicalExitTracker
   forceKillSent?: boolean
@@ -176,12 +190,6 @@ type RelayAgentSessionCreateResult = {
   agentSessionEnsure?: unknown
   sourceActivation?: PtySourceReceivingActivation
 }
-
-/** Enough to cover every pane a host could plausibly have lost since the client last looked. */
-const MAX_REMEMBERED_PTY_EXITS = 256
-
-/** No exit status to report: the relay found the pid gone rather than watching it go. */
-const PTY_EXIT_CODE_OBSERVED_GONE = -1
 
 const AGENT_SESSION_CREATE_OPERATION_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const AGENT_SESSION_CREATE_OPERATION_RETENTION_MS = 24 * 60 * 60 * 1000
@@ -309,6 +317,31 @@ function resolvePtyShellOverride(shellOverride: string): string {
   return resolveWindowsGitBashShellPath(shellOverride) ?? shellOverride
 }
 
+/**
+ * Longest WSL distro name revive will carry into `wsl.exe -d <name>`.
+ *
+ * Why bounded here and not at spawn: spawn's value is a live RPC parameter,
+ * while this one is replayed from state the relay hands a client and takes back
+ * unvalidated. It reaches an argv, not a shell, so an over-long name costs a
+ * failed spawn rather than anything worse -- but revive's whole job here is to
+ * re-apply fresh-spawn bounds, and an unbounded value had no business in it.
+ * Real distro names are registry keys, far below this.
+ */
+const MAX_REVIVED_WSL_DISTRO_LENGTH = 256
+
+/**
+ * Same bounds as a fresh spawn, but one unusable entry may not fail the whole
+ * revive batch — an override this host no longer allows degrades that single
+ * pane to the default shell instead of throwing away every other pane's state.
+ */
+function resolveRevivedShellOverride(shellOverride: string): string {
+  try {
+    return resolvePtyShellOverride(shellOverride)
+  } catch {
+    return ''
+  }
+}
+
 type PtyProcessSummary = {
   id: string
   incarnationId: string
@@ -334,6 +367,15 @@ type SerializedPtyEntry = {
   envToDelete?: string[]
   /** Optional for state serialized by relays predating the credential guard. */
   gitCredentialPromptGuarded?: boolean
+  /** Optional for state serialized by relays predating scoped history. */
+  historyIsolationEnabled?: boolean
+  /**
+   * The shell override this pane was spawned with, re-resolved (and re-bounded)
+   * on revive. Optional: state from a relay predating it revives the host
+   * default shell, which is what those relays did anyway.
+   */
+  shellOverride?: string
+  terminalWindowsWslDistro?: string
   agentSessionOwners?: AgentSessionOwnerBinding[]
 }
 
@@ -349,15 +391,16 @@ export type PtyExitListener = (event: { id: string; paneKey?: string }) => void
 
 type PtyIdentity = { paneKey?: string; tabId?: string }
 
-/** Fallback fence for a client too old to name a shell by incarnation. It froze paneKey/tabId at
- *  spawn, so it refuses a pane that merely moved tabs — which is why a client that CAN name the
- *  shell is fenced on that instead. Not deleted, because the relay is shared: an upgraded host
- *  would otherwise leave every not-yet-updated client attaching a recycled id unchecked. */
-function attachIdentityMismatches(expected: PtyIdentity, managed: PtyIdentity): boolean {
-  // Pane key only. The tab is a location a pane can be moved to, and this identity was frozen at
-  // spawn, so comparing it refused panes that had merely moved — a live shell the client could
-  // then never reach, and an identity mismatch never grounds a respawn.
-  return Boolean(expected.paneKey && managed.paneKey && expected.paneKey !== managed.paneKey)
+/**
+ * True when a reattach's expected pane identity contradicts the target PTY's own.
+ * Rejects cross-relay-generation id collisions (a reset relay reuses `pty-N`).
+ * Only compares fields present on both sides; absent identity stays permissive.
+ */
+export function attachIdentityMismatches(expected: PtyIdentity, managed: PtyIdentity): boolean {
+  return Boolean(
+    (expected.paneKey && managed.paneKey && expected.paneKey !== managed.paneKey) ||
+    (expected.tabId && managed.tabId && expected.tabId !== managed.tabId)
+  )
 }
 /** Returns env to merge into the PTY's spawn env. Receives spawn context so augmenters can derive per-PTY identity from paneKey.
  *  `command` is the renderer-chosen agent launch command (`pi`, `omp`, …); undefined for CLI-launched bare shells. */
@@ -383,10 +426,6 @@ export class PtyHandler {
   private outputFlushTimer: ReturnType<typeof setTimeout> | null = null
   private pendingOutputByPty = new Map<string, PendingPtyOutput[]>()
   private pendingExitByPty = new Map<string, { id: string; code: number; incarnationId: string }>()
-  /** Exits this process WATCHED, kept past publication so attach can prove death rather than report
-   *  an unknown id. Bounded and oldest-evicted; losing one costs a user-asked respawn, never a
-   *  wrong one, and a crash losing all of them correctly reads as no knowledge. */
-  private exitedPtys = new Map<string, { code: number; incarnationId: string }>()
   private pausedOutputPtys = new Set<string>()
   private consumerPausedOutputPtys = new Set<string>()
   private removeLegacyCapacityListener: (() => void) | null = null
@@ -628,6 +667,23 @@ export class PtyHandler {
     const result = mergeGitConfigEnvProtocol(baseEnv, augmented) as Record<string, string>
     // Why: an older client may not ask a newly upgraded relay to delete inherited shim state.
     stripLegacyTerminalShimEnv(result, process.platform)
+    // Why unconditionally here, not in injectRelayFishHistoryEnv: that runs only for a
+    // fish pane with isolation on, yet an Orca-minted `fish_history` (fish EXPORTS it,
+    // so the relay inherits one when launched from an Orca fish pane) must never scope
+    // any pane to someone else's worktree. Matches the desktop, which drops it on both
+    // branches (STA-4682).
+    dropInheritedOrcaFishHistory(result)
+    // Why here as well as in injectRelayHistoryEnv: that runs only with isolation
+    // on, yet an inherited Orca HISTFILE must not scope a pane to someone else's
+    // worktree on the disabled and revive paths either.
+    dropInheritedOrcaHistFile(result)
+    // Why unconditionally: ORCA_HISTFILE is Orca-owned and minted below by
+    // injectRelayHistoryEnv, which also runs only with isolation on. An
+    // inherited one (the relay can be launched from an Orca pane) would
+    // otherwise reach the wrapper on the disabled and revive paths, scoping the
+    // pane to another worktree's history file — and wrapping a zsh pane that
+    // nothing asked to wrap, since `history` is selected on its presence.
+    delete result.ORCA_HISTFILE
     // Why: match local/daemon precedence so defaults/augmenters can't resurrect explicitly-removed values.
     for (const key of envToDelete) {
       delete result[key]
@@ -810,7 +866,6 @@ export class PtyHandler {
         code: exitCode,
         incarnationId: managed.incarnationId
       })
-      this.rememberPtyExit(managed.id, exitCode, managed.incarnationId)
       this.publishPendingExit(managed.id)
       this.notifyExitListener(managed)
       this.agentSessionOwners.release(managed.id)
@@ -819,29 +874,6 @@ export class PtyHandler {
       // Why: release the ptmx fd on natural exit, else the master fd leaks until GC (docs/fix-pty-fd-leak.md).
       disposeManagedPty(managed)
     })
-  }
-
-  /** Proof must name the caller's own shell: present and matching. Both gone-paths ask this, so a
-   *  change to the rule cannot reach one and miss the other. */
-  private exitProofAnswersCaller(
-    expectedIncarnationId: string | undefined,
-    exitedIncarnationId: string,
-    clientUnderstandsExitProof: boolean
-  ): boolean {
-    return clientUnderstandsExitProof && expectedIncarnationId === exitedIncarnationId
-  }
-
-  /** Oldest-evicted: a Map iterates in insertion order, so the first key is the oldest. */
-  private rememberPtyExit(id: string, code: number, incarnationId: string): void {
-    this.exitedPtys.delete(id)
-    this.exitedPtys.set(id, { code, incarnationId })
-    while (this.exitedPtys.size > MAX_REMEMBERED_PTY_EXITS) {
-      const oldest = this.exitedPtys.keys().next()
-      if (oldest.done) {
-        break
-      }
-      this.exitedPtys.delete(oldest.value)
-    }
   }
 
   private releaseRelayIngress(managed: ManagedPty): void {
@@ -894,15 +926,19 @@ export class PtyHandler {
     this.dispatcher.onRequest('pty.serialize', (p) => this.serialize(p))
     this.dispatcher.onRequest('pty.revive', (p) => this.revive(p))
     this.dispatcher.onRequest('pty.getProfiles', async () => listShellProfiles())
+    this.dispatcher.onRequest('pty.deleteWorktreeHistory', async (p) => {
+      if (typeof p.worktreeId === 'string') {
+        deleteRelayFishHistory(p.worktreeId)
+        deleteRelayHistory(p.worktreeId)
+      }
+      return { ok: true }
+    })
     this.dispatcher.onRequest('pty.closeStartupQueryAuthority', (p) =>
       this.closeStartupQueryAuthority(p)
     )
 
     this.dispatcher.onNotification('pty.data', (p) => this.writeData(p))
     this.dispatcher.onNotification('pty.resize', (p) => this.resize(p))
-    this.dispatcher.onNotification('pty.ackData', (_p) => {
-      /* flow control ack -- not yet enforced */
-    })
   }
 
   private isLikelyInteractiveRedraw(data: string): boolean {
@@ -1421,7 +1457,8 @@ export class PtyHandler {
     context?: RequestContext
   ): Promise<RelayAgentSessionCreateResult> {
     const env = params.env as Record<string, string> | undefined
-    const worktreeId = env?.ORCA_WORKTREE_ID
+    const worktreeId =
+      typeof params.worktreeId === 'string' ? params.worktreeId : env?.ORCA_WORKTREE_ID
     const worktreePath = worktreeId ? splitWorktreeId(worktreeId)?.worktreePath : undefined
     const cwd = typeof params.cwd === 'string' ? params.cwd : resolveDefaultCwd()
     const finishCreation = this.beginPtyCreation([worktreePath, cwd])
@@ -1537,7 +1574,9 @@ export class PtyHandler {
     const shellOverride =
       typeof params.shellOverride === 'string' ? params.shellOverride.trim() : ''
     const resolvedShellOverride = resolvePtyShellOverride(shellOverride)
-    const shell = resolvedShellOverride || resolveDefaultShell()
+    const requestedEnvShell =
+      process.platform !== 'win32' && typeof env?.SHELL === 'string' ? env.SHELL.trim() : ''
+    const shell = resolvedShellOverride || requestedEnvShell || resolveDefaultShell()
     let id: string
     do {
       id = `pty-${this.nextId++}`
@@ -1559,6 +1598,22 @@ export class PtyHandler {
       { id, paneKey, shell, command, launchAgent },
       envToDelete
     )
+    const worktreeId =
+      typeof params.worktreeId === 'string' ? params.worktreeId : env?.ORCA_WORKTREE_ID
+    const historyIsolationEnabled = params.historyIsolationEnabled === true
+    // Deliberately not reached by wsl.exe: a guest fish writes its history file
+    // inside the distro, where relay deletion cannot reach it (STA-4682).
+    if (historyIsolationEnabled && worktreeId && basename(shell).toLowerCase().startsWith('fish')) {
+      injectRelayFishHistoryEnv(spawnEnv, worktreeId)
+    }
+    const wslShell = isRelayWslShell(shell)
+    if (historyIsolationEnabled && worktreeId) {
+      const historyRoot = injectRelayHistoryEnv(spawnEnv, worktreeId, shell, { wsl: wslShell })
+      if (wslShell && historyRoot) {
+        // WSLENV is the only channel that carries a host env var into the guest.
+        addWslEnvKeys(spawnEnv, ['HISTFILE'])
+      }
+    }
     const launchCommandHint = resolveSetupAgentSequenceLaunchCommand(spawnEnv, command)
     // Why: SSH PTYs bypass main's host-env builder, so apply the guard after the relay merges its authoritative env.
     const gitCredentialPromptGuarded = applyTerminalGitCredentialPromptGuard(spawnEnv, {
@@ -1581,7 +1636,7 @@ export class PtyHandler {
       emitStartupIdentity: shouldEmitShellReadyMarker
     })
     const rendererShellReadySupported =
-      !shouldProviderDeliverCommand && shellLaunch.env.ORCA_SHELL_READY_MARKER === '1'
+      !shouldProviderDeliverCommand && shellLaunch.supportsReadyMarker
 
     if (context?.signal?.aborted || context?.isStale()) {
       // Why: cancellation remains side-effect-free until the exact native spawn seam.
@@ -1601,11 +1656,11 @@ export class PtyHandler {
         cols,
         rows,
         cwd,
-        // Why: relay shells inherit process.env; don't let an ambient Orca marker enable shell-ready unless requested.
+        // Why the empty default: relay shells inherit process.env, and the launch
+        // config is the only thing allowed to name features for this shell.
         env: {
           ...spawnEnv,
-          ORCA_SHELL_READY_MARKER: '0',
-          ORCA_SHELL_STARTUP_IDENTITY: '0',
+          [SHELL_STARTUP_FEATURE_ENV]: '',
           ...shellLaunch.env
         }
       })
@@ -1625,7 +1680,6 @@ export class PtyHandler {
       paneKey: typeof params.paneKey === 'string' ? params.paneKey : paneKey,
       tabId: typeof params.tabId === 'string' ? params.tabId : tabId
     }
-    const worktreeId = typeof env?.ORCA_WORKTREE_ID === 'string' ? env.ORCA_WORKTREE_ID : undefined
     const startupIngressIntent =
       params.startupIngressVersion === PTY_STARTUP_INGRESS_VERSION
         ? parsePtyStartupIngressIntent(params.startupIngress)
@@ -1646,7 +1700,12 @@ export class PtyHandler {
       ...(explicitTerm !== undefined ? { explicitTerm } : {}),
       envToDelete,
       gitCredentialPromptGuarded,
+      ...(historyIsolationEnabled ? { historyIsolationEnabled: true } : {}),
       shellPath: shell,
+      // Why the resolved one gates it: on a POSIX relay an override is rejected
+      // outright, and storing one revive would only reject again is noise.
+      ...(resolvedShellOverride ? { shellOverride } : {}),
+      ...(terminalWindowsWslDistro ? { wslDistro: terminalWindowsWslDistro } : {}),
       shellCwd: cwd,
       shellPathEnv: spawnEnv.PATH,
       ownerBackend: resolvePtyOwnerBackend({
@@ -1662,11 +1721,10 @@ export class PtyHandler {
               command: shouldProviderDeliverCommand ? managedStartupCommand : null,
               providerDelivery: shouldProviderDeliverCommand,
               delivered: false,
-              waitForShellReady: shellLaunch.env.ORCA_SHELL_READY_MARKER === '1',
-              outputScanState:
-                shellLaunch.env.ORCA_SHELL_READY_MARKER === '1'
-                  ? createShellStartupOutputScanState()
-                  : null,
+              waitForShellReady: shellLaunch.supportsReadyMarker,
+              outputScanState: shellLaunch.supportsReadyMarker
+                ? createShellStartupOutputScanState()
+                : null,
               shellPid: null,
               promptProbe: null,
               timer: null
@@ -1711,29 +1769,9 @@ export class PtyHandler {
     sourceActivation?: PtySourceReceivingActivation
   }> {
     const id = params.id as string
-    const expectedIncarnationId =
-      typeof params.expectedIncarnationId === 'string' ? params.expectedIncarnationId : undefined
-    // Gated because the host's answer reaches clients predating it, which read an unrecognized
-    // attach error as neither death nor recovery and strand the pane.
-    const clientUnderstandsExitProof = params.exitProofSupported === true
     const managed = this.ptys.get(id)
     // Why: after dispose, pty.kill is a POSIX no-op; treat disposed as not-found so failures aren't silent.
     if (!managed || managed.disposed) {
-      // `disposed` is teardown, not an observed exit, so only a genuinely absent pty may be
-      // answered from what this process watched exit.
-      if (!managed) {
-        const exited = this.exitedPtys.get(id)
-        if (
-          exited &&
-          this.exitProofAnswersCaller(
-            expectedIncarnationId,
-            exited.incarnationId,
-            clientUnderstandsExitProof
-          )
-        ) {
-          throw new Error(formatPtyExitedError(id, exited.code, exited.incarnationId))
-        }
-      }
       throw new Error(`PTY "${id}" not found`)
     }
 
@@ -1747,43 +1785,19 @@ export class PtyHandler {
       disposeManagedPty(managed)
       this.removePty(id)
       this.clearPtyFlowState(id)
-      // The reap runs whoever asked, but the ANSWER depends on whose shell died: under this id a
-      // replacement relay may hold a different one entirely, and the caller's may be orphaned and
-      // alive under the relay this one replaced.
-      this.rememberPtyExit(id, PTY_EXIT_CODE_OBSERVED_GONE, managed.incarnationId)
-      if (expectedIncarnationId && expectedIncarnationId !== managed.incarnationId) {
-        throw new Error(`PTY "${id}" identity mismatch`)
-      }
-      throw new Error(
-        this.exitProofAnswersCaller(
-          expectedIncarnationId,
-          managed.incarnationId,
-          clientUnderstandsExitProof
-        )
-          ? formatPtyExitedError(id, PTY_EXIT_CODE_OBSERVED_GONE, managed.incarnationId)
-          : `PTY "${id}" not found`
-      )
+      throw new Error(`PTY "${id}" not found`)
     }
 
-    // A reset relay restarts ids at pty-1, so an id alone can name somebody else's shell. The
-    // incarnation is the shell's own identity, so it catches that without caring where the pane
-    // lives — unlike the pane identity below, which froze the tab at spawn and refused moved panes.
-    if (
-      !expectedIncarnationId &&
-      attachIdentityMismatches(
-        {
-          paneKey: typeof params.expectedPaneKey === 'string' ? params.expectedPaneKey : undefined,
-          tabId: typeof params.expectedTabId === 'string' ? params.expectedTabId : undefined
-        },
-        managed.attachIdentity ?? { paneKey: managed.paneKey, tabId: managed.tabId }
-      )
-    ) {
-      throw new Error(`PTY "${id}" identity mismatch`)
-    }
-    if (expectedIncarnationId && expectedIncarnationId !== managed.incarnationId) {
-      // Deliberately NOT worded "not found": that phrasing is what the client maps to an expired
-      // session, and expiry authorizes a respawn onto a shell this branch just proved is alive.
-      throw new Error(`PTY "${id}" identity mismatch`)
+    // Why: generation resets can reuse PTY IDs; reject conflicting identities.
+    const mismatch = attachIdentityMismatches(
+      {
+        paneKey: typeof params.expectedPaneKey === 'string' ? params.expectedPaneKey : undefined,
+        tabId: typeof params.expectedTabId === 'string' ? params.expectedTabId : undefined
+      },
+      managed.attachIdentity ?? { paneKey: managed.paneKey, tabId: managed.tabId }
+    )
+    if (mismatch) {
+      throw new Error(`PTY "${id}" not found (identity mismatch)`)
     }
 
     managed.startupIngress?.snapshotBarrier()
@@ -1810,7 +1824,23 @@ export class PtyHandler {
         ...(sourceActivation ? { sourceActivation } : {})
       }
     }
-    if (activation === 'existing' && this.sourcePublication?.accepts(id)) {
+    // `existing` means a delivery is already open for this client, so it is already receiving live
+    // output and does not need its screen re-sent. That is true for a duplicate attach — and false
+    // for the case this skipped: an SSH reconnect. The client keeps its id there (the dispatcher
+    // refuses to detach the primary, and setWrite revives that same id), so the delivery outlives
+    // the dead transport, while the renderer has thrown its terminal away — a reconnect bumps
+    // tab.generation, which is the React key, so the pane remounts with a brand-new empty xterm and
+    // nothing captures the old buffer. Answering "you already have it" leaves the pane blank
+    // forever, until new output happens to arrive.
+    //
+    // So the client says which it is. Falling through rather than returning the replay inline is
+    // deliberate: the path below already drops the pending batched bytes that are also in the
+    // buffer, which is what stops the live delivery double-rendering them.
+    if (
+      activation === 'existing' &&
+      this.sourcePublication?.accepts(id) &&
+      params.requireReplay !== true
+    ) {
       return {
         incarnationId: managed.incarnationId,
         ...(sourceActivation ? { sourceActivation } : {})
@@ -2112,6 +2142,11 @@ export class PtyHandler {
         ...(managed.explicitTerm !== undefined ? { explicitTerm: managed.explicitTerm } : {}),
         envToDelete: managed.envToDelete,
         gitCredentialPromptGuarded: managed.gitCredentialPromptGuarded,
+        ...(managed.historyIsolationEnabled ? { historyIsolationEnabled: true } : {}),
+        // Why serialized: revive re-spawns the shell, and without these a WSL
+        // pane came back as the host default shell in another distro's history.
+        ...(managed.shellOverride ? { shellOverride: managed.shellOverride } : {}),
+        ...(managed.wslDistro ? { terminalWindowsWslDistro: managed.wslDistro } : {}),
         ...(managed.terminalHandle ? { terminalHandle: managed.terminalHandle } : {})
       })
     }
@@ -2174,31 +2209,74 @@ export class PtyHandler {
     }
     // Why: serialized state may come from an older/untrusted client; reapply fresh-spawn bounds.
     const envToDelete = sanitizeEnvToDelete(entry.envToDelete)
-    const shell = resolveDefaultShell()
+    const shellOverride = typeof entry.shellOverride === 'string' ? entry.shellOverride.trim() : ''
+    const resolvedShellOverride = resolveRevivedShellOverride(shellOverride)
+    const shell = resolvedShellOverride || resolveDefaultShell()
+    const terminalWindowsWslDistro =
+      typeof entry.terminalWindowsWslDistro === 'string' &&
+      entry.terminalWindowsWslDistro.length <= MAX_REVIVED_WSL_DISTRO_LENGTH
+        ? entry.terminalWindowsWslDistro
+        : null
+    const historyIsolationEnabled = entry.historyIsolationEnabled === true
     const spawnEnv = this.buildSpawnEnv(
       revivedEnv,
       { id: entry.id, paneKey: entry.paneKey, shell },
       envToDelete
     )
+    if (
+      historyIsolationEnabled &&
+      entry.worktreeId &&
+      basename(shell).toLowerCase().startsWith('fish')
+    ) {
+      injectRelayFishHistoryEnv(spawnEnv, entry.worktreeId)
+    }
+    // Mirrors spawn: the entry's override is what gets re-launched, so a WSL
+    // pane needs the same guest-visible HISTFILE and the same WSLENV carrier.
+    const wslShell = isRelayWslShell(shell)
+    if (historyIsolationEnabled && entry.worktreeId) {
+      const historyRoot = injectRelayHistoryEnv(spawnEnv, entry.worktreeId, shell, {
+        wsl: wslShell
+      })
+      if (wslShell && historyRoot) {
+        addWslEnvKeys(spawnEnv, ['HISTFILE'])
+      }
+    }
     // Why: revive lacks the original launch command, so reuse the fresh-spawn guard decision (legacy defaults to unguarded).
     const gitCredentialPromptGuarded = entry.gitCredentialPromptGuarded === true
     if (gitCredentialPromptGuarded) {
       Object.assign(spawnEnv, gitCredentialPromptGuardEnv(spawnEnv, process.platform))
     }
-    const shellLaunch = getRelayShellLaunchConfig(shell, spawnEnv)
-    const term = ptyMod.spawn(shell, shellLaunch.args, {
-      name: spawnEnv.TERM ?? 'xterm-256color',
-      cols: entry.cols,
-      rows: entry.rows,
-      cwd: entry.cwd,
-      // Why: no provider-delivered command is waiting for a ready marker.
-      env: {
-        ...spawnEnv,
-        ORCA_SHELL_READY_MARKER: '0',
-        ORCA_SHELL_STARTUP_IDENTITY: '0',
-        ...shellLaunch.env
-      }
+    const shellLaunch = getRelayShellLaunchConfig(shell, spawnEnv, process.platform, {
+      terminalWindowsWslDistro
     })
+    let term: IPty
+    try {
+      term = ptyMod.spawn(shell, shellLaunch.args, {
+        name: spawnEnv.TERM ?? 'xterm-256color',
+        cols: entry.cols,
+        rows: entry.rows,
+        cwd: entry.cwd,
+        // Why: no provider-delivered command is waiting for a ready marker.
+        env: {
+          ...spawnEnv,
+          [SHELL_STARTUP_FEATURE_ENV]: '',
+          ...shellLaunch.env
+        }
+      })
+    } catch (error) {
+      // Why skip rather than retry the host default shell: the stored override
+      // names a shell that existed at serialize time and may not now (an
+      // uninstalled WSL takes wsl.exe with it), and substituting a different
+      // shell is the defect this override exists to fix -- its args and its
+      // history env are built for the shell that is gone. Dropping one pane is
+      // the honest outcome; letting the throw escape the revive loop would cost
+      // every later entry its state too. The worktree-removal fence throws
+      // before this, outside reviveEntry, so it stays a hard failure.
+      if (!resolvedShellOverride) {
+        throw error
+      }
+      return
+    }
     this.wireAndStore({
       id: entry.id,
       incarnationId: randomUUID(),
@@ -2215,9 +2293,16 @@ export class PtyHandler {
       ...(explicitTerm !== undefined ? { explicitTerm } : {}),
       envToDelete,
       gitCredentialPromptGuarded,
+      ...(historyIsolationEnabled ? { historyIsolationEnabled: true } : {}),
+      shellPath: shell,
+      // Why re-stored: a revived pane can be serialized again, and losing the
+      // override on the second round trip is the same bug one restart later.
+      ...(resolvedShellOverride ? { shellOverride } : {}),
+      ...(terminalWindowsWslDistro ? { wslDistro: terminalWindowsWslDistro } : {}),
       ownerBackend: resolvePtyOwnerBackend({
         platform: process.platform,
-        shellPath: shell
+        shellPath: shell,
+        wslDistro: terminalWindowsWslDistro
       }),
       ...(entry.terminalHandle ? { terminalHandle: entry.terminalHandle } : {})
     })

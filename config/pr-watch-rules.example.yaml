@@ -1,0 +1,32 @@
+# Example PR watch rules + review-queue tiers for the backtest harness.
+# Replay against history: node config/scripts/pr-watch-backtest.mjs
+# See docs/superpowers/specs/2026-08-07-pr-watch-rules-design.md.
+
+pr_watch:
+  - name: Terminal rendering
+    when: { scope: terminal }
+    note: 9 reverts in 4 months — WebGL/repaint changes are hard to test
+
+  - name: Remote wire
+    when: { paths: ['src/shared/rpc/**', 'src/main/runtime/rpc/**'] }
+    note: New stream opcodes must be capability-negotiated — decoders drop unknown ones silently
+
+  - name: Windows setup shell
+    when: { paths: ['src/main/**/wsl*', 'docs/reference/windows-setup-shell.md'] }
+    note: .cmd runner rules — never derive from terminal-shell preference (AGENTS.md)
+
+review_queue:
+  tiers:
+    - name: Not reviewable
+      when: { any: [{ draft: true }, { mergeable: conflicting }] }
+      action: bounce
+    - name: Deep review
+      # Sized on additions, not additions+deletions: a large removal is not a large read.
+      when: { any: [{ files: '>=p90' }, { additions: '>=p90' }, { scope: terminal }] }
+      slot: deep
+    - name: New contributor
+      when: { authorMergedPRs: '==0' }
+      note: First PR — calibration review; check workflows/CI files
+    - name: Fast track
+      when: { files: '<=p50', additions: '<=p50', type: [fix, test, docs] }
+      batchBy: author

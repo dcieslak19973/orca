@@ -27,7 +27,9 @@ import {
   getRepoExecutionHostId
 } from '../../../../shared/execution-host'
 import type { SshConnectionState } from '../../../../shared/ssh-types'
-import type { ProjectHostSetup, Repo, Worktree } from '../../../../shared/types'
+import type { ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import type { RuntimeStatus } from '../../../../shared/runtime-types'
 import type { TaskSourceHostAvailability } from '../task-source-context-summary'
 import type { AutomationHostTarget } from './automation-host-client'
@@ -37,12 +39,9 @@ import { formatAutomationDateTimeWithRelative } from './automation-page-parts'
 import { getAutomationTargetAvailability } from './automation-target-availability'
 import { getAgentLabel } from './automation-draft-model'
 import { formatAutomationCost } from './automation-usage-model'
-import {
-  AUTOMATIONS_TABLE_GRID_CLASS,
-  AUTOMATIONS_TABLE_ROW_CLASS,
-  AUTOMATIONS_TABLE_ROW_SELECTED_CLASS
-} from './automations-table-layout'
-import { isPortaledRowMenuClick, isRowActivationKey } from './automation-list-row-interaction'
+import { AUTOMATIONS_TABLE_GRID_CLASS } from './automations-table-layout'
+import { LIST_TABLE_ROW_CLASS, LIST_TABLE_ROW_SELECTED_CLASS } from '@/lib/list-table-layout'
+import { isPortaledRowMenuClick, isRowActivationKey } from '@/lib/list-row-interaction'
 import { AutomationListStatusCell } from './AutomationListStatusCell'
 import { translate } from '@/i18n/i18n'
 
@@ -189,8 +188,8 @@ export function AutomationListLocalRows({
                 }}
                 className={cn(
                   AUTOMATIONS_TABLE_GRID_CLASS,
-                  AUTOMATIONS_TABLE_ROW_CLASS,
-                  isSelected && AUTOMATIONS_TABLE_ROW_SELECTED_CLASS
+                  LIST_TABLE_ROW_CLASS,
+                  isSelected && LIST_TABLE_ROW_SELECTED_CLASS
                 )}
               >
                 <span className="min-w-0 truncate font-medium">{automation.name}</span>
