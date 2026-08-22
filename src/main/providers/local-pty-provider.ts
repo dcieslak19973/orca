@@ -1,7 +1,10 @@
 /* eslint-disable max-lines -- Why: splitting spawn() would scatter tightly coupled PTY lifecycle logic (scan → ready → write → exit) with no cleaner ownership seam. */
 import { basename, delimiter, win32 as pathWin32 } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { resolveWindowsShellLaunchArgs } from './windows-shell-args'
+import {
+  ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE_ENV,
+  resolveWindowsShellLaunchArgs
+} from './windows-shell-args'
 import {
   resolveEffectiveWindowsPowerShell,
   shouldProbeWindowsPowerShellAvailability,
@@ -12,13 +15,17 @@ import { resolveProcessCwd } from './process-cwd'
 import { existsSync } from 'node:fs'
 import * as pty from 'node-pty'
 import { getDefaultWslDistro, parseWslPath, isWslAvailableAsync } from '../wsl'
-import { splitWorktreeIdForFilesystem } from '../../shared/worktree-id'
+import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import { isBracketedPasteSafeShell } from '../../shared/startup-command-submission'
 import {
   injectHistoryEnv,
-  updateHistFileForFallback,
-  logHistoryInjection
+  injectWslFishHistoryEnv,
+  updateHistoryEnvForFallback,
+  logHistoryInjection,
+  type HistoryInjectionResult
 } from '../terminal-history'
+import { dropInheritedOrcaFishHistory } from '../fish-history-session'
+import { dropInheritedOrcaHistFile } from '../worktree-history-file-path'
 import type { IPtyProvider, PtyProcessInfo, PtySpawnOptions, PtySpawnResult } from './types'
 import {
   ensureNodePtySpawnHelperExecutable,
@@ -26,13 +33,13 @@ import {
   spawnShellWithFallback
 } from './local-pty-utils'
 import { prepareMacosTccLoginShell } from './macos-tcc-login-shell'
+import { getShellLaunchConfig } from './local-pty-shell-ready'
+import { selectShellStartupFeatures } from '../shell-startup-features'
 import {
-  getMarkerlessShellLaunchConfig,
-  getShellReadyLaunchConfig,
   writeStartupCommandWhenShellReady,
   STARTUP_COMMAND_READY_MAX_WAIT_MS
-} from './local-pty-shell-ready'
-import type { ShellReadySignal } from './local-pty-shell-ready'
+} from './local-pty-shell-ready-startup-command'
+import type { ShellReadySignal } from './local-pty-shell-ready-startup-command'
 import { removeInheritedNoColor } from '../pty/terminal-color-env'
 import { removeAppImageRuntimeEnv } from '../pty/appimage-terminal-env'
 import { stripInheritedBuildModeEnv } from '../pty/build-mode-env'
@@ -57,6 +64,7 @@ import { getAgentForegroundContextPaths } from './agent-foreground-context-paths
 import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process-recognition'
 import { killWithDescendantSweep } from '../pty-descendant-termination'
 import { readWindowsConptyProcessIds } from './windows-conpty-process-membership'
+import { terminatePtyJob } from '../windows/windows-pty-job'
 import { canConfirmAgentFromConsolePresence } from './windows-console-foreground'
 import { forceKillPosixPtyProcessGroups } from '../pty/posix-pty-process-groups'
 import { shouldUseShellReadyStartupDelivery } from '../../shared/codex-startup-delivery'
@@ -65,14 +73,10 @@ import { ORCA_HERMES_STARTUP_QUERY_ENV } from '../../shared/hermes-startup-query
 import { PhysicalExitTracker } from '../../shared/physical-exit-tracker'
 import { mergeGitConfigEnvProtocol } from '../../shared/git-credential-prompt-env'
 import { PtyStartupIngress, type PtyIngressEmission } from '../../shared/pty-startup-ingress'
-import { extractOnlyCookedEchoSafeQueryReplies } from '../../shared/terminal-query-reply'
 import { resolvePtyOwnerBackend } from '../../shared/pty-owner-backend'
 import { signalPosixPtyForegroundGroup } from '../pty/posix-pty-foreground-group'
 import { readPtsName } from '../pty/node-pty-pts-name'
-import {
-  createPtySlaveEchoProbe,
-  readPtySlavePath
-} from '../../shared/pty-slave-line-discipline-echo'
+import { readPtySlavePath } from '../../shared/pty-slave-line-discipline-echo'
 import {
   createShellStartupOutputScanState,
   drainShellStartupOutputScanState,
@@ -86,6 +90,7 @@ import {
   expandWindowsEnvironmentVariables,
   expandWindowsPathEnvironmentVariables
 } from '../../shared/windows-environment-expansion'
+import { resolveProcessExitCause, type TerminalExitCause } from '../../shared/terminal-exit-cause'
 
 const PANE_IDENTITY_ENV_KEYS = [
   'ORCA_PANE_KEY',
@@ -126,6 +131,9 @@ const ptyExitDisposables = new Map<string, { dispose: () => void }>()
 const ptyCleanupCallbacks = new Map<string, () => void>()
 const ptyTerminationMode = new Map<string, 'graceful' | 'force'>()
 const ptyPhysicalExits = new Map<string, PhysicalExitTracker>()
+// Why: a wrapper spawn (macOS TCC login) reports its own status, never the
+// shell's, so its exit numbers must not be read as the agent's (STA-4536).
+const ptyReportsChildExitStatus = new Map<string, boolean>()
 const ptyForceKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export const LOCAL_PTY_PHYSICAL_EXIT_TIMEOUT_MS = 8_000
@@ -142,7 +150,12 @@ type DataCallback = (payload: {
   transformed?: boolean
   seq?: number
 }) => void
-type ExitCallback = (payload: { id: string; code: number; incarnationId?: string }) => void
+type ExitCallback = (payload: {
+  id: string
+  code: number
+  incarnationId?: string
+  cause?: TerminalExitCause
+}) => void
 
 const dataListeners = new Set<DataCallback>()
 const exitListeners = new Set<ExitCallback>()
@@ -272,6 +285,7 @@ function clearPtyState(id: string): void {
   ptyWslDistroById.delete(id)
   ptyLoadGeneration.delete(id)
   ptyTerminationMode.delete(id)
+  ptyReportsChildExitStatus.delete(id)
   ptyPhysicalExits.delete(id)
 }
 
@@ -518,7 +532,7 @@ export type LocalPtyProviderOptions = {
   getWindowsPowerShellImplementation?: () => 'auto' | 'powershell.exe' | 'pwsh.exe' | undefined
   pwshAvailable?: () => boolean | Promise<boolean>
   onSpawned?: (id: string, incarnationId: string) => void
-  onExit?: (id: string, code: number, incarnationId: string) => void
+  onExit?: (id: string, code: number, incarnationId: string, cause?: TerminalExitCause) => void
   onData?: (
     id: string,
     data: string,
@@ -591,10 +605,13 @@ export class LocalPtyProvider implements IPtyProvider {
     let validationCwd: string
     let startupCommandDeliveredInShellArgs = false
     let windowsFallbackAttempts: ReturnType<typeof buildWindowsPowerShellSpawnAttempts> = []
-    let shellReadyLaunch: ReturnType<typeof getShellReadyLaunchConfig> | null = null
+    let shellReadyLaunch: ReturnType<typeof getShellLaunchConfig> | null = null
     let getFallbackShellReadyConfig:
-      | ((shell: string) => ReturnType<typeof getShellReadyLaunchConfig>)
+      | ((shell: string) => ReturnType<typeof getShellLaunchConfig>)
       | undefined
+    // Why hoisted: a fallback shell must drop the primary's launch env, and
+    // re-deriving the key names would re-run wrapper generation.
+    let primaryLaunchEnvKeys: string[] = []
     if (wslInfo) {
       shellPath = 'wsl.exe'
       const resolved = resolveWindowsShellLaunchArgs(shellPath, cwd, defaultCwd)
@@ -777,6 +794,30 @@ export class LocalPtyProvider implements IPtyProvider {
         delete finalEnv.CODEX_HOME
         delete finalEnv.ORCA_CODEX_HOME
       }
+
+      const shellBasename = pathWin32.basename(shellPath).toLowerCase()
+      const codexLaunchPreflightCommand = finalEnv.ORCA_CODEX_LAUNCH_PREFLIGHT
+      if (
+        codexLaunchPreflightCommand &&
+        (shellBasename === 'cmd.exe' || isWindowsGitBashShellPath(shellPath))
+      ) {
+        if (shellBasename === 'cmd.exe') {
+          // Why: node-pty backslash-escapes argv quotes; expand the quote inside cmd.exe instead.
+          finalEnv[ORCA_CODEX_LAUNCH_PREFLIGHT_CMD_QUOTE_ENV] = '"'
+        }
+        const resolved = resolveWindowsShellLaunchArgs(
+          shellPath,
+          cwd,
+          defaultCwd,
+          launchWslContext,
+          args.command,
+          codexLaunchPreflightCommand
+        )
+        shellArgs = resolved.shellArgs
+        effectiveCwd = resolved.effectiveCwd
+        validationCwd = resolved.validationCwd
+        startupCommandDeliveredInShellArgs = resolved.startupCommandDeliveredInShellArgs === true
+      }
     }
     seedPowerlevel10kWizardEnv(finalEnv, { envToDelete: args.envToDelete })
     if (
@@ -785,44 +826,6 @@ export class LocalPtyProvider implements IPtyProvider {
       pathWin32.basename(shellPath).toLowerCase() === 'wsl.exe'
     ) {
       addWslEnvKeys(finalEnv, [POWERLEVEL10K_WIZARD_DISABLE_ENV])
-    }
-    if (!wslInfo && process.platform !== 'win32') {
-      // Why: OpenCode/Codex PATH restoration and OMP's status wrapper need shell-ready code after user startup files run.
-      const needsNoMarkerWrapper =
-        finalEnv.ORCA_OPENCODE_CONFIG_DIR ||
-        finalEnv.ORCA_MIMOCODE_HOME ||
-        finalEnv.ORCA_OMP_STATUS_EXTENSION ||
-        finalEnv.ORCA_CODEX_HOME ||
-        finalEnv.ORCA_AGENT_TEAMS_SHIM_DIR
-      const isCodexStartupCommand = startupAgentRecognition?.agent === 'codex'
-      let shellLaunch: ReturnType<typeof getShellReadyLaunchConfig> | null = null
-      if (args.command && isCodexStartupCommand) {
-        const shouldWaitForShellReady = shouldUseShellReadyStartupDelivery({
-          command: args.command,
-          startupCommandDelivery: args.startupCommandDelivery
-        })
-        // Why: payload-bearing Codex startup can be lost to rc-file noise; plain Codex stays markerless for startup speed.
-        getFallbackShellReadyConfig = (shell) =>
-          shouldWaitForShellReady
-            ? getShellReadyLaunchConfig(shell)
-            : getMarkerlessShellLaunchConfig(shell)
-        shellLaunch = shouldWaitForShellReady
-          ? getShellReadyLaunchConfig(shellPath)
-          : getMarkerlessShellLaunchConfig(shellPath)
-      } else if (args.command) {
-        getFallbackShellReadyConfig = (shell) => getShellReadyLaunchConfig(shell)
-        shellLaunch = getShellReadyLaunchConfig(shellPath)
-      } else if (needsNoMarkerWrapper) {
-        getFallbackShellReadyConfig = (shell) => getMarkerlessShellLaunchConfig(shell)
-        shellLaunch = getMarkerlessShellLaunchConfig(shellPath)
-      } else {
-        getFallbackShellReadyConfig = undefined
-      }
-      if (shellLaunch) {
-        Object.assign(finalEnv, shellLaunch.env)
-        shellArgs = shellLaunch.args ?? shellArgs
-        shellReadyLaunch = args.command ? shellLaunch : null
-      }
     }
     const requestedEnv = args.env
     expandWindowsPathEnvironmentVariables(finalEnv)
@@ -846,7 +849,57 @@ export class LocalPtyProvider implements IPtyProvider {
       historyResult = injectHistoryEnv(finalEnv, worktreeId, effectiveShellPath, cwd, {
         wslDistro: launchWslDistro
       })
+      if (isWslTerminal && launchWslDistro) {
+        injectWslFishHistoryEnv(finalEnv, worktreeId, launchWslDistro)
+        addWslEnvKeys(finalEnv, ['HISTFILE', 'fish_history'])
+      }
       logHistoryInjection(worktreeId, historyResult)
+    } else {
+      // Why: injectHistoryEnv is what normally clears it, so when history is off
+      // an inherited ORCA_HISTFILE would still reach the wrapper. Credit: #11146.
+      delete finalEnv.ORCA_HISTFILE
+      // Same for an exported `fish_history` from the fish pane that launched this
+      // Orca: history off means fish's own default, not another worktree's file.
+      dropInheritedOrcaFishHistory(finalEnv)
+      // And for an exported HISTFILE: history off means the shell's own default,
+      // not the history file of the worktree this Orca was launched from.
+      dropInheritedOrcaHistFile(finalEnv)
+    }
+
+    if (!wslInfo && process.platform !== 'win32') {
+      // Why after history injection: the wrapper is what repairs a worktree
+      // HISTFILE that the system zshrc clobbers, so the decision to wrap has to
+      // see whether this spawn actually injected one.
+      const isCodexStartupCommand = startupAgentRecognition?.agent === 'codex'
+      // Why: payload-bearing Codex startup can be lost to rc-file noise; plain Codex stays markerless for startup speed.
+      const waitsForShellReady =
+        Boolean(args.command) &&
+        (!isCodexStartupCommand ||
+          shouldUseShellReadyStartupDelivery({
+            command: args.command as string,
+            startupCommandDelivery: args.startupCommandDelivery
+          }))
+      // Why delete: ORCA_SHELL_FEATURES is Orca-owned, and only the launch
+      // config below may name features for this shell.
+      delete finalEnv.ORCA_SHELL_FEATURES
+      getFallbackShellReadyConfig = (shell) =>
+        getShellLaunchConfig(
+          shell,
+          selectShellStartupFeatures({
+            shellPath: shell,
+            env: finalEnv,
+            hasStartupCommand: Boolean(args.command),
+            waitsForShellReady,
+            // Why identical: the identity marker exists so the readiness
+            // handshake can bind output to the right shell PID.
+            emitsStartupIdentity: waitsForShellReady
+          })
+        )
+      const shellLaunch = getFallbackShellReadyConfig(shellPath)
+      Object.assign(finalEnv, shellLaunch.env)
+      shellArgs = shellLaunch.args ?? shellArgs
+      shellReadyLaunch = args.command ? shellLaunch : null
+      primaryLaunchEnvKeys = Object.keys(shellLaunch.env)
     }
 
     await prepareLocalPtySpawn(id)
@@ -868,9 +921,11 @@ export class LocalPtyProvider implements IPtyProvider {
       termName: finalEnv.TERM,
       ptySpawn: pty.spawn,
       getShellReadyConfig: getFallbackShellReadyConfig,
+      launchEnvKeys: primaryLaunchEnvKeys,
       // Why: on zsh→bash fallback HISTFILE still points to zsh_history; update before spawn so the child inherits it (design doc §8).
-      onBeforeFallbackSpawn: historyResult?.histFile
-        ? (env, fallbackShell) => updateHistFileForFallback(env, fallbackShell)
+      onBeforeFallbackSpawn: historyResult?.historyDir
+        ? (env, fallbackShell) =>
+            updateHistoryEnvForFallback(env, fallbackShell, historyResult as HistoryInjectionResult)
         : undefined,
       windowsFallbackAttempts
     })
@@ -897,6 +952,7 @@ export class LocalPtyProvider implements IPtyProvider {
         ? null
         : undefined
     createPtyPhysicalExit(id)
+    ptyReportsChildExitStatus.set(id, spawnResult.reportsChildExitStatus !== false)
     ptyProcesses.set(id, proc)
     ptyInitialCwd.set(id, cwd)
     if (spawnedWslDistro !== undefined) {
@@ -942,7 +998,6 @@ export class LocalPtyProvider implements IPtyProvider {
         )
       }
     }
-    const startupEchoProbe = createPtySlaveEchoProbe(readPtySlavePath(proc))
     const startupIngress = new PtyStartupIngress({
       ...(args.startupIngress ? { intent: args.startupIngress } : {}),
       ownerBackend: resolvePtyOwnerBackend({
@@ -951,8 +1006,7 @@ export class LocalPtyProvider implements IPtyProvider {
         wslDistro: spawnedWslDistro
       }),
       write: (data) => proc.write(data),
-      onEmission: emitIngressData,
-      ...(startupEchoProbe ? { echoProbe: startupEchoProbe } : {})
+      onEmission: emitIngressData
     })
     startupIngressByPty.set(id, startupIngress)
 
@@ -1058,7 +1112,15 @@ export class LocalPtyProvider implements IPtyProvider {
       disposables.push(onDataDisposable)
     }
 
-    const onExitDisposable = proc.onExit(({ exitCode }) => {
+    const onExitDisposable = proc.onExit(({ exitCode, signal }) => {
+      // Why: node-pty reports a signalled death as {exitCode: 0, signal: N}; the
+      // cause is built here, where the signal and the spawn's trustworthiness
+      // are both still in hand.
+      const cause = resolveProcessExitCause({
+        exitCode,
+        signal,
+        hostReportsChildExitStatus: ptyReportsChildExitStatus.get(id)
+      })
       const wasTerminationRequested = ptyTerminationMode.has(id)
       ptyPhysicalExits.get(id)?.markExited()
       // Why: neutralize proc.kill before destroy — node-pty SIGHUPs on socket 'close', which can race here and signal a reaped/recycled pid.
@@ -1077,9 +1139,10 @@ export class LocalPtyProvider implements IPtyProvider {
       startupIngressByPty.delete(id)
       // Why: release the master ptmx fd on natural exit, else a clean exit leaks the fd until GC. See docs/fix-pty-fd-leak.md.
       destroyPtyProcess(proc, { alreadyKilled: wasTerminationRequested })
-      this.opts.onExit?.(id, exitCode, incarnationId)
+      ptyReportsChildExitStatus.delete(id)
+      this.opts.onExit?.(id, exitCode, incarnationId, cause)
       for (const cb of exitListeners) {
-        cb({ id, code: exitCode, incarnationId })
+        cb({ id, code: exitCode, incarnationId, cause })
       }
     })
     if (onExitDisposable) {
@@ -1123,15 +1186,18 @@ export class LocalPtyProvider implements IPtyProvider {
   hasPty(id: string): boolean {
     return ptyProcesses.has(id)
   }
-  write(id: string, data: string): void {
-    // Cooked PTYs echo private DSR/OSC replies; CPR/DA remain immediate (#13137, #7329).
-    if (extractOnlyCookedEchoSafeQueryReplies(data)) {
-      const ingress = startupIngressByPty.get(id)
-      if (ingress?.answerLiveQueryReply(data)) {
-        return
-      }
+  write(id: string, data: string): boolean {
+    // Cooked PTYs echo private DSR/OSC replies; CPR/DA stay immediate unless one of
+    // those is still held, which they must not overtake (#13137, #7329, #15559).
+    if (startupIngressByPty.get(id)?.answerLiveQueryReply(data)) {
+      return true
     }
-    ptyProcesses.get(id)?.write(data)
+    const proc = ptyProcesses.get(id)
+    if (!proc) {
+      return false
+    }
+    proc.write(data)
+    return true
   }
   resize(id: string, cols: number, rows: number): void {
     ptyProcesses.get(id)?.resize(cols, rows)
@@ -1218,7 +1284,8 @@ export class LocalPtyProvider implements IPtyProvider {
       // identity probe returns `own` so agent/MCP orphans cannot hold the worktree cwd
       // (#10004). `unknown`/`foreign`/`absent` skip taskkill and rely on root close alone.
       await killWithDescendantSweep(proc.pid, signalRoot, {
-        ownsRoot: () => ptyProcesses.get(id) === proc
+        ownsRoot: () => ptyProcesses.get(id) === proc,
+        terminateOwnedTree: () => terminatePtyJob(proc)
       })
     } else if (process.platform === 'win32' && operation.immediate) {
       // Why: a plain shell's ConPTY teardown doesn't reap orphaned children (useConptyDll
@@ -1226,7 +1293,8 @@ export class LocalPtyProvider implements IPtyProvider {
       // holds the worktree cwd. Tree kill runs only when the OS identity probe returns `own`;
       // otherwise root close alone, and detached children may block physical stop (#10004).
       await killWithDescendantSweep(proc.pid, signalRoot, {
-        ownsRoot: () => ptyProcesses.get(id) === proc
+        ownsRoot: () => ptyProcesses.get(id) === proc,
+        terminateOwnedTree: () => terminatePtyJob(proc)
       })
     } else {
       signalRoot()

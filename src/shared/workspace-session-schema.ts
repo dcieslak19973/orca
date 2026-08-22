@@ -12,13 +12,11 @@
  * Only a payload that is not a session at all falls back to defaults.
  */
 import { z } from 'zod'
-import type {
-  TabGroupLayoutNode,
-  TerminalPaneLayoutNode,
-  TuiAgent,
-  WorkspaceKey,
-  WorkspaceSessionState
-} from './types'
+import type { WorkspaceKey } from './folder-workspace-types'
+import type { TabGroupLayoutNode } from './tab-types'
+import type { TerminalPaneLayoutNode } from './terminal-tab-types'
+import type { TuiAgent } from './tui-agent'
+import type { WorkspaceSessionState } from './workspace-session-state-types'
 import { isValidTerminalTabId } from './terminal-tab-id'
 import { parseExecutionHostId, type ExecutionHostId } from './execution-host'
 import { isTuiAgent } from './tui-agent-config'
@@ -122,11 +120,16 @@ const tabContentTypeSchema = z.enum([
 
 const workspaceVisibleTabTypeSchema = z.enum(['terminal', 'editor', 'browser', 'simulator'])
 
+const executionHostIdSchema = z.custom<ExecutionHostId>(
+  (value) => typeof value === 'string' && Boolean(parseExecutionHostId(value))
+)
+
 const tabSchema = z.object({
   id: z.string(),
   entityId: z.string(),
   groupId: z.string(),
   worktreeId: z.string(),
+  executionHostId: executionHostIdSchema.optional(),
   contentType: tabContentTypeSchema,
   label: z.string(),
   generatedLabel: z.string().nullable().optional(),
@@ -214,11 +217,7 @@ export const workspaceSessionStateSchema: z.ZodType<WorkspaceSessionState> = z.o
   activeWorkspaceKey: salvagedOptional('activeWorkspaceKey', workspaceKeySchema.nullable()),
   activeWorkspaceExecutionHostId: salvagedOptional(
     'activeWorkspaceExecutionHostId',
-    z
-      .custom<ExecutionHostId>(
-        (value) => typeof value === 'string' && Boolean(parseExecutionHostId(value))
-      )
-      .nullable()
+    executionHostIdSchema.nullable()
   ),
   activeWorktreeId: salvagedField('activeWorktreeId', z.string().nullable(), () => null),
   activeTabId: salvagedField('activeTabId', z.string().nullable(), () => null),

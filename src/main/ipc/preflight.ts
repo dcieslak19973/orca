@@ -1,5 +1,9 @@
+import { invalidateWslGuestEnvironment } from '../wsl/wsl-guest-environment'
 import { ipcMain } from 'electron'
-import type { PathSource, ShellHydrationFailureReason } from '../../shared/types'
+import type {
+  PathSource,
+  ShellHydrationFailureReason
+} from '../../shared/shell-path-hydration-types'
 import { hydrateShellPath, mergePathSegments } from '../startup/hydrate-shell-path'
 import { getAzureDevOpsAuthStatus } from '../azure-devops/client'
 import { getBitbucketAuthStatus } from '../bitbucket/client'
@@ -154,7 +158,13 @@ export type RefreshAgentsResult = {
 export async function refreshShellPathAndDetectAgents(
   context?: PreflightRuntimeContext
 ): Promise<RefreshAgentsResult> {
-  if (getPreflightWslTarget(context)) {
+  const wslTarget = getPreflightWslTarget(context)
+  if (wslTarget) {
+    // Why invalidate first: the guest PATH is cached per distro for the process
+    // lifetime, so Refresh would otherwise re-read the pre-install PATH and
+    // keep reporting a just-installed CLI as absent -- the exact case this
+    // function exists to handle.
+    invalidateWslGuestEnvironment(wslTarget.distro)
     const agents = await detectInstalledAgents(context)
     return {
       agents,

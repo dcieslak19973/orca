@@ -8,6 +8,7 @@ import {
 import {
   cleanupCompletedWorkerFixture,
   clearCompletedWorkerLedger,
+  completedWorkerFakeCodexCommand,
   completedWorkerLaunchEnv,
   listRuntimeTerminals,
   readCompletedWorkerDispatchCapability,
@@ -19,7 +20,7 @@ import {
 } from './helpers/completed-worker-retirement-fixture'
 import { RuntimeClient } from '../../src/cli/runtime-client'
 import type { RuntimeTerminalRead, RuntimeTerminalSummary } from '../../src/shared/runtime-types'
-import { splitWorktreeIdForFilesystem } from '../../src/shared/worktree-id'
+import { splitWorktreeIdForFilesystem } from '../../src/shared/worktree/id'
 
 const PROVIDER_SESSION_ID = '019feb51-2269-71c2-89c6-faa8dc65c8dc'
 
@@ -45,12 +46,13 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
     await ensureTerminalVisible(orcaPage)
     await waitForActiveTerminalManager(orcaPage)
     await waitForActivePanePtyId(orcaPage)
-    await orcaPage.evaluate(async () => {
+    await orcaPage.evaluate(async (agentCommand) => {
       await window.__store?.getState().updateSettings({
+        agentCmdOverrides: { codex: agentCommand },
         disabledTuiAgents: [],
         terminalHiddenViewParking: false
       })
-    })
+    }, completedWorkerFakeCodexCommand)
 
     const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
     const isolatedHome = await electronApp.evaluate(({ app }) => app.getPath('home'))

@@ -15,7 +15,7 @@ import {
   serializeDaemonPidFile,
   unlinkOwnedDaemonPidFile
 } from './daemon-spawner'
-import type { SubprocessHandle } from './session'
+import type { SubprocessHandle } from './session-subprocess-handle'
 
 type ManualTimer = {
   callback: () => void
@@ -67,6 +67,7 @@ function createMockSubprocess(): SubprocessHandle & { exit(code: number): void }
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(),
+    terminateOwnedTree: () => 'unavailable' as const,
     forceKill: vi.fn(),
     signal: vi.fn(),
     onData: vi.fn(),

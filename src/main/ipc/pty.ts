@@ -11,12 +11,18 @@ import {
   app,
   powerMonitor
 } from 'electron'
-export { getBashShellReadyRcfileContent } from '../providers/local-pty-shell-ready'
+export { getBashShellReadyRcfileContent } from '../providers/local-pty-shell-ready-bash-rcfile'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import type { PtyBindingSourceExpectation, Store } from '../persistence'
 import { retireTerminalSurfaceFromPersistence } from '../runtime/mobile-session-terminal-persistence-retirement'
-import { findTerminalTabIdForLeaf } from '../runtime/workspace-session-terminal-membership-authority'
-import type { GlobalSettings, TuiAgent } from '../../shared/types'
+import { SSH_PROVIDER_UNREGISTERED_REASON } from '../../shared/pty-liveness-verdict'
+import type { GlobalSettings } from '../../shared/global-settings-types'
+import type { TuiAgent } from '../../shared/tui-agent'
+import {
+  LOCAL_EXECUTION_HOST_ID,
+  toSshExecutionHostId,
+  type ExecutionHostId
+} from '../../shared/execution-host'
 import { normalizeRuntimePathForComparison } from '../../shared/cross-platform-path'
 import { terminalOutputBacklogCapChars } from '../../shared/terminal-scrollback-policy'
 import type {
@@ -71,6 +77,7 @@ import {
 } from '../../shared/pi-agent-kind'
 import { isPwshAvailableAsync } from '../pwsh'
 import { LocalPtyProvider } from '../providers/local-pty-provider'
+import type { PtyProcessInfo } from '../providers/pty-process-info'
 import { normalizeWindowsTerminalCwd } from '../providers/windows-shell-args'
 import type { IPtyProvider, PtySpawnOptions, PtySpawnResult } from '../providers/types'
 import { isPtyWriteUnavailableError } from '../providers/pty-write-unavailable-error'
@@ -85,7 +92,6 @@ import {
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
 import {
   SSH_SESSION_EXPIRED_ERROR,
-  isSshPtyExitedError,
   isSshPtyIdentityMismatchError,
   isSshPtyNotFoundError
 } from '../providers/ssh-pty-errors'
@@ -149,7 +155,7 @@ import {
   type TerminalStartupCwdMissingDirFallback
 } from '../../shared/terminal-startup-cwd'
 import { isWslUncPath, toWindowsWslPath } from '../../shared/wsl-paths'
-import { splitWorktreeIdForFilesystem } from '../../shared/worktree-id'
+import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import type { AgentSessionOwnerBinding } from '../../shared/agent-session-host-authority'
 import {
   agentSessionOwnerBindingsEqual,
@@ -206,6 +212,7 @@ import {
   isCodexHomeAuthReadyForLaunch,
   waitForManagedCodexAuthReady
 } from '../codex-accounts/managed-codex-auth-readiness'
+import { ManagedCodexHomeTemporarilyUnavailableError } from '../codex-accounts/host-codex-managed-home-ownership'
 import {
   forgetCodexPaneAccount,
   getCodexPaneAccount,
@@ -237,7 +244,7 @@ import {
 } from '../project-groups/folder-workspace-path-status'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import { resolveLocalProjectRuntimeForWorktreeId } from '../local-project-runtime-resolution'
-import { isPtyIncarnationId, isRelayAttestedPtyIncarnationId } from '../../shared/pty-incarnation'
+import { isPtyIncarnationId } from '../../shared/pty-incarnation'
 import type { PtyListedSession } from '../../shared/pty-listed-session'
 
 // ─── Provider Registry ──────────────────────────────────────────────
@@ -257,6 +264,47 @@ function registeredPtyProviders(): RegisteredPtyProvider[] {
     { provider: localProvider, connectionId: null },
     ...Array.from(sshProviders, ([connectionId, provider]) => ({ provider, connectionId }))
   ]
+}
+
+// Why: settling each provider separately only bounds a relay that *rejects*. An
+// unanswered relay list runs to the mux's own 30s default — far past the caller's
+// budget — so the aggregate still expired and the runtime lost the inventory it
+// needs to retire exited PTYs, freezing every retained pane as "active" (STA-517).
+// Forward the caller's deadline so a silent relay fails fast and lands in the
+// unavailable branch below: unknown, not empty.
+async function listRegisteredPtyProcessesWithHostScope(
+  onSshInventoryUnavailable?: (connectionId: string, error: unknown) => void,
+  opts?: { deadlineMs?: number }
+): Promise<{
+  processes: PtyProcessInfo[]
+  hostIds: ExecutionHostId[]
+}> {
+  const providers = registeredPtyProviders()
+  const providerSessions = await Promise.all(
+    providers.map(async ({ provider, connectionId }) => {
+      try {
+        const hostId: ExecutionHostId = connectionId
+          ? toSshExecutionHostId(connectionId)
+          : LOCAL_EXECUTION_HOST_ID
+        return {
+          // Why: the deadline only applies to relay round-trips; the local provider answers in-process.
+          processes: await (connectionId ? provider.listProcesses(opts) : provider.listProcesses()),
+          hostId
+        }
+      } catch (error) {
+        if (!connectionId) {
+          throw error
+        }
+        onSshInventoryUnavailable?.(connectionId, error)
+        return null
+      }
+    })
+  )
+  const respondingSessions = providerSessions.filter((session) => session !== null)
+  return {
+    processes: respondingSessions.flatMap((session) => session.processes),
+    hostIds: respondingSessions.map((session) => session.hostId)
+  }
 }
 
 const SYNTHETIC_KILL_EXIT_DUPLICATE_WINDOW_MS = 30_000
@@ -288,26 +336,6 @@ const KEEP_HISTORY_STOP_POLL_MS = 100
 const ptyPaneKey = new Map<string, string>()
 // Why: reverse of ptyPaneKey — callers with a paneKey from outside the PTY lifecycle (e.g. agent-hook status routing) need the ptyId; kept in lock-step via the same sites.
 const paneKeyPtyId = new Map<string, string>()
-
-/**
- * True only when this PTY's own pane has since bound a different PTY. The two
- * maps above are maintained in lock-step, so their disagreement is proof the id
- * was superseded — a renderer that queued work before a reattach cannot land it
- * on the successor.
- *
- * Deliberately false when no paneKey is recorded: an unowned or orphaned PTY is
- * unknown, not stale, and unknown never authorizes refusing an explicit
- * operation. That is also what keeps orphan cleanup working, since those ids
- * have no pane by construction.
- */
-function isSupersededPtyId(ptyId: string): boolean {
-  const paneKey = ptyPaneKey.get(ptyId)
-  if (paneKey === undefined) {
-    return false
-  }
-  const currentPtyId = paneKeyPtyId.get(paneKey)
-  return currentPtyId !== undefined && currentPtyId !== ptyId
-}
 
 const AGENT_HOOK_RUNTIME_ENV_KEYS = [
   'ORCA_AGENT_HOOK_PORT',
@@ -538,68 +566,6 @@ function rememberPaneKeyForPty(ptyId: string, paneKey: unknown): string | null {
   return normalizedPaneKey
 }
 
-/**
- * The one producer of a pane -> shell binding: durable record and fence maps together, keyed by the
- * tab holding the leaf *now* (a stored tabId names the tab a moved pane left). Splitting these let
- * the superseded-PTY fence sit inert on reattach, the path it was built for.
- *
- * `bound` is false when a durable pane refuses. A throw is unknown rather than a refusal, so it
- * propagates — only the caller that created the shell should clean it up.
- *
- * `tabId` is the resolved tab, returned so a caller that also registers the pane with the runtime
- * graph uses the SAME coordinate. Registering under the lease's frozen tabId while the record and
- * the fence use the live one splits the pane across two tabs, and the graph half then ensures a
- * mobile surface for the tab the pane left.
- */
-/**
- * The tab a leaf lives in *now*. Callers whose own `tabId` is fresh (spawn) must not use this — the
- * persisted layout is the stale side inside the renderer's publish debounce. Callers holding a
- * tabId frozen in a durable lease (reattach) must, because the pane may have been moved since.
- *
- * Resolved separately from `bindPaneShell` so a thrown durable write cannot lose the answer and
- * leave the runtime graph registered under the tab the pane left.
- */
-export function resolvePaneShellTabId(
-  store: Pick<Store, 'getWorkspaceSession'> | undefined,
-  leafId: string
-): string | undefined {
-  if (typeof store?.getWorkspaceSession !== 'function') {
-    return undefined
-  }
-  return findTerminalTabIdForLeaf(store.getWorkspaceSession(), leafId)
-}
-
-export function bindPaneShell(args: {
-  store: Pick<Store, 'persistPtyBinding' | 'getWorkspaceSession'> | undefined
-  worktreeId: string
-  tabId: string
-  leafId: string
-  ptyId: string
-  incarnationId?: string
-  startupCwd?: string
-  mayCreate?: boolean
-  expectedBinding?: { ptyId: string; incarnationId?: string }
-  expectedSourceBinding?: PtyBindingSourceExpectation
-}): { bound: boolean; tabId: string } {
-  const tabId = args.tabId
-  const bound = args.store?.persistPtyBinding({
-    worktreeId: args.worktreeId,
-    tabId,
-    leafId: args.leafId,
-    ptyId: args.ptyId,
-    ...(args.incarnationId ? { incarnationId: args.incarnationId } : {}),
-    ...(args.startupCwd ? { startupCwd: args.startupCwd } : {}),
-    ...(args.mayCreate === false ? { mayCreate: false } : {}),
-    ...(args.expectedBinding ? { expectedBinding: args.expectedBinding } : {}),
-    ...(args.expectedSourceBinding ? { expectedSourceBinding: args.expectedSourceBinding } : {})
-  })
-  if (bound === false) {
-    return { bound: false, tabId }
-  }
-  rememberPaneKeyForPty(args.ptyId, makePaneKey(tabId, args.leafId))
-  return { bound: true, tabId }
-}
-
 function cleanupPendingPaneSerializersForSender(ownerWebContentsId: number): void {
   pendingPaneSerializerCleanupRegistered.delete(ownerWebContentsId)
   for (const [paneKey, pending] of pendingByPaneKey) {
@@ -736,13 +702,11 @@ type StablePaneAdoption = {
 } | null
 const stablePaneAdoptionsByOwnerKey = new Map<string, Promise<StablePaneAdoption>>()
 
-// Pane bindings have one home: the local partition. An SSH pane is not partitioned out — the
-// renderer publishes its membership to `local` and `mayCreate: false` is evaluated there — so
-// selecting `ssh:<target>` here read a partition no live writer maintains (STA-3077 step P).
 function resolvePersistedStablePaneOwner(
   store: Store | undefined,
   paneKey: string,
-  worktreeId: string
+  worktreeId: string,
+  connectionId: string | null | undefined
 ): Pick<StablePaneOwner, 'tabId' | 'leafId' | 'ptyId' | 'incarnationId'> | null {
   if (!store || typeof store.getWorkspaceSession !== 'function') {
     return null
@@ -751,7 +715,9 @@ function resolvePersistedStablePaneOwner(
   if (!parsed) {
     return null
   }
-  const session = store.getWorkspaceSession()
+  const session = store.getWorkspaceSession(
+    connectionId ? toSshExecutionHostId(connectionId) : undefined
+  )
   const tab = session.tabsByWorktree?.[worktreeId]?.find(
     (candidate) => candidate.id === parsed.tabId && candidate.worktreeId === worktreeId
   )
@@ -791,7 +757,7 @@ function resolveStablePaneOwner(
       }
     }
   }
-  const persisted = resolvePersistedStablePaneOwner(store, paneKey, worktreeId)
+  const persisted = resolvePersistedStablePaneOwner(store, paneKey, worktreeId, connectionId)
   if (resolved?.ptyId && persisted && resolved.ptyId !== persisted.ptyId) {
     throw new Error('terminal_pane_owner_conflict')
   }
@@ -827,13 +793,15 @@ function resolveStablePaneOwner(
 function retirePersistedStablePaneOwner(
   store: Store | undefined,
   owner: StablePaneOwner,
-  worktreeId: string
+  worktreeId: string,
+  connectionId: string | null | undefined
 ): boolean {
   if (!store) {
     return false
   }
   const paneKey = makePaneKey(owner.tabId, owner.leafId)
-  const current = resolvePersistedStablePaneOwner(store, paneKey, worktreeId)
+  const hostId = connectionId ? toSshExecutionHostId(connectionId) : undefined
+  const current = resolvePersistedStablePaneOwner(store, paneKey, worktreeId, connectionId)
   if (!current) {
     // Why: persistence already dropped this pane binding (an earlier stop retired it while the
     // runtime kept history), so there is nothing left to clear — that is a completed retirement,
@@ -843,7 +811,7 @@ function retirePersistedStablePaneOwner(
   if (current.ptyId !== owner.ptyId || current.incarnationId !== owner.persistedIncarnationId) {
     return false
   }
-  const session = store.getWorkspaceSession()
+  const session = store.getWorkspaceSession(hostId)
   const retired = retireTerminalSurfaceFromPersistence(session, {
     worktreeId,
     parentTabId: owner.tabId,
@@ -854,7 +822,7 @@ function retirePersistedStablePaneOwner(
   if (retired === session) {
     return false
   }
-  store.setWorkspaceSession(retired)
+  store.setWorkspaceSession(retired, hostId)
   store.flushOrThrow()
   return true
 }
@@ -869,8 +837,6 @@ type StablePaneSpawnContext = {
   connectionId?: string | null
   resolveOwner?: () => StablePaneOwner | null
   onFreshSpawn?: (result: PtySpawnResult) => void
-  /** Create a shell for this pane instead of attaching the one it records; see the caller. */
-  refuseAdoption?: boolean
 }
 
 function stablePanePersistenceFence(
@@ -890,22 +856,25 @@ function persistAdmittedStablePaneBinding(args: {
   result: PtySpawnResult
   worktreeId: string | undefined
   startupCwd: string | undefined
+  connectionId: string | null | undefined
 }): boolean {
   const expectedBinding = stablePanePersistenceFence(args.owner)
   if (!args.store || !args.owner || !args.worktreeId || !expectedBinding) {
     return false
   }
-  const persisted = bindPaneShell({
-    store: args.store,
-    worktreeId: args.worktreeId,
-    tabId: args.owner.tabId,
-    leafId: args.owner.leafId,
-    ptyId: args.result.id,
-    ...(args.result.incarnationId ? { incarnationId: args.result.incarnationId } : {}),
-    ...(args.startupCwd ? { startupCwd: args.startupCwd } : {}),
-    expectedBinding
-  })
-  if (persisted.bound === false) {
+  const persisted = args.store.persistPtyBinding(
+    {
+      worktreeId: args.worktreeId,
+      tabId: args.owner.tabId,
+      leafId: args.owner.leafId,
+      ptyId: args.result.id,
+      ...(args.result.incarnationId ? { incarnationId: args.result.incarnationId } : {}),
+      ...(args.startupCwd ? { startupCwd: args.startupCwd } : {}),
+      expectedBinding
+    },
+    args.connectionId ? toSshExecutionHostId(args.connectionId) : undefined
+  )
+  if (persisted === false) {
     throw new Error('terminal_pane_owner_changed')
   }
   return true
@@ -941,7 +910,7 @@ async function attachStablePaneOwner(
     if (isDaemonEndpointGoneError(error)) {
       throw new TerminalHostGoneError()
     }
-    if (!isPtyProvenGoneForReplacement(error, owner.ptyId)) {
+    if (!isPtyAlreadyGoneError(error)) {
       throw error
     }
     const ownerBeforeRetire = args.resolveOwner?.()
@@ -957,7 +926,10 @@ async function attachStablePaneOwner(
     runtime?.onPtyExit(owner.ptyId, 0, owner.incarnationId)
     clearProviderPtyState(owner.ptyId)
     ptyOwnership.delete(owner.ptyId)
-    if (args.worktreeId && !retirePersistedStablePaneOwner(args.store, owner, args.worktreeId)) {
+    if (
+      args.worktreeId &&
+      !retirePersistedStablePaneOwner(args.store, owner, args.worktreeId, args.connectionId)
+    ) {
       throw new Error('terminal_pane_owner_changed')
     }
     if (args.resolveOwner?.()) {
@@ -980,11 +952,7 @@ async function attachStablePaneOwner(
 async function spawnForStablePane(
   args: StablePaneSpawnContext
 ): Promise<{ result: PtySpawnResult; owner: StablePaneOwner | null }> {
-  // The one place an owner becomes `sessionId` for the provider, which is what makes an attach an
-  // attach. Refusing adoption has to be honoured HERE: gating only where the owner is resolved
-  // leaves every other resolution free to reach this line, which is exactly how the unreachable
-  // pane's "start a new terminal" kept attaching the shell it could not reach.
-  if (args.owner && !args.refuseAdoption) {
+  if (args.owner) {
     const attached = await attachStablePaneOwner({ ...args, owner: args.owner })
     if (attached) {
       return attached
@@ -1111,29 +1079,9 @@ function normalizeNodePtySpawnError(err: unknown): Error {
   return new Error(hintedMessage)
 }
 
-/**
- * Retiring a pane's owner authorizes a replacement that carries its agent resume payload, so it
- * needs proof — unlike a shutdown, where "not found" is simply the outcome we asked for. A bare
- * not-found proves an exit only from a provider that owns its ptys; a replacement relay answers the
- * same for shells its predecessor is still running.
- */
-function isPtyProvenGoneForReplacement(err: unknown, ptyId: string): boolean {
-  if (!parseAppSshPtyId(ptyId)) {
-    return isPtyAlreadyGoneError(err)
-  }
-  // For SSH, the two proving answers are the relay's own observed exit and the expiry the reattach
-  // mints only after verifying that proof names this shell. A bare not-found is neither.
-  const message = err instanceof Error ? err.message : String(err)
-  return isSshPtyExitedError(err) || message.includes(SSH_SESSION_EXPIRED_ERROR)
-}
-
 function isPtyAlreadyGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
-  // A proven exit is the strongest form of "already gone"; it only reads differently because the
-  // relay now says what it observed instead of reporting an unknown id.
-  return (
-    isSshPtyNotFoundError(err) || isSshPtyExitedError(err) || /Session not found/i.test(message)
-  )
+  return isSshPtyNotFoundError(err) || /Session not found/i.test(message)
 }
 
 function delay(ms: number): Promise<void> {
@@ -1405,6 +1353,26 @@ const MANAGED_CODEX_AUTH_UNAVAILABLE_MESSAGE =
   'The selected Codex account credentials are temporarily unavailable. Try opening the terminal again.'
 const CODEX_RESUME_AUTH_UNAVAILABLE_MESSAGE =
   'The Codex account credentials for this session are temporarily unavailable. Try opening the terminal again.'
+const MANAGED_CODEX_HOME_UNAVAILABLE_MESSAGE =
+  'Codex account files are temporarily locked. Retry in a moment.'
+
+/**
+ * Why: launch prep refuses an unreadable managed home by throwing instead of
+ * returning `null`, because `null` already means "launch the system default".
+ * Turn that refusal into the same shape as the auth-unavailable refusal above —
+ * a user-facing spawn rejection — so the pane never starts on another account's
+ * credentials (#STA-4422).
+ */
+function resolveSelectedCodexHomeOrRefuseSpawn(resolve: () => string | null): string | null {
+  try {
+    return resolve()
+  } catch (error) {
+    if (error instanceof ManagedCodexHomeTemporarilyUnavailableError) {
+      throw new Error(MANAGED_CODEX_HOME_UNAVAILABLE_MESSAGE, { cause: error })
+    }
+    throw error
+  }
+}
 
 type ManagedCodexAuthResolutionArgs = {
   selectedCodexHomePath: string | null
@@ -1964,7 +1932,9 @@ export function buildPtyHostEnv(
       hooksEnabled: opts.codexStatusHooksEnabled ?? opts.agentStatusHooksEnabled,
       isPackaged: opts.isPackaged,
       isWsl: opts.isWsl,
-      managedHomePath: opts.selectedCodexHomePath
+      managedHomePath: opts.selectedCodexHomePath,
+      userDataPath: opts.userDataPath,
+      resourcesPath: opts.resourcesPath
     })
     if (preflightCommand) {
       baseEnv.ORCA_CODEX_LAUNCH_PREFLIGHT = preflightCommand
@@ -2599,14 +2569,14 @@ export function registerPtyHandlers(
         return env
       },
       onSpawned: (id, incarnationId) => runtime?.onPtySpawned(id, incarnationId),
-      onExit: (id, code, incarnationId) => {
+      onExit: (id, code, incarnationId, cause) => {
         if (!isCurrentPtyExit({ id, incarnationId })) {
           return
         }
         clearProviderPtyState(id)
         ptyOwnership.delete(id)
         markClaudePtyExited(id)
-        runtime?.onPtyExit(id, code, incarnationId)
+        runtime?.onPtyExit(id, code, incarnationId, cause ? { cause } : undefined)
       },
       onData: (id, data, timestamp, sequenceChars, transformed) =>
         runtime?.onPtyData(id, data, timestamp, sequenceChars ?? data.length, transformed)
@@ -4007,7 +3977,9 @@ export function registerPtyHandlers(
       return release
     },
     finalizeExit: (event) => {
-      runtime?.onPtyExit(event.id, event.code, event.ptyIncarnation)
+      runtime?.onPtyExit(event.id, event.code, event.ptyIncarnation, {
+        hostExitConfirmed: true
+      })
       finalizePtyExitForRenderer(event)
     },
     pauseProvider: (generation, id) => {
@@ -4149,9 +4121,20 @@ export function registerPtyHandlers(
         clearProviderPtyState(payload.id)
         ptyOwnership.delete(payload.id)
         markClaudePtyExited(payload.id)
-        runtime?.onPtyExit(payload.id, payload.code, payload.incarnationId)
+        runtime?.onPtyExit(
+          payload.id,
+          payload.code,
+          payload.incarnationId,
+          payload.cause ? { cause: payload.cause } : undefined
+        )
       }
-      sendPtyExitToRenderer(payload)
+      // Why not the whole payload: the exit cause is a main-process fact for the
+      // runtime's records; the renderer's pty:exit contract stays as it was.
+      sendPtyExitToRenderer({
+        id: payload.id,
+        code: payload.code,
+        ...(payload.incarnationId ? { incarnationId: payload.incarnationId } : {})
+      })
     })
   }
 
@@ -4542,6 +4525,15 @@ export function registerPtyHandlers(
     }
   }
 
+  const markSshInventoryUnverifiable = (connectionId: string, error: unknown): void => {
+    const reason = error instanceof Error ? error.message : String(error)
+    for (const [ptyId, ownerConnectionId] of ptyOwnership) {
+      if (ownerConnectionId === connectionId) {
+        runtime?.markPtyLivenessUnverifiable?.(ptyId, reason)
+      }
+    }
+  }
+
   // Why: route through getProviderForPty() so CLI commands work for remote PTYs too; localProvider would silently fail for them.
   runtime?.setPtyController({
     claimStablePaneCreate: (args) => {
@@ -4734,7 +4726,7 @@ export function registerPtyHandlers(
       if (args.preAllocatedHandle) {
         env = { ...env, ORCA_TERMINAL_HANDLE: args.preAllocatedHandle }
       }
-      let selectedCodexHomePath =
+      let selectedCodexHomePath = resolveSelectedCodexHomeOrRefuseSpawn(() =>
         !preAdoptedStablePane && !args.connectionId
           ? getCompatibleSelectedCodexHomePath(
               codexSelectionTarget,
@@ -4754,6 +4746,7 @@ export function registerPtyHandlers(
                   }) ?? null)
             )
           : null
+      )
       if (
         !preAdoptedStablePane &&
         args.launchAgent === 'codex' &&
@@ -4765,21 +4758,25 @@ export function registerPtyHandlers(
           requiredCodexHomePath: codexResumeHome?.codexHomePath,
           target: codexSelectionTarget,
           resolveCurrent: () =>
-            getCompatibleSelectedCodexHomePath(
-              codexSelectionTarget,
-              getSelectedCodexHomePath?.(codexSelectionTarget, env, {
-                workspacePath: cwd,
-                launchAgent: 'codex'
-              }) ?? null
+            resolveSelectedCodexHomeOrRefuseSpawn(() =>
+              getCompatibleSelectedCodexHomePath(
+                codexSelectionTarget,
+                getSelectedCodexHomePath?.(codexSelectionTarget, env, {
+                  workspacePath: cwd,
+                  launchAgent: 'codex'
+                }) ?? null
+              )
             ),
           resolveAfterUnavailable: (unavailableManagedHomePath) =>
-            getCompatibleSelectedCodexHomePath(
-              codexSelectionTarget,
-              getSelectedCodexHomePath?.(codexSelectionTarget, env, {
-                workspacePath: cwd,
-                launchAgent: 'codex',
-                unavailableManagedHomePath
-              }) ?? null
+            resolveSelectedCodexHomeOrRefuseSpawn(() =>
+              getCompatibleSelectedCodexHomePath(
+                codexSelectionTarget,
+                getSelectedCodexHomePath?.(codexSelectionTarget, env, {
+                  workspacePath: cwd,
+                  launchAgent: 'codex',
+                  unavailableManagedHomePath
+                }) ?? null
+              )
             )
         })
         selectedCodexHomePath = resolution instanceof Promise ? await resolution : resolution
@@ -4839,7 +4836,8 @@ export function registerPtyHandlers(
         rows: args.rows,
         cwd,
         env,
-        ...(isNewDaemonSession ? { isNewSession: true } : {})
+        ...(isNewDaemonSession ? { isNewSession: true } : {}),
+        historyIsolationEnabled: getSettings?.()?.terminalScopeHistoryByWorktree ?? true
       }
       if (!args.connectionId && !isDaemonHostSpawn) {
         spawnOptions.codexHomePathOverride = { value: selectedCodexHomePath }
@@ -5261,7 +5259,8 @@ export function registerPtyHandlers(
             owner: stablePaneOwner,
             result,
             worktreeId: hostSessionBinding?.worktreeId,
-            startupCwd: cwd
+            startupCwd: cwd,
+            connectionId: args.connectionId
           })
         } catch (error) {
           if (error instanceof Error && error.message === 'terminal_pane_owner_changed') {
@@ -5329,12 +5328,6 @@ export function registerPtyHandlers(
             ...(typeof args.leafId === 'string' && isTerminalLeafId(args.leafId)
               ? { leafId: args.leafId }
               : {}),
-            // The shell this lease names, as the host just attested it. Without it the record says
-            // only "pty-N", and a replaced relay reissues that from 1 — so reconnect would have
-            // nothing to compare and would attach whatever now answers to the id.
-            ...(isRelayAttestedPtyIncarnationId(result.incarnationId)
-              ? { incarnationId: result.incarnationId }
-              : {}),
             state: 'attached',
             lastAttachedAt: Date.now()
           })
@@ -5358,19 +5351,25 @@ export function registerPtyHandlers(
         })
         if (hostSessionBinding && !stablePaneBindingPersisted) {
           try {
-            const bound = bindPaneShell({
-              store: hostSessionBinding.store,
+            const binding = {
               worktreeId: hostSessionBinding.worktreeId,
               tabId: hostSessionBinding.tabId,
               leafId: hostSessionBinding.leafId,
               ptyId: result.id,
+              hostAdmittedMembership: true,
               ...(result.incarnationId ? { incarnationId: result.incarnationId } : {}),
               ...(cwd ? { startupCwd: cwd } : {}),
               ...(hostSessionBinding.expectedSourceBinding
                 ? { expectedSourceBinding: hostSessionBinding.expectedSourceBinding }
                 : {})
-            })
-            if (bound.bound === false) {
+            }
+            const persisted = args.connectionId
+              ? hostSessionBinding.store.persistPtyBinding(
+                  binding,
+                  toSshExecutionHostId(args.connectionId)
+                )
+              : hostSessionBinding.store.persistPtyBinding(binding)
+            if (persisted === false) {
               throw new Error('terminal_split_source_not_found')
             }
           } catch (err) {
@@ -5528,8 +5527,17 @@ export function registerPtyHandlers(
     },
     write: (ptyId, data) => {
       try {
-        getProviderForPty(ptyId).write(ptyId, data)
-        return true
+        return getProviderForPty(ptyId).write(ptyId, data) !== false
+      } catch {
+        return false
+      }
+    },
+    writeWithSettlement: async (ptyId, data) => {
+      try {
+        const provider = getProviderForPty(ptyId)
+        return provider.writeWithSettlement
+          ? await provider.writeWithSettlement(ptyId, data)
+          : provider.write(ptyId, data) !== false
       } catch {
         return false
       }
@@ -5595,6 +5603,7 @@ export function registerPtyHandlers(
       }
     },
     kill: (ptyId) => {
+      runtime?.markPtyStopRequested?.(ptyId)
       let connectionId: string | null | undefined = ptyOwnership.get(ptyId)
       const parsedSshId = connectionId === undefined ? parseAppSshPtyId(ptyId) : null
       connectionId ??= parsedSshId?.connectionId
@@ -5606,12 +5615,15 @@ export function registerPtyHandlers(
           if (connectionId) {
             // Why: runtime/CLI close can target a detached SSH PTY after its
             // provider was unregistered. Tombstone the lease so reconnect does
-            // not revive a terminal the user explicitly closed.
+            // not revive a terminal the user explicitly closed — but a detached
+            // relay PTY outlives its provider, so report an unconfirmed stop
+            // rather than a kill nobody performed.
             const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
             runtime?.onPtyExit(ptyId, -1, incarnationId)
             rememberSyntheticKillExit(ptyId)
             sendPtyExitToRenderer({ id: ptyId, code: -1 })
-            return true
+            runtime?.markPtyLivenessUnverifiable?.(ptyId, SSH_PROVIDER_UNREGISTERED_REASON)
+            return false
           }
           return false
         }
@@ -5643,6 +5655,12 @@ export function registerPtyHandlers(
             // Why: close runtime tails without clearing provider ownership, so
             // a retry can still target a PTY that survived the failed shutdown.
             if (!retired) {
+              if (connectionId) {
+                runtime?.markPtyLivenessUnverifiable?.(
+                  ptyId,
+                  err instanceof Error ? err.message : String(err)
+                )
+              }
               runtime?.onPtyExit(ptyId, -1, ptyIncarnationById.get(ptyId))
             }
           })
@@ -5656,6 +5674,12 @@ export function registerPtyHandlers(
             `[pty] Failed to stop PTY ${ptyId}: ${err instanceof Error ? err.message : String(err)}`
           )
           if (!retiredRejectedPtyIds.has(ptyId)) {
+            if (connectionId) {
+              runtime?.markPtyLivenessUnverifiable?.(
+                ptyId,
+                err instanceof Error ? err.message : String(err)
+              )
+            }
             runtime?.onPtyExit(ptyId, -1, ptyIncarnationById.get(ptyId))
           }
         })
@@ -5663,11 +5687,23 @@ export function registerPtyHandlers(
       }
       return killWithCurrentProvider()
     },
-    retireRejectedPty: (ptyId) => {
+    retireRejectedPty: (ptyId, stopConfirmed) => {
       rememberRetiredRejectedPty(ptyId)
+      if (!stopConfirmed) {
+        runtime?.markPtyLivenessUnverifiable?.(
+          ptyId,
+          'a follow-up stop was issued but its outcome could not be verified'
+        )
+        if (!ptyOwnership.has(ptyId)) {
+          return
+        }
+        runtime?.onPtyExit(ptyId, -1, ptyIncarnationById.get(ptyId))
+        rememberSyntheticKillExit(ptyId)
+        sendPtyExitToRenderer({ id: ptyId, code: -1 })
+        return
+      }
       // Why: a completed stop already cleared provider state, tombstoned the lease and told the
-      // renderer; repeating that double-fires the exit IPC. The runtime still needs code 0 so an
-      // SSH pane retires for good instead of staying preserved by the stop's negative exit.
+      // renderer; repeating that double-fires the exit IPC.
       if (!ptyOwnership.has(ptyId)) {
         runtime?.onPtyExit(ptyId, 0, ptyIncarnationById.get(ptyId))
         return
@@ -5701,6 +5737,7 @@ export function registerPtyHandlers(
       }
     },
     stopAndWait: async (ptyId, opts) => {
+      runtime?.markPtyStopRequested?.(ptyId)
       let connectionId: string | null | undefined = ptyOwnership.get(ptyId)
       const parsedSshId = connectionId === undefined ? parseAppSshPtyId(ptyId) : null
       connectionId ??= parsedSshId?.connectionId
@@ -5736,13 +5773,14 @@ export function registerPtyHandlers(
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
         if (connectionId) {
-          // Why: an absent SSH provider means there is no live target left to
-          // await, but the relay lease must still be tombstoned.
+          // Why: the relay lease must still be tombstoned, but an absent SSH
+          // provider is lost contact — the remote PTY is designed to survive it,
+          // so nothing here observed an exit to report as a confirmed stop.
           const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
           runtime?.onPtyExit(ptyId, -1, incarnationId)
           rememberSyntheticKillExit(ptyId)
           sendPtyExitToRenderer({ id: ptyId, code: -1 })
-          return true
+          runtime?.markPtyLivenessUnverifiable?.(ptyId, SSH_PROVIDER_UNREGISTERED_REASON)
         }
         return false
       }
@@ -5755,6 +5793,12 @@ export function registerPtyHandlers(
         })
       } catch (err) {
         if (!isPtyAlreadyGoneError(err)) {
+          if (connectionId) {
+            runtime?.markPtyLivenessUnverifiable?.(
+              ptyId,
+              err instanceof Error ? err.message : String(err)
+            )
+          }
           console.warn(
             `[pty] Failed to stop PTY ${ptyId}: ${err instanceof Error ? err.message : String(err)}`
           )
@@ -5763,9 +5807,16 @@ export function registerPtyHandlers(
       }
       try {
         if (!(await verifyPtyStopped(provider, ptyId, opts))) {
+          runtime?.markPtyLivenessLive?.(ptyId)
           return false
         }
       } catch (err) {
+        if (connectionId) {
+          runtime?.markPtyLivenessUnverifiable?.(
+            ptyId,
+            err instanceof Error ? err.message : String(err)
+          )
+        }
         console.warn(
           `[pty] Failed to verify PTY ${ptyId} stopped: ${
             err instanceof Error ? err.message : String(err)
@@ -5775,9 +5826,11 @@ export function registerPtyHandlers(
       }
       const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
       if (!providerExitObserved) {
-        runtime?.onPtyExit(ptyId, -1, incarnationId)
+        // The owning provider's fresh inventory observed absence, so this is a
+        // death certificate even when its exit event was missed.
+        runtime?.onPtyExit(ptyId, 0, incarnationId)
         rememberSyntheticKillExit(ptyId)
-        sendPtyExitToRenderer({ id: ptyId, code: -1 })
+        sendPtyExitToRenderer({ id: ptyId, code: 0 })
       }
       return true
     },
@@ -5829,19 +5882,23 @@ export function registerPtyHandlers(
         return null
       }
     },
-    listProcesses: async (connectionId) => {
+    listProcesses: async (connectionId, opts) => {
       if (connectionId === null) {
         return localProvider.listProcesses()
       }
       if (connectionId !== undefined) {
-        return getProvider(connectionId).listProcesses()
+        try {
+          return await getProvider(connectionId).listProcesses(opts)
+        } catch (error) {
+          markSshInventoryUnverifiable(connectionId, error)
+          throw error
+        }
       }
-      const providerSessions = await Promise.all([
-        localProvider.listProcesses(),
-        ...Array.from(sshProviders.values(), (provider) => provider.listProcesses())
-      ])
-      return providerSessions.flat()
+      return (await listRegisteredPtyProcessesWithHostScope(markSshInventoryUnverifiable, opts))
+        .processes
     },
+    listProcessesWithHostScope: (opts) =>
+      listRegisteredPtyProcessesWithHostScope(markSshInventoryUnverifiable, opts),
     serializeBuffer: (ptyId, opts) => {
       // Why: mobile xterm must start from the desktop's exact screen state/dimensions before live TUI chunks render correctly.
       return requestSerializedBuffer(ptyId, opts)
@@ -5974,8 +6031,6 @@ export function registerPtyHandlers(
         cwd?: string
         // Why: fresh local spawns opt into recovering a saved cwd whose dir was deleted (#7239); reattach/remote need exact cwd, so the flag alone isn't sufficient.
         cwdFallback?: 'worktree'
-        /** Create a shell for this pane rather than adopting the one it records. */
-        createFreshShellForUnreachablePane?: boolean
         env?: Record<string, string>
         envToDelete?: string[]
         command?: string
@@ -6075,14 +6130,8 @@ export function registerPtyHandlers(
       if (existingPaneSpawn) {
         return { ...(await existingPaneSpawn.promise), isReattach: true }
       }
-      // Why the caller may refuse adoption: the unreachable-pane card offers "Start a new terminal"
-      // for a pane whose recorded shell cannot be reached. Resolving an owner here makes the action
-      // attach that shell first — and when it is unreachable the attach fails, the action creates
-      // nothing, and the card comes back. The button is dead in the one state it is offered in.
-      // Skipping the resolve is what makes it a creation: nothing is killed, and the old shell is
-      // left alive and unbound for the cleanup surface.
       const earlyStablePaneOwner =
-        earlyPaneKey && args.worktreeId && args.createFreshShellForUnreachablePane !== true
+        earlyPaneKey && args.worktreeId
           ? resolveStablePaneOwner(runtime, store, earlyPaneKey, args.worktreeId, args.connectionId)
           : null
       const earlyWorktreeId = args.worktreeId
@@ -6417,7 +6466,7 @@ export function registerPtyHandlers(
         // Why: declared after the strip so a local-provider spawn cannot capture the
         // pre-strip env — only the daemon branch below re-derives this from baseEnv.
         let env: Record<string, string> | undefined = baseEnv
-        let selectedCodexHomePath =
+        let selectedCodexHomePath = resolveSelectedCodexHomeOrRefuseSpawn(() =>
           !preAdoptedStablePane && !args.connectionId
             ? getCompatibleSelectedCodexHomePath(
                 codexSelectionTarget,
@@ -6437,6 +6486,7 @@ export function registerPtyHandlers(
                     }) ?? null)
               )
             : null
+        )
         if (!preAdoptedStablePane && args.launchAgent === 'codex' && args.sessionId === undefined) {
           const resolution = resolveCodexHomeAfterManagedAuthReadiness({
             selectedCodexHomePath,
@@ -6444,21 +6494,25 @@ export function registerPtyHandlers(
             requiredCodexHomePath: codexResumeHome?.codexHomePath,
             target: codexSelectionTarget,
             resolveCurrent: () =>
-              getCompatibleSelectedCodexHomePath(
-                codexSelectionTarget,
-                getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
-                  workspacePath: cwd,
-                  launchAgent: 'codex'
-                }) ?? null
+              resolveSelectedCodexHomeOrRefuseSpawn(() =>
+                getCompatibleSelectedCodexHomePath(
+                  codexSelectionTarget,
+                  getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
+                    workspacePath: cwd,
+                    launchAgent: 'codex'
+                  }) ?? null
+                )
               ),
             resolveAfterUnavailable: (unavailableManagedHomePath) =>
-              getCompatibleSelectedCodexHomePath(
-                codexSelectionTarget,
-                getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
-                  workspacePath: cwd,
-                  launchAgent: 'codex',
-                  unavailableManagedHomePath
-                }) ?? null
+              resolveSelectedCodexHomeOrRefuseSpawn(() =>
+                getCompatibleSelectedCodexHomePath(
+                  codexSelectionTarget,
+                  getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
+                    workspacePath: cwd,
+                    launchAgent: 'codex',
+                    unavailableManagedHomePath
+                  }) ?? null
+                )
               )
           })
           selectedCodexHomePath = resolution instanceof Promise ? await resolution : resolution
@@ -6558,7 +6612,8 @@ export function registerPtyHandlers(
           cwd,
           ...(prevalidatedCwd && !isDaemonHostSpawn ? { prevalidatedCwd } : {}),
           env: spawnEnv,
-          ...(isMintedSessionId ? { isNewSession: true } : {})
+          ...(isMintedSessionId ? { isNewSession: true } : {}),
+          historyIsolationEnabled: getSettings?.()?.terminalScopeHistoryByWorktree ?? true
         }
         if (!args.connectionId && !isDaemonHostSpawn) {
           spawnOptions.codexHomePathOverride = { value: selectedCodexHomePath }
@@ -6694,7 +6749,6 @@ export function registerPtyHandlers(
                 provider,
                 spawnOptions,
                 owner: stablePaneOwnerCandidate,
-                refuseAdoption: args.createFreshShellForUnreachablePane === true,
                 worktreeId: args.worktreeId,
                 connectionId: args.connectionId,
                 resolveOwner: () =>
@@ -6834,7 +6888,8 @@ export function registerPtyHandlers(
             owner: stablePaneOwner,
             result,
             worktreeId: args.worktreeId,
-            startupCwd: cwd
+            startupCwd: cwd,
+            connectionId: args.connectionId
           })
         } catch (error) {
           if (error instanceof Error && error.message === 'terminal_pane_owner_changed') {
@@ -6887,11 +6942,6 @@ export function registerPtyHandlers(
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
             ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
             ...(validatedLeafId ? { leafId: validatedLeafId } : {}),
-            // See the sibling writer: a lease that names only "pty-N" cannot survive a relay that
-            // reissues ids from 1.
-            ...(isRelayAttestedPtyIncarnationId(result.incarnationId)
-              ? { incarnationId: result.incarnationId }
-              : {}),
             state: 'attached',
             lastAttachedAt: Date.now()
           })
@@ -6912,15 +6962,19 @@ export function registerPtyHandlers(
           !stablePaneBindingPersisted
         ) {
           try {
-            bindPaneShell({
-              store,
+            const binding = {
               worktreeId: args.worktreeId,
               tabId: args.tabId,
               leafId: validatedLeafId,
               ptyId: result.id,
               ...(result.incarnationId ? { incarnationId: result.incarnationId } : {}),
               ...(cwd ? { startupCwd: cwd } : {})
-            })
+            }
+            if (args.connectionId) {
+              store.persistPtyBinding(binding, toSshExecutionHostId(args.connectionId))
+            } else {
+              store.persistPtyBinding(binding)
+            }
           } catch (err) {
             console.error('[pty] failed to persist PTY binding after spawn:', err)
             if (!result.isReattach) {
@@ -7189,20 +7243,11 @@ export function registerPtyHandlers(
     mainWindow.webContents.send('pty:writeUnavailable', { id })
   }
 
-  type PtyWriteFence = { incarnationId: string | undefined }
-
-  const isCurrentPtyWrite = (id: string, fence: PtyWriteFence): boolean =>
-    !isSupersededPtyId(id) && ptyIncarnationById.get(id) === fence.incarnationId
-
   const writePtyProviderInputWithinLimit = (
     provider: IPtyProvider,
     id: string,
-    data: string,
-    fence: PtyWriteFence
+    data: string
   ): boolean | Promise<boolean> => {
-    if (!isCurrentPtyWrite(id, fence)) {
-      return false
-    }
     const chunks = iterateTerminalInputChunks(data)
     const first = chunks.next()
     if (first.done) {
@@ -7214,24 +7259,21 @@ export function registerPtyHandlers(
       provider.write(id, first.value)
       return true
     }
-    return writePtyProviderInputChunks(provider, id, chunks, first.value, second.value, fence)
+    return writePtyProviderInputChunks(provider, id, chunks, first.value, second.value)
   }
 
   const writePtyProviderInput = (
     provider: IPtyProvider,
     id: string,
-    data: string,
-    fence: PtyWriteFence
+    data: string
   ): boolean | Promise<boolean> => {
     try {
       const tooLarge = isTerminalInputTooLargeWithDeferredMeasurement(data)
       if (typeof tooLarge === 'boolean') {
-        return tooLarge ? false : writePtyProviderInputWithinLimit(provider, id, data, fence)
+        return tooLarge ? false : writePtyProviderInputWithinLimit(provider, id, data)
       }
       return tooLarge
-        .then((result) =>
-          result ? false : writePtyProviderInputWithinLimit(provider, id, data, fence)
-        )
+        .then((result) => (result ? false : writePtyProviderInputWithinLimit(provider, id, data)))
         .catch((error) => {
           reportUnavailablePtyWrite(id, error)
           return false
@@ -7247,16 +7289,12 @@ export function registerPtyHandlers(
     id: string,
     chunks: Iterator<string>,
     firstChunk: string,
-    secondChunk: string,
-    fence: PtyWriteFence
+    secondChunk: string
   ): Promise<boolean> => {
     try {
       let chunk: IteratorResult<string> = { done: false, value: firstChunk }
       let nextChunk: IteratorResult<string> = { done: false, value: secondChunk }
       while (!chunk.done) {
-        if (!isCurrentPtyWrite(id, fence)) {
-          return false
-        }
         provider.write(id, chunk.value)
         if (!nextChunk.done) {
           await new Promise((resolve) => setTimeout(resolve, 0))
@@ -7301,15 +7339,9 @@ export function registerPtyHandlers(
     !mainWindow.isDestroyed() &&
     !(typeof mainWebContents.isDestroyed === 'function' && mainWebContents.isDestroyed())
 
-  const writePtyInput = (
-    args: PtyWritePayload,
-    fence: PtyWriteFence
-  ): boolean | Promise<boolean> => {
+  const writePtyInput = (args: PtyWritePayload): boolean | Promise<boolean> => {
     // Why: mobile-presence-lock defense-in-depth — the renderer's onData guard can let one keystroke slip during the state-flip lag, so catch it server-side. See docs/mobile-presence-lock.md.
     if (runtime?.getDriver(args.id).kind === 'mobile') {
-      return false
-    }
-    if (!isCurrentPtyWrite(args.id, fence)) {
       return false
     }
     const provider = ptyOwnership.has(args.id) ? tryGetProviderForPty(args.id) : undefined
@@ -7323,20 +7355,14 @@ export function registerPtyHandlers(
       if (visibleRendererPtys.has(args.id)) {
         clearHiddenRendererResizeOutput(args.id)
       }
-      return writePtyProviderInput(provider, args.id, args.data, fence)
+      return writePtyProviderInput(provider, args.id, args.data)
     } catch {
       return false
     }
   }
 
-  const writePtyInputAccepted = (
-    args: PtyWritePayload,
-    fence: PtyWriteFence
-  ): boolean | Promise<boolean> => {
+  const writePtyInputAccepted = (args: PtyWritePayload): boolean | Promise<boolean> => {
     if (runtime?.getDriver(args.id).kind === 'mobile') {
-      return false
-    }
-    if (!isCurrentPtyWrite(args.id, fence)) {
       return false
     }
     // Why: the ack infers Ctrl+C/Escape reached the local PTY; SSH providers are fire-and-forget relay notifications and can't truthfully acknowledge yet.
@@ -7354,7 +7380,7 @@ export function registerPtyHandlers(
       if (visibleRendererPtys.has(args.id)) {
         clearHiddenRendererResizeOutput(args.id)
       }
-      return writePtyProviderInput(provider, args.id, args.data, fence)
+      return writePtyProviderInput(provider, args.id, args.data)
     } catch {
       return false
     }
@@ -7366,31 +7392,21 @@ export function registerPtyHandlers(
     if (!isPtyWriteEventFromMainWindow(event, mainWindow.webContents) || !isPtyWritePayload(args)) {
       return
     }
-    // Why here and not in the renderer: input queued before a reattach would
-    // otherwise land on whatever PTY now holds the pane.
-    const fence: PtyWriteFence = { incarnationId: ptyIncarnationById.get(args.id) }
-    if (!isCurrentPtyWrite(args.id, fence)) {
-      return
-    }
     const claimTail = hostViewportClaimTails.get(args.id)
     if (claimTail) {
-      void claimTail.then((claimed) => (claimed ? writePtyInput(args, fence) : false))
+      void claimTail.then((claimed) => (claimed ? writePtyInput(args) : false))
       return
     }
-    writePtyInput(args, fence)
+    writePtyInput(args)
   })
   ipcMain.handle('pty:writeAccepted', (event, args: unknown): boolean | Promise<boolean> => {
     if (!isPtyWriteEventFromMainWindow(event, mainWindow.webContents) || !isPtyWritePayload(args)) {
       return false
     }
-    const fence: PtyWriteFence = { incarnationId: ptyIncarnationById.get(args.id) }
-    if (!isCurrentPtyWrite(args.id, fence)) {
-      return false
-    }
     const claimTail = hostViewportClaimTails.get(args.id)
     return claimTail
-      ? claimTail.then((claimed) => (claimed ? writePtyInputAccepted(args, fence) : false))
-      : writePtyInputAccepted(args, fence)
+      ? claimTail.then((claimed) => (claimed ? writePtyInputAccepted(args) : false))
+      : writePtyInputAccepted(args)
   })
 
   ipcMain.removeAllListeners('pty:claimViewport')
@@ -7423,10 +7439,6 @@ export function registerPtyHandlers(
   // Why: resize is fire-and-forget — ipcMain.on (not .handle) halves IPC traffic by skipping the empty acknowledgement reply.
   ipcMain.removeAllListeners('pty:resize')
   ipcMain.on('pty:resize', (_event, args: { id: string; cols: number; rows: number }) => {
-    // Why: a resize for a pane that has rebound would reshape the successor's shell.
-    if (isSupersededPtyId(args.id)) {
-      return
-    }
     // Why: after a desktop-fit override change the renderer's safeFit cascade re-measures ALL panes (background ones at full width), so suppress every pty:resize in this window to avoid corrupting PTY dimensions.
     if (runtime?.isResizeSuppressed()) {
       return
@@ -7691,15 +7703,6 @@ export function registerPtyHandlers(
 
   ipcMain.removeAllListeners('pty:signal')
   ipcMain.on('pty:signal', (_event, args: { id: string; signal: string }) => {
-    // Why fenced but pty:kill is not: a signal means "interrupt MY pane", so a
-    // superseded id is a misdirected interrupt. A kill on a superseded id is the
-    // opposite — that PTY is now orphaned and reclaiming it is the point.
-    if (isSupersededPtyId(args.id)) {
-      return
-    }
-    // Routing refuses a session whose host is unreachable, but sendSignal is async everywhere,
-    // so that refusal arrives as a rejection rather than a throw — and optional chaining
-    // short-circuits the whole chain when there is no provider at all.
     tryGetProviderForPty(args.id)
       ?.sendSignal(args.id, args.signal)
       .catch(() => {})
@@ -7719,6 +7722,7 @@ export function registerPtyHandlers(
       // Why: runtime terminal handles belong to terminal.close; unowned PTY routing could target the local provider.
       throw new Error('Invalid PTY provider id')
     }
+    runtime?.markPtyStopRequested?.(args.id)
     const ownedConnectionId = ptyOwnership.get(args.id)
     const parsedSshId = ownedConnectionId === undefined ? parseAppSshPtyId(args.id) : null
     const connectionId = ownedConnectionId ?? parsedSshId?.connectionId
@@ -7733,6 +7737,7 @@ export function registerPtyHandlers(
       // provider is unregistered; hydrated app-scoped ids can also arrive
       // before ownership is rebuilt. Tombstone instead of falling back local.
       const incarnationId = finishPtyShutdown(args.id, connectionId, store)
+      runtime?.markPtyLivenessUnverifiable?.(args.id, SSH_PROVIDER_UNREGISTERED_REASON)
       runtime?.onPtyExit(args.id, -1, incarnationId)
       rememberSyntheticKillExit(args.id)
       sendPtyExitToRenderer({ id: args.id, code: -1 })
@@ -7852,9 +7857,6 @@ export function registerPtyHandlers(
     }
     const ownedConnectionId = ptyOwnership.get(args.id)
     const parsedSshId = ownedConnectionId === undefined ? parseAppSshPtyId(args.id) : null
-    // Why: before the cold-start daemon swap lands, the pre-swap local provider owns no
-    // daemon id and would answer an authoritative false for every restored session.
-    await getLocalPtyProviderStartupPromise(ownedConnectionId ?? parsedSshId?.connectionId)
     const provider = parsedSshId
       ? sshProviders.get(parsedSshId.connectionId)
       : tryGetProviderForPty(args.id)
