@@ -1,6 +1,7 @@
 import type { PreloadApi } from '../../../../preload/api-types'
 import { EMPTY_PTY_MAIN_DELIVERY_DIAGNOSTICS } from '../../../../shared/pty-delivery-diagnostics'
 import type { SshConnectionState, SshTarget } from '../../../../shared/ssh-types'
+import { NO_OBSERVING_PROVIDER_REASON } from '../../../../shared/pty-liveness-verdict'
 import { translate } from '@/i18n/i18n'
 import { callRuntimeResult } from './web-runtime-calls'
 import { requireActiveEnvironmentOrNull } from './web-runtime-session'
@@ -144,7 +145,10 @@ export function createSshApi(): NonNullable<Partial<PreloadApi>['ssh']> {
       return state
     },
     disconnect: () => Promise.resolve(),
-    terminateSessions: () => Promise.resolve(),
+    // Why: a paired web client has no local SSH provider to observe the host,
+    // so it must report unverifiable rather than a false 'exited' (#12661).
+    terminateSessions: () =>
+      Promise.resolve({ status: 'unverifiable' as const, reason: NO_OBSERVING_PROVIDER_REASON }),
     resetRelay: () => Promise.resolve(),
     getState: async (args) => {
       if (!requireActiveEnvironmentOrNull()) {

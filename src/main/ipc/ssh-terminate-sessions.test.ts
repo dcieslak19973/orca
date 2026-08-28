@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { SSH_PROVIDER_UNREGISTERED_REASON } from '../../shared/pty-liveness-verdict'
 
 const mocks = await vi.hoisted(async () => {
   const { createSshIpcMocks } = await import('./ssh-ipc-module-mocks')
@@ -168,7 +169,10 @@ describe('SSH IPC handlers', () => {
     await expect(reconnect).resolves.toMatchObject({ targetId: 'ssh-1', status: 'connected' })
   })
 
-  it('ssh:terminateSessions cannot reach expired leases without a relay', async () => {
+  // Why (#12661): offline expired-only terminate must not be mistakable for a
+  // successful remote kill — it reports the sessions it could not reach, and
+  // it must not tombstone leases whose shells are still alive.
+  it('ssh:terminateSessions reports expired leases it cannot reach without a relay', async () => {
     mockStore.getSshRemotePtyLeases.mockReturnValue([
       { targetId: 'ssh-1', ptyId: 'pty-expired', state: 'expired' }
     ])
@@ -177,8 +181,16 @@ describe('SSH IPC handlers', () => {
 
     await expect(
       handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual({
+      status: 'unverifiable',
+      reason: SSH_PROVIDER_UNREGISTERED_REASON
+    })
 
+    expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalledWith(
+      'ssh-1',
+      expect.anything(),
+      'terminated'
+    )
     expect(mockPtyProvider.shutdown).not.toHaveBeenCalled()
     expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
   })
@@ -207,7 +219,9 @@ describe('SSH IPC handlers', () => {
     mockPtyProvider.shutdown.mockResolvedValue(undefined)
 
     await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
-    await handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
+    await expect(
+      handlers.get('ssh:terminateSessions')!(null, { targetId: 'ssh-1' })
+    ).resolves.toEqual({ status: 'exited' })
 
     expect(mockPtyProvider.shutdown).toHaveBeenCalledWith('ssh:ssh-1@@pty-abandoned', {
       immediate: true,

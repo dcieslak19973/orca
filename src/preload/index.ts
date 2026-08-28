@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- Why: preload is the audited renderer/Electron IPC contract; co-locating the surface eases security and type-drift review. */
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+import type { PtyLivenessVerdict } from '../shared/pty-liveness-verdict'
 import { electronAPI } from '@electron-toolkit/preload'
 import { preloadE2EConfig } from './e2e-config'
 import { glApi } from './gitlab'
@@ -4795,7 +4796,7 @@ const api = {
     disconnect: (args: { targetId: string }): Promise<void> =>
       ipcRenderer.invoke('ssh:disconnect', args),
 
-    terminateSessions: (args: { targetId: string }): Promise<void> =>
+    terminateSessions: (args: { targetId: string }): Promise<PtyLivenessVerdict> =>
       ipcRenderer.invoke('ssh:terminateSessions', args),
 
     resetRelay: (args: { targetId: string }): Promise<void> =>

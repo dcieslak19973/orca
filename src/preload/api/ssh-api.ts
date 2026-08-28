@@ -11,6 +11,7 @@ import type {
   SshTargetCreateInput,
   SshTargetUpdateInput
 } from '../../shared/ssh-types'
+import type { PtyLivenessVerdict } from '../../shared/pty-liveness-verdict'
 import type { FilesystemPathFlavor } from '../../shared/filesystem-entry-types'
 
 export type SshApi = {
@@ -25,7 +26,8 @@ export type SshApi = {
   resolveConfigHost: (args: { alias: string }) => Promise<SshConfigHostResolution | null>
   connect: (args: { targetId: string }) => Promise<SshConnectionState | null>
   disconnect: (args: { targetId: string }) => Promise<void>
-  terminateSessions: (args: { targetId: string }) => Promise<void>
+  /** `unverifiable` when the relay is offline and expired-lease shells cannot be reached (#12661). */
+  terminateSessions: (args: { targetId: string }) => Promise<PtyLivenessVerdict>
   resetRelay: (args: { targetId: string }) => Promise<void>
   getState: (args: { targetId: string }) => Promise<SshConnectionState | null>
   needsPassphrasePrompt: (args: { targetId: string }) => Promise<boolean>

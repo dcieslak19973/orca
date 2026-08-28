@@ -1,5 +1,9 @@
 import { ipcMain } from 'electron'
 import type { SshTarget } from '../../shared/ssh-types'
+import {
+  SSH_PROVIDER_UNREGISTERED_REASON,
+  type PtyLivenessVerdict
+} from '../../shared/pty-liveness-verdict'
 import { SSH_TERMINATE_RECONNECT_REQUIRED } from '../../shared/constants'
 import { isSshPtyNotFoundError } from '../providers/ssh-pty-errors'
 import { toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
@@ -98,6 +102,10 @@ export function registerSshConnectionHandlers(): void {
 
   ipcMain.handle('ssh:terminateSessions', async (_event, args: { targetId: string }) => {
     invalidateConnectAttempt(args.targetId)
+    // Why (#12661): with no provider and only expired leases, nothing below can
+    // reach the remote shells, yet local teardown still succeeds. Returning the
+    // shared liveness verdict keeps that outcome from reading as a confirmed kill.
+    let verdict: PtyLivenessVerdict = { status: 'exited' }
     await runTargetLifecycle(args.targetId, async () => {
       const provider = getSshPtyProvider(args.targetId)
       const leases = persistedStore!.getSshRemotePtyLeases(args.targetId)
@@ -135,6 +143,12 @@ export function registerSshConnectionHandlers(): void {
           `${SSH_TERMINATE_RECONNECT_REQUIRED}: SSH relay is not connected; reconnect before terminating remote sessions.`
         )
       }
+      if (!provider && ptyIds.length > 0) {
+        // Why: past the throw above every tracked id is an expired lease, and with no
+        // provider we cannot ask the owning host whether those shells died. That is
+        // unverifiable, not exited — only local transport cleanup happens below.
+        verdict = { status: 'unverifiable', reason: SSH_PROVIDER_UNREGISTERED_REASON }
+      }
       const shutdownResults = provider
         ? await Promise.allSettled(
             ptyIds.map(({ appPtyId }) =>
@@ -161,6 +175,7 @@ export function registerSshConnectionHandlers(): void {
       }
       await teardownSshTargetTransport(args.targetId, (session) => session.disposeAndPersist())
     })
+    return verdict
   })
 
   ipcMain.handle('ssh:resetRelay', (_event, args: { targetId: string }) => {

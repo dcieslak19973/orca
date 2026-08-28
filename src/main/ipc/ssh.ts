@@ -196,6 +196,7 @@ export function registerSshHandlers(
     connectionManager: connectionManager!,
     sshStore: getSshTargetRegistryStore() as SshConnectionStore
   }
+
 }
 
 export async function resetSshHandlerStateForTests(): Promise<void> {
