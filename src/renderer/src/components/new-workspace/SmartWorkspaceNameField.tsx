@@ -61,6 +61,7 @@ import {
   getVisibleBranchResults,
   getVisibleHeldProviderResults,
   isBlockingJiraUrlIntent,
+  isBlockingTaskUrlResolution,
   type SmartNameMode,
   type SmartWorkspaceSourceRow
 } from './smart-workspace-source-results'
@@ -74,14 +75,11 @@ import {
 } from '../../../../shared/new-workspace/smart-workspace-linear-intent'
 import { isSmartWorkspaceSourceQueryWithinLimit } from '../../../../shared/new-workspace/smart-workspace-source-query'
 import { filterAvailableTaskProviders } from '../../../../shared/task-providers'
-import type {
-  BaseRefSearchResult,
-  GitHubWorkItem,
-  GitLabWorkItem,
-  JiraIssue,
-  JiraSite,
-  LinearIssue
-} from '../../../../shared/types'
+import type { GitHubWorkItem } from '../../../../shared/github/work-item-types'
+import type { GitLabWorkItem } from '../../../../shared/gitlab-types'
+import type { JiraIssue, JiraSite } from '../../../../shared/jira-types'
+import type { LinearIssue } from '../../../../shared/linear/issue-types'
+import type { BaseRefSearchResult } from '../../../../shared/repo-types'
 import { resolveSmartWorkspaceCommandValue } from './smart-workspace-command-value'
 import { isComposerFieldToFieldFocus } from './smart-workspace-source-popover-focus'
 import { translate } from '@/i18n/i18n'
@@ -96,7 +94,7 @@ import {
   type TaskSourceContext
 } from '../../../../shared/task-source-context'
 import { parseExecutionHostId, type ExecutionHostId } from '../../../../shared/execution-host'
-import { githubRepoIdentityKey } from '../../../../shared/github-repository-identity-key'
+import { githubRepoIdentityKey } from '../../../../shared/github/repository-identity-key'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import {
   getGitHubRuntimeRepoId,
@@ -641,6 +639,20 @@ export default function SmartWorkspaceNameField({
   const parsedGhLink = useMemo(
     () => (sourceQueryWithinLimit ? parseGitHubIssueOrPRLink(debouncedQuery) : null),
     [debouncedQuery, sourceQueryWithinLimit]
+  )
+  const githubUrlIntent = useMemo(
+    () =>
+      isSmartWorkspaceSourceQueryWithinLimit(value) && (mode === 'smart' || mode === 'github')
+        ? parseGitHubIssueOrPRLink(value)
+        : null,
+    [mode, value]
+  )
+  const gitlabUrlIntent = useMemo(
+    () =>
+      isSmartWorkspaceSourceQueryWithinLimit(value) && (mode === 'smart' || mode === 'gitlab')
+        ? parseGitLabIssueOrMRLink(value)
+        : null,
+    [mode, value]
   )
   const linearUrlIntent = useMemo(
     () => parseBoundedSmartWorkspaceLinearIssueUrlIntent(value),
@@ -1273,12 +1285,14 @@ export default function SmartWorkspaceNameField({
         value,
         debouncedQuery
       }),
+      githubUrlIntent,
       gitlabAvailable: gitlabSourceAvailable,
       gitlabItems: getVisibleHeldProviderResults({
         items: gitlabItems,
         value,
         debouncedQuery
       }),
+      gitlabUrlIntent,
       jiraIntent: jiraSource.intent,
       jiraIssue: jiraSource.issue,
       jiraIssues: getVisibleHeldProviderResults({
@@ -1305,8 +1319,10 @@ export default function SmartWorkspaceNameField({
     branchResultsSource,
     debouncedQuery,
     githubItems,
+    githubUrlIntent,
     gitlabSourceAvailable,
     gitlabItems,
+    gitlabUrlIntent,
     jiraSource.accountChoices,
     jiraSource.intent,
     jiraSource.issue,
@@ -1372,6 +1388,12 @@ export default function SmartWorkspaceNameField({
     linearAvailable &&
     sourceIntent !== 'linear' &&
     (linearLoading || settledLinearUrlQuery !== linearQuery.trim())
+  const blockingTaskUrlResolution = isBlockingTaskUrlResolution({
+    sourceIntent: sourceIntent === 'github' || sourceIntent === 'gitlab' ? sourceIntent : null,
+    isQueryStale,
+    githubLoading,
+    gitlabLoading
+  })
 
   const resolvedCommandValue = resolveSmartWorkspaceCommandValue({
     currentValue: commandValue,
@@ -1978,7 +2000,7 @@ export default function SmartWorkspaceNameField({
                           handleEmojiSelect(selectedEmojiSuggestion)
                           return
                         }
-                        if (unresolvedLinearUrlIntent) {
+                        if (unresolvedLinearUrlIntent || blockingTaskUrlResolution) {
                           event.preventDefault()
                           return
                         }

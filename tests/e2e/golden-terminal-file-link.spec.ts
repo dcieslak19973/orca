@@ -54,13 +54,9 @@ async function linkClientPoint(page: Page, probe: LinkProbe): Promise<LinkClient
       throw new Error('terminal link surface unavailable')
     }
     const rect = screen.getBoundingClientRect()
-    const cell = pane.terminal.dimensions?.css.cell
-    if (!cell?.width || !cell.height) {
-      throw new Error('terminal cell dimensions unavailable')
-    }
     return {
-      x: rect.left + (col + 0.5) * cell.width,
-      y: rect.top + (row + 0.5) * cell.height
+      x: rect.left + (col + 0.5) * (rect.width / pane.terminal.cols),
+      y: rect.top + (row + 0.5) * (rect.height / pane.terminal.rows)
     }
   }, probe)
 }
@@ -111,7 +107,11 @@ test('opens a terminal file link and observes an external edit @golden', async (
   }, worktreeId)
   const filePath = path.join(worktreePath, 'package.json')
   const original = readFileSync(filePath, 'utf8')
-  const clickablePath = process.platform === 'win32' ? filePath.replaceAll('\\', '/') : filePath
+  const resolvedDestination =
+    process.platform === 'win32' ? filePath.replaceAll('\\', '/') : filePath
+  // Why: Mac/Windows tmp paths soft-wrap across xterm rows; locateLink only
+  // indexOf's each physical row, so print a cwd-relative path that stays on one.
+  const printedPath = './package.json'
   const changedMarker = `golden-external-edit-${Date.now()}`
 
   try {
@@ -122,23 +122,20 @@ test('opens a terminal file link and observes an external edit @golden', async (
       .first()
     await expect(explorerRow).toBeVisible({ timeout: 15_000 })
 
-    const pathsToPrint = process.platform === 'win32' ? [filePath, clickablePath] : [filePath]
-    for (const printedPath of pathsToPrint) {
-      const command = nodeTerminalCommand(['-e', `console.log(${JSON.stringify(printedPath)})`])
-      await sendToTerminal(orcaPage, ptyId, `${command}\r`)
-    }
+    const command = nodeTerminalCommand(['-e', `console.log(${JSON.stringify(printedPath)})`])
+    await sendToTerminal(orcaPage, ptyId, `${command}\r`)
     await expect
       .poll(() => getTerminalContent(orcaPage, LINK_SCAN_CHAR_LIMIT), { timeout: 15_000 })
-      .toContain(clickablePath)
+      .toContain(printedPath)
 
     let probe: LinkProbe | null = null
     await expect
       .poll(
         async () => {
-          probe = await locateLink(orcaPage, clickablePath)
+          probe = await locateLink(orcaPage, printedPath)
           return probe ? hoverLink(orcaPage, probe) : null
         },
-        { timeout: 10_000, message: 'absolute file path did not become clickable' }
+        { timeout: 10_000, message: 'cwd-relative file path did not become clickable' }
       )
       .toContain('package.json')
     if (!probe) {
@@ -148,10 +145,16 @@ test('opens a terminal file link and observes an external edit @golden', async (
 
     const actionPopover = orcaPage.locator('[data-terminal-link-action-popover]')
     await expect(actionPopover).toBeVisible()
-    // Why: the popover echoes the link text verbatim, which on Windows is the forward-slash form.
-    await expect(actionPopover.locator('[data-terminal-link-destination]')).toContainText(
-      clickablePath
-    )
+    // Why: destination is the resolved absolute path; Windows may use `\`.
+    await expect
+      .poll(
+        async () =>
+          (
+            (await actionPopover.locator('[data-terminal-link-destination]').textContent()) ?? ''
+          ).replaceAll('\\', '/'),
+        { message: 'terminal link destination did not resolve to package.json' }
+      )
+      .toContain(resolvedDestination)
     await actionPopover.getByRole('button', { name: /Open file/i }).click()
 
     const editorHeader = orcaPage.locator('.editor-header-path').first()
@@ -185,4 +188,86 @@ test('opens a terminal file link and observes an external edit @golden', async (
   } finally {
     writeFileSync(filePath, original)
   }
+})
+
+test('reuses a terminal file link already open in a sibling workspace @golden', async ({
+  orcaPage
+}) => {
+  test.setTimeout(180_000)
+  await waitForSessionReady(orcaPage)
+  const sourceWorktreeId = await waitForActiveWorktree(orcaPage)
+  const sibling = await orcaPage.evaluate((sourceId) => {
+    const state = window.__store?.getState()
+    return (
+      Object.values(state?.worktreesByRepo ?? {})
+        .flat()
+        .find((worktree) => worktree.id !== sourceId) ?? null
+    )
+  }, sourceWorktreeId)
+  if (!sibling) {
+    throw new Error('sibling worktree fixture unavailable')
+  }
+
+  const filePath = path.join(sibling.path, 'package.json')
+  await orcaPage.evaluate(
+    ({ filePath, sourceWorktreeId, siblingWorktreeId }) => {
+      const state = window.__store?.getState()
+      if (!state) {
+        throw new Error('store unavailable')
+      }
+      state.openFile({
+        filePath,
+        relativePath: 'package.json',
+        worktreeId: siblingWorktreeId,
+        runtimeEnvironmentId: null,
+        language: 'json',
+        mode: 'edit'
+      })
+      state.setActiveWorktree(sourceWorktreeId)
+    },
+    { filePath, sourceWorktreeId, siblingWorktreeId: sibling.id }
+  )
+
+  await ensureTerminalVisible(orcaPage)
+  await waitForActiveTerminalManager(orcaPage, 30_000)
+  const ptyId = await waitForActivePanePtyId(orcaPage)
+  await waitForPtyShellEcho(orcaPage, ptyId, 15_000)
+  const printedPath = process.platform === 'win32' ? filePath.replaceAll('\\', '/') : filePath
+  const command = nodeTerminalCommand(['-e', `console.log(${JSON.stringify(printedPath)})`])
+  await sendToTerminal(orcaPage, ptyId, `${command}\r`)
+  await expect
+    .poll(() => getTerminalContent(orcaPage, LINK_SCAN_CHAR_LIMIT), { timeout: 15_000 })
+    .toContain(printedPath)
+
+  let probe: LinkProbe | null = null
+  await expect
+    .poll(
+      async () => {
+        probe = await locateLink(orcaPage, printedPath)
+        return probe ? hoverLink(orcaPage, probe) : null
+      },
+      { timeout: 10_000, message: 'sibling file path did not become clickable' }
+    )
+    .toContain('package.json')
+  if (!probe) {
+    throw new Error('sibling file link disappeared before activation')
+  }
+  await clickLink(orcaPage, probe)
+  const actionPopover = orcaPage.locator('[data-terminal-link-action-popover]')
+  await expect(actionPopover).toBeVisible()
+  await actionPopover.getByRole('button', { name: /Open file/i }).click()
+
+  const editorHeader = orcaPage.locator('.editor-header-path').first()
+  await expect(editorHeader).toContainText('package.json', { timeout: 20_000 })
+  await expect
+    .poll(
+      () =>
+        orcaPage.evaluate(() => ({
+          filePath: window.__monacoEditorE2E?.filePath ?? null,
+          activeWorktreeId: window.__store?.getState()?.activeWorktreeId ?? null
+        })),
+      { timeout: 20_000, message: 'sibling workspace never rendered the linked file' }
+    )
+    .toEqual({ filePath, activeWorktreeId: sibling.id })
+  await expect(orcaPage.getByText('Loading...', { exact: true })).toHaveCount(0)
 })

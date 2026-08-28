@@ -1,12 +1,12 @@
 import { getRepoExecutionHostId } from './execution-host'
-import { githubRepoIdentityKey, isDefaultGitHubHost } from './github-repository-identity-key'
-import type {
-  Project,
-  ProjectHostSetup,
-  ProjectProviderIdentity,
-  Repo,
-  WorktreeMeta
-} from './types'
+import {
+  normalizeProjectHostSetupRow,
+  normalizeProjectRow
+} from './project-catalog-row-normalization'
+import { normalizeGitHubRemoteHost } from './git-remote-host-alias'
+import { githubRepoIdentityKey, isDefaultGitHubHost } from './github/repository-identity-key'
+import type { Project, ProjectHostSetup, ProjectProviderIdentity } from './project-types'
+import type { Repo } from './repo-types'
 
 type ProjectAccumulator = {
   project: Project
@@ -17,7 +17,7 @@ export type ProjectHostSetupProjection = {
   setups: readonly ProjectHostSetup[]
 }
 
-function getProjectProviderIdentity(
+export function getProjectProviderIdentity(
   repo: Pick<Repo, 'upstream' | 'repoIcon' | 'gitRemoteIdentity'>
 ): ProjectProviderIdentity | null {
   const owner = typeof repo.upstream?.owner === 'string' ? repo.upstream.owner.trim() : ''
@@ -96,6 +96,8 @@ export function isProjectRemoteIdentityPending(
   return repo.gitRemoteIdentity === undefined && !hasProjectRemoteIdentity(repo)
 }
 
+const HOST_LOCAL_PROJECT_ID_PREFIX = 'repo:'
+
 export function getProjectIdentityKey(
   repo: Pick<Repo, 'id' | 'upstream' | 'repoIcon' | 'gitRemoteIdentity'>
 ): string {
@@ -107,7 +109,16 @@ export function getProjectIdentityKey(
   if (gitRemoteIdentity) {
     return `git:${gitRemoteIdentity.canonicalKey}`
   }
-  return `repo:${repo.id}`
+  return `${HOST_LOCAL_PROJECT_ID_PREFIX}${repo.id}`
+}
+
+/**
+ * True for the `repo:<id>` fallback above — a folder project, or a git repo with no
+ * remote. The id is a per-host repo id, so the same project on another host derives a
+ * different one and can never be matched there.
+ */
+export function isHostLocalProjectId(projectId: string): boolean {
+  return projectId.startsWith(HOST_LOCAL_PROJECT_ID_PREFIX)
 }
 
 export function getProjectIdForProviderIdentity(identity: ProjectProviderIdentity): string {
@@ -118,11 +129,6 @@ function getProjectId(
   repo: Pick<Repo, 'id' | 'upstream' | 'repoIcon' | 'gitRemoteIdentity'>
 ): string {
   return getProjectIdentityKey(repo)
-}
-
-function normalizeGitHubRemoteHost(host: string): string {
-  const normalizedHost = host.toLowerCase()
-  return normalizedHost === 'ssh.github.com' ? 'github.com' : normalizedHost
 }
 
 function isGitHubRemoteHost(host: string): boolean {
@@ -309,7 +315,9 @@ export function projectHostSetupProjectionFromRepos(
     const project = existing
       ? mergeProjectRepo(existing.project, repo)
       : createProjectFromRepo(repo)
-    const setup = createSetupFromRepo(repo, projectId)
+    // Why normalize here: a repo row is untrusted persisted/wire data too, and these
+    // constructors copy repo.path / repo.id straight onto fields consumers call .trim() on.
+    const setup = normalizeProjectHostSetupRow(createSetupFromRepo(repo, projectId))
     projectById.set(projectId, {
       project
     })
@@ -317,7 +325,7 @@ export function projectHostSetupProjectionFromRepos(
   }
 
   return {
-    projects: [...projectById.values()].map((entry) => entry.project),
+    projects: [...projectById.values()].map((entry) => normalizeProjectRow(entry.project)),
     setups
   }
 }
@@ -327,26 +335,4 @@ export function getProjectHostSetupsForProject(
   projectId: string
 ): readonly ProjectHostSetup[] {
   return setups.filter((setup) => setup.projectId === projectId)
-}
-
-export function getProjectHostSetupForRepo(
-  setups: readonly ProjectHostSetup[],
-  repo: Repo
-): ProjectHostSetup {
-  return (
-    setups.find((setup) => setup.repoId === repo.id) ??
-    projectHostSetupProjectionFromRepos([repo]).setups[0]
-  )
-}
-
-export function getProjectHostSetupWorktreeMeta(
-  setups: readonly ProjectHostSetup[],
-  repo: Repo
-): Pick<WorktreeMeta, 'projectId' | 'hostId' | 'projectHostSetupId'> {
-  const setup = getProjectHostSetupForRepo(setups, repo)
-  return {
-    projectId: setup.projectId,
-    hostId: setup.hostId,
-    projectHostSetupId: setup.id
-  }
 }
