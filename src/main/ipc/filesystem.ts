@@ -2314,7 +2314,10 @@ export function registerFilesystemHandlers(
         args.worktreePath,
         worktreePath
       )
-      await stageHunk(worktreePath, filePath, args.range, gitOptions)
+      await stageHunk(worktreePath, filePath, args.range, {
+        ...gitOptions,
+        admissionTier: 'interactive'
+      })
     }
   )
 
@@ -2343,7 +2346,10 @@ export function registerFilesystemHandlers(
         args.worktreePath,
         worktreePath
       )
-      await unstageHunk(worktreePath, filePath, args.range, gitOptions)
+      await unstageHunk(worktreePath, filePath, args.range, {
+        ...gitOptions,
+        admissionTier: 'interactive'
+      })
     }
   )
 

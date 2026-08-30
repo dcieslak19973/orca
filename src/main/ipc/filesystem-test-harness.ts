@@ -35,8 +35,10 @@ export const getBranchCompareMock: IpcMock = vi.fn()
 export const getBranchDiffMock: IpcMock = vi.fn()
 export const getStagedCommitContextMock: IpcMock = vi.fn()
 export const stageFileMock: IpcMock = vi.fn()
+export const stageHunkMock: IpcMock = vi.fn()
 export const bulkStageFilesMock: IpcMock = vi.fn()
 export const unstageFileMock: IpcMock = vi.fn()
+export const unstageHunkMock: IpcMock = vi.fn()
 export const bulkUnstageFilesMock: IpcMock = vi.fn()
 export const bulkDiscardChangesMock: IpcMock = vi.fn()
 export const discardChangesMock: IpcMock = vi.fn()
@@ -95,8 +97,10 @@ export const gitStatusModuleMock = {
   getBranchDiff: getBranchDiffMock,
   getStagedCommitContext: getStagedCommitContextMock,
   stageFile: stageFileMock,
+  stageHunk: stageHunkMock,
   bulkStageFiles: bulkStageFilesMock,
   unstageFile: unstageFileMock,
+  unstageHunk: unstageHunkMock,
   bulkUnstageFiles: bulkUnstageFilesMock,
   bulkDiscardChanges: bulkDiscardChangesMock,
   discardChanges: discardChangesMock

@@ -158,7 +158,7 @@ export function EditorDiffFileSurface({
       worktreeId={activeFile.worktreeId}
       onContentChange={isEditable ? onContentChange : undefined}
       onSave={isEditable ? (isMarkdown ? markdownDocuments.mdSave : onSave) : undefined}
-      hunkStaging={isEditable ? hunkStaging : undefined}
+      hunkStaging={hunkStaging}
     />
   )
   if (activeFile.externalMutation !== 'changed') {

@@ -10,9 +10,11 @@ import {
   abortMergeMock,
   abortRebaseMock,
   stageFileMock,
+  stageHunkMock,
   bulkStageFilesMock,
   bulkUnstageFilesMock,
   bulkDiscardChangesMock,
+  unstageHunkMock,
   discardChangesMock,
   checkIgnoredPathsMock,
   listWorktreesMock,
@@ -445,6 +447,46 @@ describe('registerFilesystemHandlers', () => {
     ).rejects.toThrow('Access denied: unknown repository or worktree path')
 
     expect(getStatusMock).not.toHaveBeenCalled()
+  })
+
+  it('sends interactive admission tier for hunk stage requests', async () => {
+    stageHunkMock.mockResolvedValue(undefined)
+
+    registerFilesystemHandlers(store as never)
+
+    const range = { oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 }
+    await handlers.get('git:stageHunk')!(null, {
+      worktreePath: WORKTREE_FEATURE_PATH,
+      filePath: './src/../src/file.ts',
+      range
+    })
+
+    expect(stageHunkMock).toHaveBeenCalledWith(
+      WORKTREE_FEATURE_PATH,
+      path.join('src', 'file.ts'),
+      range,
+      { admissionTier: 'interactive' }
+    )
+  })
+
+  it('sends interactive admission tier for hunk unstage requests', async () => {
+    unstageHunkMock.mockResolvedValue(undefined)
+
+    registerFilesystemHandlers(store as never)
+
+    const range = { oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 }
+    await handlers.get('git:unstageHunk')!(null, {
+      worktreePath: WORKTREE_FEATURE_PATH,
+      filePath: './src/../src/file.ts',
+      range
+    })
+
+    expect(unstageHunkMock).toHaveBeenCalledWith(
+      WORKTREE_FEATURE_PATH,
+      path.join('src', 'file.ts'),
+      range,
+      { admissionTier: 'interactive' }
+    )
   })
 
   it('normalizes git file paths for bulk stage requests', async () => {
