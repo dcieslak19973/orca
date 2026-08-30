@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { OptionalGitAdmissionTier } from './git-admission-tier-schema'
 
 export const WorktreeSelector = z.object({
   worktree: z
@@ -8,7 +9,9 @@ export const WorktreeSelector = z.object({
 })
 
 export const GitStatusParams = WorktreeSelector.extend({
+  admissionTier: OptionalGitAdmissionTier,
   includeIgnored: z.boolean().optional(),
+  includeLineStats: z.boolean().optional(),
   bypassEffectiveUpstreamNegativeCache: z.boolean().optional(),
   reuseLineStats: z.boolean().optional(),
   // Shape is re-validated host-side before it reaches a git argv.
@@ -42,12 +45,22 @@ export const GitFilePath = WorktreeSelector.extend({
     .pipe(z.string().min(1, 'Missing file path'))
 })
 
+export const GitHunkRangeParams = GitFilePath.extend({
+  range: z.object({
+    oldStart: z.number().int().min(0),
+    oldCount: z.number().int().min(0),
+    newStart: z.number().int().min(0),
+    newCount: z.number().int().min(0)
+  })
+})
+
 export const GitDiff = GitFilePath.extend({
   staged: z.boolean(),
   compareAgainstHead: z.boolean().optional()
 })
 
 export const GitBranchCompare = WorktreeSelector.extend({
+  admissionTier: OptionalGitAdmissionTier,
   baseRef: z
     .unknown()
     .transform((v) => (typeof v === 'string' ? v : ''))

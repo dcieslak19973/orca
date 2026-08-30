@@ -1,4 +1,4 @@
-import type { SearchOptions, SearchResult } from '../../shared/types'
+import type { SearchOptions, SearchResult } from '../../shared/code-search-types'
 import {
   buildGitGrepArgs,
   buildSubmatchRegex,
@@ -32,6 +32,7 @@ export async function searchWithGitGrep(
   const gitArgs = buildGitGrepArgs(args.query, args)
   const child = await gitSpawnAfterWindowsEnvironmentReady(gitArgs, {
     cwd: rootPath,
+    admissionTier: 'interactive',
     ...(localGitOptions.wslDistro ? { wslDistro: localGitOptions.wslDistro } : {}),
     stdio: ['ignore', 'pipe', 'pipe']
   })

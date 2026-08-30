@@ -14,7 +14,7 @@ import {
   getDiffCommentPopoverTop
 } from '../diff-comments/diff-comment-popover-position'
 import { applyDiffEditorLineNumberOptions } from './diff-editor-line-number-options'
-import type { DiffComment } from '../../../../shared/types'
+import type { DiffComment } from '../../../../shared/diff-comment-types'
 import { isDiffComment } from '@/lib/diff-comment-compat'
 import { installEditorSaveShortcut, installMonacoEditorFindShortcut } from './editor-shortcuts'
 import { diffEditorScrollbarOptions } from './diff-editor-scrollbar-options'
@@ -25,6 +25,8 @@ import { getDiffViewerLargeDiffSaveAction } from './diff-viewer-large-diff-save-
 import type { DiffViewerProps } from './diff-viewer-props'
 import { buildDiffEditorWordWrapOptions } from './diff-editor-word-wrap-options'
 import { useDiffEditorRegistration } from './diff-navigation-context'
+import { useDiffHunkStaging } from './useDiffHunkStaging'
+import { useDiffViewerFirstDiffAutoScroll } from './useDiffViewerFirstDiffAutoScroll'
 import { preserveDiffViewStateAcrossModelSwaps } from './diff-model-swap-view-state'
 import { monacoFindOptions } from './monaco-find-options'
 
@@ -47,7 +49,8 @@ export default function DiffViewer({
   onContentChange,
   onSave,
   largeDiffRenderLimit,
-  largeDiffSaveContentAvailable
+  largeDiffSaveContentAvailable,
+  hunkStaging
 }: DiffViewerProps): React.JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const editorFontZoomLevel = useAppStore((s) => s.editorFontZoomLevel)
@@ -75,6 +78,10 @@ export default function DiffViewer({
   const diffBodyRef = useRef<HTMLDivElement | null>(null)
   const lineNumberOptionsSubRef = useRef<{ dispose: () => void } | null>(null)
   const [modifiedEditor, setModifiedEditor] = useState<editor.ICodeEditor | null>(null)
+  // Why: the hunk-staging hook needs a reactive diff-editor handle; the ref alone doesn't re-run effects on mount.
+  const [mountedDiffEditor, setMountedDiffEditor] = useState<editor.IStandaloneDiffEditor | null>(
+    null
+  )
   const [popover, setPopover] = useState<{
     lineNumber: number
     startLine?: number
@@ -126,6 +133,12 @@ export default function DiffViewer({
     onPendingScrollConsumed: () => setScrollToDiffCommentId(null)
   })
 
+  useDiffHunkStaging({
+    diffEditor: renderLimit.limited ? null : mountedDiffEditor,
+    modifiedEditor,
+    config: hunkStaging ?? null
+  })
+
   useEffect(() => {
     if (!modifiedEditor || !popover) {
       return
@@ -154,68 +167,12 @@ export default function DiffViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modifiedEditor, popover?.lineNumber])
 
-  // Why: center the first diff from a dedicated effect (not handleMount) so it runs after the decorator's view zones, which would otherwise shift content downward.
-  const didAutoScrollFirstDiffRef = useRef(false)
-  const didAutoScrollModelKeyRef = useRef(modelKey)
-  useEffect(() => {
-    if (didAutoScrollModelKeyRef.current !== modelKey) {
-      didAutoScrollModelKeyRef.current = modelKey
-      // Why: reset the per-modelKey one-shot here before the first-diff guard runs for the new file.
-      didAutoScrollFirstDiffRef.current = false
-    }
-    const diffEditor = diffEditorRef.current
-    if (!diffEditor || !modifiedEditor) {
-      return
-    }
-    if (didAutoScrollFirstDiffRef.current) {
-      return
-    }
-    if (diffViewStateCache.get(modelKey)) {
-      return
-    }
-    if (pendingScrollForThisViewer) {
-      // Why: decorator owns this scroll, so set the one-shot flag; else we'd re-run and overwrite it when pendingScroll flips back to null.
-      didAutoScrollFirstDiffRef.current = true
-      return
-    }
-    let rafId: number | null = null
-    const run = (): void => {
-      if (didAutoScrollFirstDiffRef.current) {
-        return
-      }
-      const changes = diffEditor.getLineChanges()
-      if (!changes || changes.length === 0) {
-        return
-      }
-      const line = Math.max(1, changes[0].modifiedStartLineNumber)
-      // Defer one frame so view zones are laid out before measuring; cancel any earlier rAF to avoid a redundant scroll.
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId)
-      }
-      rafId = requestAnimationFrame(() => {
-        rafId = null
-        if (didAutoScrollFirstDiffRef.current || !modifiedEditor.getModel()) {
-          return
-        }
-        const top = modifiedEditor.getTopForLineNumber(line, true)
-        const editorHeight = modifiedEditor.getLayoutInfo().height
-        modifiedEditor.setPosition({ lineNumber: line, column: 1 })
-        modifiedEditor.setScrollTop(Math.max(0, top - editorHeight / 2))
-        didAutoScrollFirstDiffRef.current = true
-      })
-    }
-    // Run now if the diff is ready; otherwise onDidUpdateDiff fires once the computation lands.
-    if (diffEditor.getLineChanges()) {
-      run()
-    }
-    const sub = diffEditor.onDidUpdateDiff(() => run())
-    return () => {
-      sub.dispose()
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId)
-      }
-    }
-  }, [modifiedEditor, modelKey, pendingScrollForThisViewer])
+  useDiffViewerFirstDiffAutoScroll({
+    diffEditorRef,
+    modifiedEditor,
+    modelKey,
+    pendingScrollForThisViewer
+  })
 
   const handleEnterLargeDiffFallback = useCallback(() => {
     // Why: on fallback transition, drop stale Monaco refs so decorators/save handlers don't talk to disposed UI.
@@ -227,6 +184,7 @@ export default function DiffViewer({
     if (fallenBackEditor) {
       unregisterDiffEditor(fallenBackEditor)
     }
+    setMountedDiffEditor(null)
     setModifiedEditor(null)
     setPopover(null)
   }, [unregisterDiffEditor])
@@ -299,6 +257,7 @@ export default function DiffViewer({
       setupCopy(originalEditor, monaco, filePath, propsRef)
       setupCopy(modifiedEditor, monaco, filePath, propsRef)
       setModifiedEditor(modifiedEditor)
+      setMountedDiffEditor(diffEditor)
 
       // Why: restore full diff view state (not just scrollTop) so cursor/selection stay consistent across both panes.
       const savedViewState = diffViewStateCache.get(modelKey)
@@ -340,6 +299,7 @@ export default function DiffViewer({
         lineNumberOptionsSubRef.current = null
         diffEditorRef.current = null
         unregisterDiffEditor(diffEditor)
+        setMountedDiffEditor(null)
         setModifiedEditor(null)
         setPopover(null)
       })
