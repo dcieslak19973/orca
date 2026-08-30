@@ -34,8 +34,10 @@ const PUBLIC_RUNTIME_GIT_CLIENT_FUNCTIONS = [
   'pushRuntimeGit',
   'rebaseRuntimeGitFromBase',
   'setRuntimeGitStatusUpstreamRefWatch',
+  'stageRuntimeGitHunk',
   'stageRuntimeGitPath',
   'syncRuntimeGitForkDefaultBranch',
+  'unstageRuntimeGitHunk',
   'unstageRuntimeGitPath'
 ] as const
 

@@ -67,7 +67,6 @@ function execFileWithStdin(
 export class GitHandler {
   private dispatcher: RelayDispatcher
   private readonly gitDiffReadDedupe = new InFlightPromiseDedupe<unknown>()
-  private readonly hunkApplyQueue = new KeyedMutationQueue()
   private readonly gitCapabilities = new GitCapabilityCache()
   // Why: use the bulk lane so large responses do not block interactive PTY echo.
   private readonly responseStreams = new GitResponseStreamRegistry()
