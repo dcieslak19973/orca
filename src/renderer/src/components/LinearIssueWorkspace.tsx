@@ -10,10 +10,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Clipboard,
+  Copy,
+  ExternalLink,
   FolderKanban,
   FolderOpen,
   GitBranch,
-  Link,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -45,11 +46,9 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { createBrowserUuid } from '@/lib/browser-uuid'
 import { buildLinearIssueContextSnapshot } from '@/lib/linear-issue-context-snapshot'
-import {
-  findLinearIssueWorkspaceAttachment,
-  getLinearIssueWorkspaceAttachmentLabel
-} from '@/lib/linear-issue-workspace-attachment'
+import { findLinearIssueWorkspaceAttachment } from '@/lib/linear-issue-workspace-attachment'
 import { openLinearIssueWorkspaceOrStart } from '@/lib/linear-issue-workspace-open'
+import { getWorktreeAttachmentLabel } from '@/lib/worktree-attachment-label'
 import { folderWorkspaceToWorktree } from '../../../shared/folder-workspace-worktree'
 import { buildContainedLinkedContextBlock } from '@/lib/linked-work-item-context'
 import { useMountedRef } from '@/hooks/useMountedRef'
@@ -70,9 +69,9 @@ import {
 import type {
   LinearComment,
   LinearIssue,
-  LinearIssueChildSummary,
-  LinearProjectSummary
-} from '../../../shared/types'
+  LinearIssueChildSummary
+} from '../../../shared/linear/issue-types'
+import type { LinearProjectSummary } from '../../../shared/linear/project-types'
 import type { TaskSourceContext } from '../../../shared/task-source-context'
 import { translate } from '@/i18n/i18n'
 
@@ -673,7 +672,7 @@ export default function LinearIssueWorkspace({
     [attachmentWorkspaces, displayed]
   )
   const attachedWorkspaceLabel = attachedWorkspace
-    ? getLinearIssueWorkspaceAttachmentLabel(attachedWorkspace)
+    ? getWorktreeAttachmentLabel(attachedWorkspace)
     : null
 
   const handleUseIssue = useCallback((): void => {
@@ -782,6 +781,7 @@ export default function LinearIssueWorkspace({
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
+                type="button"
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => void copyTextToClipboard(displayed.url, 'URL')}
@@ -790,7 +790,7 @@ export default function LinearIssueWorkspace({
                   'Copy Linear URL'
                 )}
               >
-                <Link className="size-4" />
+                <Copy className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
@@ -800,19 +800,20 @@ export default function LinearIssueWorkspace({
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
+                type="button"
                 variant="ghost"
                 size="icon-sm"
-                onClick={() => void copyTextToClipboard(displayed.identifier, 'Identifier')}
+                onClick={() => void window.api.shell.openUrl(displayed.url)}
                 aria-label={translate(
-                  'auto.components.LinearIssueWorkspace.9e3c49beb8',
-                  'Copy issue identifier'
+                  'auto.components.LinearIssueWorkspace.openOnLinear',
+                  'Open on Linear'
                 )}
               >
-                <Clipboard className="size-4" />
+                <ExternalLink className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {translate('auto.components.LinearIssueWorkspace.30c1242f3a', 'Copy identifier')}
+              {translate('auto.components.LinearIssueWorkspace.openOnLinear', 'Open on Linear')}
             </TooltipContent>
           </Tooltip>
           {attachedWorkspace ? (
@@ -858,24 +859,19 @@ export default function LinearIssueWorkspace({
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={handleOpenOrUseIssue}
-                  aria-label={translate(
-                    'auto.components.LinearIssueWorkspace.30a7f56c0a',
-                    'Start workspace from issue'
-                  )}
-                >
-                  <ArrowRight className="size-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={6}>
-                {translate('auto.components.LinearIssueWorkspace.e1e0a9bca9', 'Start workspace')}
-              </TooltipContent>
-            </Tooltip>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleOpenOrUseIssue}
+              className="gap-1.5 whitespace-nowrap"
+              aria-label={translate(
+                'auto.components.LinearIssueWorkspace.30a7f56c0a',
+                'Start workspace from issue'
+              )}
+            >
+              {translate('auto.components.LinearIssueWorkspace.e1e0a9bca9', 'Start workspace')}
+              <ArrowRight className="size-3.5" />
+            </Button>
           )}
           {variant === 'sheet' ? (
             <Tooltip>

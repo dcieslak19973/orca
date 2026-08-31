@@ -8,7 +8,7 @@ import { DaemonClient } from './client'
 import { isDaemonGoneError } from './daemon-pty-adapter'
 import { DAEMON_ENDPOINT_LOST_MESSAGE } from './daemon-endpoint-ownership'
 import { getDaemonSocketPath } from './daemon-spawner'
-import type { SubprocessHandle } from './session'
+import type { SubprocessHandle } from './session-subprocess-handle'
 import { waitForEndpointUnreachable } from './daemon-endpoint-reachability-test-harness'
 
 // A killed process must actually report its exit: teardown waits
@@ -22,6 +22,7 @@ function createMockSubprocess(): SubprocessHandle {
     write() {},
     resize() {},
     kill: exit,
+    terminateOwnedTree: () => 'unavailable' as const,
     forceKill: exit,
     signal() {},
     onData() {},

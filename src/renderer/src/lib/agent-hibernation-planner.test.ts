@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatusEntry } from '../../../shared/agent-status-types'
-import type { TerminalLayoutSnapshot, TerminalTab } from '../../../shared/types'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../shared/terminal-tab-types'
 import {
   DEFAULT_AGENT_HIBERNATION_IDLE_MS,
   MAX_AGENT_HIBERNATION_IDLE_MS,
@@ -132,6 +132,16 @@ describe('agent sleep planner', () => {
     expect(
       plannedWorktrees(snapshot({ agentStatusByPaneKey: { [unsupported.paneKey]: unsupported } }))
     ).toEqual([])
+  })
+
+  it('treats an idle done copilot pane as a hibernation candidate', () => {
+    const copilot = entry({
+      agentType: 'copilot',
+      providerSession: { key: 'session_id', id: '940237d9-c712-48e8-bca1-fd75fc4a8d4b' }
+    })
+    expect(
+      plannedPaneKeys(snapshot({ agentStatusByPaneKey: { [copilot.paneKey]: copilot } }))
+    ).toEqual([copilot.paneKey])
   })
 
   it('blocks done panes until their live subagent roster clears', () => {

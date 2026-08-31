@@ -12,7 +12,7 @@ import {
   getPiCompatibleSyntheticAgentLabel,
   isLegacyPiCompatibleTitle
 } from './pi-compatible-synthetic-title'
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
 
 export const CLAUDE_IDLE = '\u2733' // ✳ (eight-spoked asterisk — Claude Code idle prefix)
 const CLAUDE_MANAGEMENT_TITLE_RE =
@@ -46,6 +46,14 @@ export function isGeminiTerminalTitle(title: string): boolean {
   // Why: Pi/OMP titles include cwd/session text; substring matching made
   // paths like "gemini-project" masquerade as Gemini CLI.
   if (isPiAgentTitle(title)) {
+    return false
+  }
+  // Why: Antigravity's models are named "Gemini <n.n> <Name>", so an agy pane's own
+  // title carries a whole `gemini` token. Gemini CLI is checked before Antigravity in
+  // getAgentLabel, so without this the model name wins and an agy pane reads as Gemini
+  // CLI. Only the token path defers — the four Gemini OSC glyphs stay decisive, and agy
+  // emits none of them.
+  if (titleHasAgentName(title, 'antigravity') || AGY_AGENT_NAME_RE.test(title)) {
     return false
   }
   return titleHasAgentName(title, 'gemini')

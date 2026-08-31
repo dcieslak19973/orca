@@ -127,25 +127,22 @@ import {
   getLinearStatePillStyle
 } from '@/components/linear-state-pill-style'
 import { parseTaskQuery, stripRepoQualifiers, withQualifier } from '../../../shared/task-query'
-import { githubProjectHost } from '../../../shared/github-project-identity'
+import { githubProjectHost } from '../../../shared/github/project-identity'
 import {
   buildLinearTeamUrl,
   getLinearOrganizationUrlKeyFromIssueUrl
-} from '../../../shared/linear-links'
+} from '../../../shared/linear/links'
 import PRFilterDropdowns, { type PRFilterChange } from '@/components/github/PRFilterDropdowns'
 import { GitHubMarkdownComposer } from '@/components/github/GitHubMarkdownComposer'
 import { GitHubUserAvatar } from '@/components/github/github-user-avatar'
 import { buildGitHubRepoUrl, parseGitHubIssueOrPRLink } from '@/lib/github-links'
-import {
-  findGithubWorkItemWorkspaceAttachment,
-  getGithubWorkItemWorkspaceAttachmentLabel
-} from '@/lib/github-work-item-workspace-attachment'
+import { findGithubWorkItemWorkspaceAttachment } from '@/lib/github-work-item-workspace-attachment'
 import {
   buildLinearIssueWorkspaceAttachmentIndex,
-  findLinearIssueWorkspaceAttachmentInIndex,
-  getLinearIssueWorkspaceAttachmentLabel
+  findLinearIssueWorkspaceAttachmentInIndex
 } from '@/lib/linear-issue-workspace-attachment'
 import { openLinearIssueWorkspaceOrStart } from '@/lib/linear-issue-workspace-open'
+import { getWorktreeAttachmentLabel } from '@/lib/worktree-attachment-label'
 import { folderWorkspaceToWorktree } from '../../../shared/folder-workspace-worktree'
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
 import { useRepoAssigneesBySlug } from '@/hooks/useGitHubSlugMetadata'
@@ -287,7 +284,7 @@ import {
 import {
   linearIssueAttributeFilterSignature,
   type LinearIssueAttributeFilter
-} from '../../../shared/linear-issue-attribute-filter'
+} from '../../../shared/linear/issue-attribute-filter'
 import {
   DEFAULT_LINEAR_GROUP_BY,
   DEFAULT_LINEAR_ORDER_BY,
@@ -296,7 +293,7 @@ import {
   selectLinearWorkspaceIssueFilter,
   serializeLinearIssueViewResumeState,
   setLinearWorkspaceIssueFilter
-} from '../../../shared/linear-issue-view-resume-state'
+} from '../../../shared/linear/issue-view-resume-state'
 import { loadLinearIssueView, saveLinearIssueView } from './linear-issue-view-storage'
 import {
   isNewIssueDraftContentful,
@@ -349,40 +346,44 @@ import { presentGitHubPRMergeState } from '@/components/github-pr-merge-state'
 import {
   GITHUB_PR_MERGE_METHOD_LABELS,
   resolveGitHubPRMergeMethods
-} from '../../../shared/github-pr-merge-methods'
+} from '../../../shared/github/pull-request-merge-methods'
 import type {
-  GitHubOwnerRepo,
   GitHubAssignableUser,
-  GitHubPRMergeMethod,
-  GitHubIssueUpdate,
-  GitHubWorkItem,
-  GitLabTodo,
-  GitLabWorkItem,
+  GitHubOwnerRepo,
+  GitHubPRMergeMethod
+} from '../../../shared/github/pull-request-types'
+import type { GitHubWorkItem } from '../../../shared/github/work-item-types'
+import type { GitLabProjectRef, GitLabTodo, GitLabWorkItem } from '../../../shared/gitlab-types'
+import type { GitHubIssueUpdate } from '../../../shared/issue-mutation-types'
+import type {
   JiraCreateField,
-  LinearCollectionResult,
-  LinearCustomViewModel,
-  LinearCustomViewSummary,
   JiraIssue,
   JiraIssueType,
-  JiraProject,
-  JiraProjectStatusOrder,
   JiraPriority,
-  LinearIssue,
+  JiraProject,
+  JiraProjectStatusOrder
+} from '../../../shared/jira-types'
+import type { LinearIssue } from '../../../shared/linear/issue-types'
+import type {
+  LinearCustomViewModel,
+  LinearCustomViewSummary,
   LinearProjectDetail,
-  LinearProjectSummary,
+  LinearProjectSummary
+} from '../../../shared/linear/project-types'
+import type {
+  LinearCollectionResult,
   LinearTeam,
-  LinearWorkspaceSelection,
   LinearWorkflowState,
-  Repo,
-  TaskProvider,
-  TaskViewPresetId
-} from '../../../shared/types'
+  LinearWorkspaceSelection
+} from '../../../shared/linear/workspace-types'
+import type { Repo } from '../../../shared/repo-types'
+import type { TaskProvider } from '../../../shared/task-providers'
+import type { TaskViewPresetId } from '../../../shared/ui-chrome-types'
 import type { PreflightStatus } from '../../../preload/api-types'
-import type { GitLabProjectRef } from '../../../shared/gitlab-types'
 import {
   LINEAR_ISSUE_LIST_MAX,
   clampLinearIssueListLimit
-} from '../../../shared/linear-issue-read-limits'
+} from '../../../shared/linear/issue-read-limits'
 import { shouldSuppressEnterSubmit } from '@/lib/new-workspace-enter-guard'
 import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 import { getScreenSubmitShortcutLabel, isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
@@ -1434,25 +1435,14 @@ function ReviewChipAvatar({
 }
 
 function GitHubAssigneeAvatar({ assignee }: { assignee: GitHubAssignableUser }): React.JSX.Element {
-  if (assignee.avatarUrl) {
-    return (
-      <img
-        src={assignee.avatarUrl}
-        alt={assignee.login}
-        loading="lazy"
-        decoding="async"
-        title={assignee.name ? `${assignee.name} (${assignee.login})` : assignee.login}
-        className="size-5 rounded-full border border-border/40 bg-muted object-cover"
-      />
-    )
-  }
   return (
-    <span
-      title={assignee.login}
-      className="inline-flex size-5 items-center justify-center rounded-full border border-border/40 bg-muted text-[10px] font-medium text-muted-foreground"
-    >
-      {assignee.login.slice(0, 1).toUpperCase()}
-    </span>
+    <GitHubUserAvatar
+      login={assignee.login}
+      name={assignee.name}
+      avatarUrl={assignee.avatarUrl}
+      title={assignee.name ? `${assignee.name} (${assignee.login})` : assignee.login}
+      className="size-5"
+    />
   )
 }
 
@@ -1892,13 +1882,12 @@ function GHAssigneesCell({
                     <Check className="size-3" />
                   ) : null}
                 </span>
-                {user.avatarUrl ? (
-                  <img src={user.avatarUrl} alt="" className="size-5 shrink-0 rounded-full" />
-                ) : (
-                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
-                    {user.login.slice(0, 1).toUpperCase()}
-                  </span>
-                )}
+                <GitHubUserAvatar
+                  login={user.login}
+                  name={user.name}
+                  avatarUrl={user.avatarUrl}
+                  className="size-5"
+                />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{user.login}</span>
                   {user.name ? (
@@ -2384,13 +2373,12 @@ function PRReviewCell({
         <span className="flex size-4 shrink-0 items-center justify-center text-foreground">
           {selected ? <Check className="size-3.5" /> : null}
         </span>
-        {reviewer.avatarUrl ? (
-          <img src={reviewer.avatarUrl} alt="" className="size-5 shrink-0 rounded-full" />
-        ) : (
-          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
-            {reviewer.login.slice(0, 1).toUpperCase()}
-          </span>
-        )}
+        <GitHubUserAvatar
+          login={reviewer.login}
+          name={reviewer.name}
+          avatarUrl={reviewer.avatarUrl}
+          className="size-5"
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate">
             <span className="font-semibold text-foreground">{reviewer.login}</span>
@@ -10281,7 +10269,7 @@ export default function TaskPage(): React.JSX.Element {
                         item.number
                       )
                       const attachedWorkspaceLabel = attachedWorkspace
-                        ? getGithubWorkItemWorkspaceAttachmentLabel(attachedWorkspace)
+                        ? getWorktreeAttachmentLabel(attachedWorkspace)
                         : null
                       const prDelta = item.type === 'pr' ? formatPRDelta(item) : null
                       const githubTaskIdPill = (
@@ -11578,7 +11566,7 @@ export default function TaskPage(): React.JSX.Element {
                               issue
                             )
                             const attachedWorkspaceLabel = attachedWorkspace
-                              ? getLinearIssueWorkspaceAttachmentLabel(attachedWorkspace)
+                              ? getWorktreeAttachmentLabel(attachedWorkspace)
                               : null
                             return (
                               <div
@@ -11777,7 +11765,7 @@ export default function TaskPage(): React.JSX.Element {
                         issue
                       )
                       const attachedWorkspaceLabel = attachedWorkspace
-                        ? getLinearIssueWorkspaceAttachmentLabel(attachedWorkspace)
+                        ? getWorktreeAttachmentLabel(attachedWorkspace)
                         : null
                       return (
                         <div

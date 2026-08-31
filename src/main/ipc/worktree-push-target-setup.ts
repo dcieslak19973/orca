@@ -4,7 +4,7 @@
 // remote-reuse / unique-naming / fetch behavior is unit-testable without a real
 // repo. The store-aware ownership decision stays with the caller via a predicate.
 
-import type { GitPushTarget } from '../../shared/types'
+import type { GitPushTarget } from '../../shared/worktree/types'
 import { parseGitHubOwnerRepo } from '../github/gh-utils'
 import type { GitRemoteExec } from './worktree-push-target-cleanup'
 
@@ -95,14 +95,24 @@ export async function prepareWorktreePushTargetWithExec(
     }
   }
 
-  await execGit(
-    [
-      'fetch',
-      remoteName,
-      `+refs/heads/${target.branchName}:refs/remotes/${remoteName}/${target.branchName}`
-    ],
-    repoPath
-  )
+  try {
+    await execGit(
+      [
+        'fetch',
+        remoteName,
+        `+refs/heads/${target.branchName}:refs/remotes/${remoteName}/${target.branchName}`
+      ],
+      repoPath
+    )
+  } catch (error) {
+    // Why: the create this remote was added for is failing; leaving it behind
+    // orphans a pr-* remote nothing will ever clean up (cleanup runs on worktree
+    // removal, and no worktree exists).
+    if (remoteCreated) {
+      await execGit(['remote', 'remove', remoteName], repoPath).catch(() => {})
+    }
+    throw error
+  }
   return {
     ...sanitizedTarget,
     remoteName,

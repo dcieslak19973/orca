@@ -6,6 +6,10 @@ import {
 } from '@/components/terminal-pane/layout-serialization'
 import { warnTerminalLifecycleAnomaly } from '@/components/terminal-pane/terminal-lifecycle-diagnostics'
 import { getEagerPtyBufferHandle } from '@/components/terminal-pane/pty-dispatcher'
+import {
+  collectParkedTerminalWatcherPtyIds,
+  getParkedTerminalWatcherPaneIdsByPtyId
+} from '@/components/terminal-pane/terminal-parked-watcher-registry'
 import { createBrowserUuid } from '@/lib/browser-uuid'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import { resolveLeafIdForManager } from '@/lib/pane-manager/pane-key-resolution'
@@ -20,20 +24,18 @@ import type {
   RuntimeMobileSessionSnapshotTab,
   RuntimeMobileTerminalTheme,
   RuntimeMobileSessionTabsSnapshot,
-  RuntimeSyncWindowGraph
+  RuntimeRendererSyncWindowGraph
 } from '../../../shared/runtime-types'
 import { isTerminalLeafId, makePaneKey, parsePaneKey } from '../../../shared/stable-pane-id'
 import { isWebTerminalSurfaceTabId } from '../../../shared/terminal-surface-id'
 import { isClaudeManagementTitle } from '../../../shared/agent-detection'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
+import type { Tab, TabGroup, TabGroupLayoutNode } from '../../../shared/tab-types'
 import type {
-  Tab,
-  TabGroup,
-  TabGroupLayoutNode,
   TerminalLayoutSnapshot,
   TerminalPaneLayoutNode,
   TerminalTab
-} from '../../../shared/types'
+} from '../../../shared/terminal-tab-types'
 import { resolveTerminalTabTitle } from '../../../shared/tab-title-resolution'
 import {
   isNativeChatTabWideFallbackSafe,
@@ -730,9 +732,10 @@ async function syncRuntimeGraph(): Promise<void> {
   const generatedTitlesEnabled = state.settings?.tabAutoGenerateTitle === true
   const mobileSessionTabs = buildMobileSessionTabSnapshots(state, systemPrefersDark)
   const publication = partitionMobileSessionPublication(mobileSessionTabs)
-  const graph: RuntimeSyncWindowGraph = {
+  const graph: RuntimeRendererSyncWindowGraph = {
     tabs: [],
     leaves: [],
+    rendererGeneration: mobileSessionPublicationEpoch,
     mobileSessionTabs: publication.changed,
     unchangedMobileSessionWorktrees: publication.unchangedWorktrees
   }
@@ -793,6 +796,13 @@ async function syncRuntimeGraph(): Promise<void> {
   }
 
   // Why: inactive automation tabs never mount a TerminalPane; publish their leaf+ptyId from persisted layout (gated on a live buffer) or the live PTY looks orphaned.
+  // Cold-parked tabs are the same shape with a different liveness proof: their
+  // pane is unmounted but a parked watcher still owns the PTY. Dropping their
+  // leaf invalidates the terminal handle every paired subscriber is bound to,
+  // stalling a remotely-driven terminal the host merely stopped displaying.
+  // Built once for the whole publication; a per-leaf registry scan would be
+  // quadratic across a many-worktree workspace.
+  const parkedWatcherPtyIds = collectParkedTerminalWatcherPtyIds()
   for (const [worktreeId, tabs] of Object.entries(state.tabsByWorktree)) {
     for (const tab of tabs) {
       const layout = state.terminalLayoutsByTabId[tab.id]
@@ -808,17 +818,27 @@ async function syncRuntimeGraph(): Promise<void> {
           typeof ptyId === 'string' &&
           ptyId.length > 0 &&
           isTerminalLeafId(leafId) &&
-          Boolean(getEagerPtyBufferHandle(ptyId))
+          (Boolean(getEagerPtyBufferHandle(ptyId)) || parkedWatcherPtyIds.has(ptyId))
       )
       if (liveLeaves.length === 0) {
         continue
       }
       const title = resolveRuntimeTerminalTitle(tab, generatedTitlesEnabled)
+      // Why: partial coverage is legitimate — one leaf's watcher can be disposed
+      // while its siblings stay parked — so a saved activeLeafId that did not
+      // survive the filter would name a leaf this publication never sends.
+      const publishedLeafIds = new Set(liveLeaves.map(([leafId]) => leafId))
+      const savedActiveLeafId = layout?.activeLeafId
+      const parkedPaneIdsByPtyId = getParkedTerminalWatcherPaneIdsByPtyId(tab.id)
+      const parkedPaneTitles = state.runtimePaneTitlesByTabId[tab.id] ?? {}
       graph.tabs.push({
         tabId: tab.id,
         worktreeId,
         title,
-        activeLeafId: layout?.activeLeafId ?? liveLeaves[0][0],
+        activeLeafId:
+          savedActiveLeafId && publishedLeafIds.has(savedActiveLeafId)
+            ? savedActiveLeafId
+            : liveLeaves[0][0],
         layout: resolveTerminalLayoutRoot({
           authoritativeRoot: layout?.root,
           leafIds: liveLeaves.map(([leafId]) => leafId),
@@ -829,13 +849,22 @@ async function syncRuntimeGraph(): Promise<void> {
         })
       })
       liveLeaves.forEach(([leafId, ptyId], index) => {
+        // Why the watcher's id wins: PaneManager ids are allocated monotonically
+        // and closing a pane retires its id without renumbering, so an ordinal
+        // can name a pane that no longer exists — and main routes split/close and
+        // the paneKey fallback through this value.
+        const parkedPaneId = parkedPaneIdsByPtyId.get(ptyId)
         graph.leaves.push({
           tabId: tab.id,
           worktreeId,
           leafId,
-          paneRuntimeId: index + 1,
+          paneRuntimeId: parkedPaneId ?? index + 1,
           ptyId,
-          paneTitle: null,
+          // Why not null: the parked byte watcher keeps writing this pane's
+          // runtime title, and main prefers leaf.paneTitle over its own older
+          // lastOscTitle. Dropping it would pin a parked agent pane to a stale
+          // title for as long as it stays parked.
+          paneTitle: (parkedPaneId === undefined ? null : parkedPaneTitles[parkedPaneId]) ?? null,
           title
         })
       })

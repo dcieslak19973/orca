@@ -1,14 +1,10 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type {
-  BrowserPage,
-  BrowserWorkspace,
-  FolderWorkspace,
-  Tab,
-  TabGroup,
-  Worktree
-} from '../../../shared/types'
+import type { BrowserPage, BrowserWorkspace } from '../../../shared/browser-workspace-types'
+import type { FolderWorkspace } from '../../../shared/folder-workspace-types'
+import type { Tab, TabGroup } from '../../../shared/tab-types'
+import type { Worktree } from '../../../shared/worktree/types'
 import { ORCA_BROWSER_BLANK_URL } from '../../../shared/constants'
 import { folderWorkspaceKey } from '../../../shared/workspace-scope'
 import { useAppStore } from '@/store'
@@ -176,6 +172,26 @@ describe('activateBrowserPagePaletteResult', () => {
 
     expect(mocks.activateAndRevealWorktree).toHaveBeenCalledWith('wt-1', {
       executionHostId: 'ssh:host-1'
+    })
+  })
+
+  it('activates an SSH worktree through its paired-runtime owner alias', () => {
+    seedStore({
+      worktreesByRepo: {
+        'repo-1': [
+          makeWorktree({
+            hostId: 'ssh:private-target',
+            runtimeOwnerEnvironmentId: 'paired-host'
+          })
+        ]
+      }
+    })
+
+    expect(
+      activateBrowserPagePaletteResult({ ...target, executionHostId: 'runtime:paired-host' }).status
+    ).toBe('activated')
+    expect(mocks.activateAndRevealWorktree).toHaveBeenCalledWith('wt-1', {
+      executionHostId: 'runtime:paired-host'
     })
   })
 

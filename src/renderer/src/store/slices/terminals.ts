@@ -1,17 +1,14 @@
 /* eslint-disable max-lines */
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
-import type {
-  Repo,
-  SetupSplitDirection,
-  Tab,
-  TerminalLayoutSnapshot,
-  TerminalTab,
-  TuiAgent,
-  Worktree,
-  WorkspaceKey,
-  WorkspaceSessionState
-} from '../../../../shared/types'
+import type { WorkspaceKey } from '../../../../shared/folder-workspace-types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { Tab } from '../../../../shared/tab-types'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/terminal-tab-types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
+import type { WorkspaceSessionState } from '../../../../shared/workspace-session-state-types'
+import type { SetupSplitDirection } from '../../../../shared/worktree/launch-types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import type {
   AgentProviderSessionMetadata,
   SleepingAgentLaunchConfig
@@ -42,20 +39,18 @@ import { isSameCodexRestartNoticeAccount } from './codex-restart-notice-account-
 import {
   getRepoIdFromWorktreeId,
   splitWorktreeIdForFilesystem
-} from '../../../../shared/worktree-id'
+} from '../../../../shared/worktree/id'
 import { isWslUncPath } from '../../../../shared/wsl-paths'
 import type { ProjectExecutionRuntimeResolution } from '../../../../shared/project-execution-runtime'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
 import type { SessionOptionValue } from '../../../../shared/native-chat-session-options'
 import { resolveLocalWindowsTerminalShellOverrideForTab } from '../../../../shared/local-windows-terminal-runtime'
 import { WINDOWS_GIT_BASH_SHELL } from '../../../../shared/windows-terminal-shell'
-import type { AgentStartedTelemetry } from '../../lib/worktree-activation'
+import type { AgentStartedTelemetry } from '../../lib/worktree-startup-payload'
 import type { AiVaultSessionTitle } from '../../../../shared/ai-vault-session-title'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
-import { forgetAgentHibernationTabOutput } from '@/lib/agent-hibernation-output-activity'
-import { forgetForegroundTerminalTabs } from '@/lib/foreground-terminal-tabs'
 import { terminalLayoutEqual } from '@/lib/terminal-layout-equality'
-import { forgetAgentStartupDeliveriesForTabs } from '@/lib/agent-startup-delivery-guards'
+import { sweepRetiredTerminalTabState } from './retired-terminal-tab-state-sweep'
 import { clearTransientTerminalState, emptyLayoutSnapshot } from './terminal-helpers'
 import {
   collectReleasedLeafIds,
@@ -1833,19 +1828,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           : {})
       }
     })
-    // Why: sweep tab agent status through its suppressor-aware removal path.
-    // Why: Pi can leave a completed row keyed under an already-missing tab id; pass the worktree to sweep that orphan while preserving active pre-render child rows.
-    get().dropAgentStatusByTabPrefix(
-      tabId,
-      closingWorktreeId ? { worktreeId: closingWorktreeId } : undefined
-    )
-    // Why: retired pane keys never recur, so stranded foreground entries would accumulate for the renderer's whole lifetime.
-    get().clearPaneForegroundAgentByTabPrefix(tabId)
-    // Why: closing a tab permanently retires its panes (reopen mints a fresh leafId), so drop hibernation output epochs to keep the module map from growing forever.
-    forgetAgentHibernationTabOutput(tabId)
-    // Why: same rationale — retired tab ids never recur, so drop the foreground last-seen and consumed agent-startup delivery guards.
-    forgetForegroundTerminalTabs([tabId])
-    forgetAgentStartupDeliveriesForTabs([tabId])
+    // Why shared with the paired snapshot apply: every path that removes a tab owes it the same sweep, and a second copy of the list is how one path silently misses a new entry.
+    sweepRetiredTerminalTabState(get(), tabId, closingWorktreeId)
     for (const tabs of Object.values(get().unifiedTabsByWorktree)) {
       const workspaceItem = tabs.find(
         (entry) => entry.contentType === 'terminal' && entry.entityId === tabId
@@ -3859,7 +3843,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const tabsByWorktree: Record<string, TerminalTab[]> = Object.fromEntries(
         rowHydrationByWorktree
           .map(([worktreeId, hydration]) => [worktreeId, hydration.rows] as const)
-          .filter(([, tabs]) => tabs.length > 0)
+          .filter(
+            ([worktreeId, tabs]) =>
+              tabs.length > 0 || session.tabsByWorktree[worktreeId]?.length === 0
+          )
       )
       const releasedPtyIdsByTabId = new Map<string, Set<string>>(
         rowHydrationByWorktree.flatMap(([, hydration]) => [...hydration.releasedPtyIdsByTabId])

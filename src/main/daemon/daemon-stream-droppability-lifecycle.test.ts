@@ -7,7 +7,7 @@ import { DaemonServer } from './daemon-server'
 import type { DaemonStreamDataBatcher } from './daemon-stream-data-batcher'
 import type { BackgroundTransientFactRelay } from './daemon-background-transient-facts'
 import type { PendingStreamDataBatch } from './daemon-stream-keep-tail-drop'
-import type { SubprocessHandle } from './session'
+import type { SubprocessHandle } from './session-subprocess-handle'
 import type { DaemonRequest } from './types'
 
 type MockSubprocess = SubprocessHandle & {
@@ -43,6 +43,7 @@ function createMockSubprocess(): MockSubprocess {
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(() => onExit?.(0)),
+    terminateOwnedTree: () => 'unavailable' as const,
     forceKill: vi.fn(() => onExit?.(137)),
     signal: vi.fn(),
     onData(callback) {

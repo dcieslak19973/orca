@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- Why: holds an inline JS plugin source emitted as one file; splitting across TS modules would scatter tightly coupled string-template logic. */
-import { app } from 'electron'
+import { getAppEnvironment } from '../../shared/app-environment'
 import { join } from 'node:path'
 import {
   existsSync,
@@ -36,10 +36,13 @@ function toSafeDirName(id: string): string {
 }
 
 export function getOpenCodePluginSource(): string {
-  return getOpenCodeFamilyPluginSource('/hook/opencode')
+  return getOpenCodeFamilyPluginSource('/hook/opencode', { emitSessionStart: true })
 }
 
-export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
+export function getOpenCodeFamilyPluginSource(
+  hookPathname: string,
+  options: { emitSessionStart: boolean }
+): string {
   // Why: the plugin posts PTY environment data from OpenCode to the shared hooks server.
   return [
     '// Why: process-lifetime guard so a recurring parse error on a malformed',
@@ -167,6 +170,11 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '// Why: a matching Idle must retire fail-open Busy even when the SDK client',
     '// is unavailable, without granting an unrelated unknown Idle authority.',
     'const provisionalBusyByKey = new Map();',
+    '// Why: a background child outlives the root turn that spawned it, so the',
+    '// pane must stay Busy on its behalf until its own exact Idle (or its',
+    "// factory's disposal) retires it — otherwise the root Idle completes a task",
+    '// tree that is still working.',
+    'const busyChildRootByKey = new Map();',
     'const pendingAttentionByKey = new Map();',
     'const rootSessionById = new Map();',
     'const rootSessionLookupById = new Map();',
@@ -641,6 +649,24 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '  return provisionalBusyByKey.delete(provisionalBusyKey(factoryID, sessionID));',
     '}',
     '',
+    'function busyChildKey(factoryID, sessionID) {',
+    '  return JSON.stringify([factoryID, sessionID || ""]);',
+    '}',
+    '',
+    'function rememberBusyChild(sessionID, rootSessionID, factoryID) {',
+    '  const key = busyChildKey(factoryID, sessionID);',
+    '  // Why: repeated Busy for the same child is not a state change; report one',
+    '  // only when the pane actually gains a running descendant.',
+    '  if (busyChildRootByKey.get(key)?.sessionID === rootSessionID) return false;',
+    '  busyChildRootByKey.delete(key);',
+    '  busyChildRootByKey.set(key, { sessionID: rootSessionID, factoryID });',
+    '  return true;',
+    '}',
+    '',
+    'function clearBusyChild(sessionID, factoryID) {',
+    '  return busyChildRootByKey.delete(busyChildKey(factoryID, sessionID));',
+    '}',
+    '',
     'function clearKnownBusyRoot(sessionID, factoryID) {',
     '  if (busyRootOwnerBySessionID.get(sessionID) !== factoryID) return false;',
     '  busyRootOwnerBySessionID.delete(sessionID);',
@@ -649,6 +675,11 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '',
     'function latestBusyOwner() {',
     '  let latest = null;',
+    '  // Why: a running descendant is reported under its ROOT id, and ranks',
+    '  // below a directly busy root so an ongoing turn keeps labelling the pane.',
+    '  for (const busyChild of busyChildRootByKey.values()) {',
+    '    latest = busyChild;',
+    '  }',
     '  for (const [sessionID, factoryID] of busyRootOwnerBySessionID) {',
     '    latest = { sessionID, factoryID };',
     '  }',
@@ -722,10 +753,14 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '  // but preserve blockers that still require the pane owner to respond.',
     '  if (childState === true && !isAttentionEvent) {',
     '    let attentionRootSessionID = null;',
+    '    let childBusyChanged = false;',
     '    if (isIdleEvent) {',
     '      attentionRootSessionID = clearAttentionForSession(sessionID, factoryID);',
+    '      childBusyChanged = clearBusyChild(sessionID, factoryID);',
+    '    } else if (statusType === "busy" || statusType === "retry") {',
+    '      childBusyChanged = rememberBusyChild(sessionID, rootSessionID, factoryID);',
     '    }',
-    '    if (resolvedProvisionalBusy || attentionRootSessionID) {',
+    '    if (resolvedProvisionalBusy || attentionRootSessionID || childBusyChanged) {',
     '      await publishOwnershipChange(factoryID, attentionRootSessionID || rootSessionID);',
     '    }',
     '    return;',
@@ -737,7 +772,15 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '      const attentionRootSessionID = clearAttentionForSession(sessionID, factoryID);',
     '      const clearedProvisionalBusy = clearProvisionalBusy(sessionID, factoryID);',
     '      const clearedKnownBusyRoot = clearKnownBusyRoot(sessionID, factoryID);',
-    '      if (attentionRootSessionID || clearedProvisionalBusy || clearedKnownBusyRoot) {',
+    '      // Why: exact-session cleanup, so a child whose finishing Idle lands',
+    '      // during an SDK outage cannot pin the pane Busy forever.',
+    '      const clearedBusyChild = clearBusyChild(sessionID, factoryID);',
+    '      if (',
+    '        attentionRootSessionID ||',
+    '        clearedProvisionalBusy ||',
+    '        clearedKnownBusyRoot ||',
+    '        clearedBusyChild',
+    '      ) {',
     '        await publishOwnershipChange(factoryID, attentionRootSessionID || sessionID);',
     '      }',
     '    }',
@@ -835,6 +878,20 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '',
     '    const sessionID = event.properties?.sessionID;',
     '    const updatedPart = event.properties?.part;',
+    ...(options.emitSessionStart
+      ? [
+          '    if (event.type === "session.created") {',
+          '      const info = event.properties?.info;',
+          '      if (!info?.id || info.parentID) return;',
+          '      rememberSessionRoot(info.id, info.id);',
+          '      await enqueueLifecycle(() =>',
+          '        disposed ? undefined : post("SessionStart", { sessionID: info.id })',
+          '      );',
+          '      return;',
+          '    }',
+          ''
+        ]
+      : []),
     '    if (',
     '      event.type === "message.part.updated" &&',
     '      updatedPart?.type === "tool" &&',
@@ -907,6 +964,11 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '      // parts in the same session flow normally.',
     '      const part = event.properties && event.properties.part;',
     '      if (!part || part.type !== "text" || !part.text) return;',
+    '      // Why: OpenCode injects a finished background task back into the',
+    '      // parent turn as a synthetic `<task id=…>` text part. It is machinery,',
+    '      // not what the human typed or the agent replied — OpenCode hides it',
+    '      // from its own prompt too — so it must not replace the pane preview.',
+    '      if (part.synthetic === true) return;',
     '      const role = messageRoleById.get(part.messageID);',
     '      if (!role) return;',
     '      if (role === "user") {',
@@ -944,6 +1006,9 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '      }',
     '      for (const [key, provisional] of provisionalBusyByKey) {',
     '        if (provisional.factoryID === factoryID) provisionalBusyByKey.delete(key);',
+    '      }',
+    '      for (const [key, busyChild] of busyChildRootByKey) {',
+    '        if (busyChild.factoryID === factoryID) busyChildRootByKey.delete(key);',
     '      }',
     '      for (const [key, attention] of pendingAttentionByKey) {',
     '        if (attention.factoryID === factoryID) pendingAttentionByKey.delete(key);',
@@ -994,6 +1059,15 @@ export function getOpenCodeFamilyPluginSource(hookPathname: string): string {
     '  },',
     '  };',
     '};',
+    '',
+    '// Why: OpenCode also resolves plugins through the module default export, and that',
+    '// loader rejects the module unless the default exposes `server()` ("must default',
+    '// export an object with server()"). `setup()` does not satisfy it. Keep the named',
+    '// export so the factory-based loader still finds the same instance.',
+    'export default {',
+    '  id: "orca-opencode-status",',
+    '  server: OrcaOpenCodeStatusPlugin,',
+    '};',
     ''
   ].join('\n')
 }
@@ -1039,7 +1113,7 @@ export class OpenCodeHookService {
   }
 
   private getOverlayRoot(): string {
-    return join(app.getPath('userData'), OPENCODE_OVERLAY_DIR)
+    return join(getAppEnvironment().getPath('userData'), OPENCODE_OVERLAY_DIR)
   }
 
   private getSourceOverlayDir(sourceConfigDir: string): string {
@@ -1047,7 +1121,11 @@ export class OpenCodeHookService {
   }
 
   private getSharedConfigDir(): string {
-    return join(app.getPath('userData'), OPENCODE_LEGACY_HOOKS_DIR, OPENCODE_SHARED_CONFIG_DIR)
+    return join(
+      getAppEnvironment().getPath('userData'),
+      OPENCODE_LEGACY_HOOKS_DIR,
+      OPENCODE_SHARED_CONFIG_DIR
+    )
   }
 
   private readOverlayManifest(overlayDir: string): OpenCodeOverlayManifest {

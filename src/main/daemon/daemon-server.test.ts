@@ -7,7 +7,7 @@ import { DaemonServer } from './daemon-server'
 import { DaemonClient } from './client'
 import { encodeNdjson } from './ndjson'
 import { PROTOCOL_VERSION, type DaemonRequest } from './types'
-import type { SubprocessHandle } from './session'
+import type { SubprocessHandle } from './session-subprocess-handle'
 import { getDaemonPidPath, getDaemonSocketPath, serializeDaemonPidFile } from './daemon-spawner'
 import { waitForEndpointUnreachable } from './daemon-endpoint-reachability-test-harness'
 
@@ -30,6 +30,7 @@ function createMockSubprocess(): SubprocessHandle & {
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(() => setTimeout(() => onExitCb?.(0), 5)),
+    terminateOwnedTree: () => 'unavailable' as const,
     forceKill: vi.fn(() => onExitCb?.(137)),
     signal: vi.fn(),
     onData(cb) {
@@ -263,7 +264,9 @@ describe('DaemonServer', () => {
           requestType === 'kill'
             ? c.request('kill', { sessionId: 'canceled-preparation', immediate: true })
             : c.request('cancelCreateOrAttach', { sessionId: 'canceled-preparation' })
-        await expect(cancelRequest).resolves.toEqual({})
+        await expect(cancelRequest).resolves.toEqual(
+          requestType === 'kill' ? {} : { canceled: true }
+        )
         finishPreparation()
         await canceledCreates
         expect(spawnSubprocess).not.toHaveBeenCalled()
