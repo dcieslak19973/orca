@@ -753,6 +753,9 @@ describe('getPRForBranch', () => {
 
     await getPRForBranch('/repo-root', 'feature', null, 'ssh-1')
 
-    expect(sshGitProvider.exec).toHaveBeenCalled()
+    expect(sshGitProvider.exec).toHaveBeenCalledWith(
+      ['for-each-ref', '--format=%(refname)%00%(upstream)', 'refs/heads'],
+      '/repo-root'
+    )
   })
 })
