@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  BROWSER_SIDE_LINK_FRAME_SUFFIX,
   buildBrowserClickedLinkRoutingScript,
   buildBrowserIframeClickedLinkRoutingScript,
   installBrowserIframeClickedLinkRouting,
@@ -106,7 +107,7 @@ describe('browser clicked-link routing', () => {
     )
     expect(clickLink(link, { metaKey: true, shiftKey: true }).open).toHaveBeenCalledWith(
       'https://example.com/reference',
-      FOREGROUND_FRAME_NAME
+      `${FOREGROUND_FRAME_NAME}${BROWSER_SIDE_LINK_FRAME_SUFFIX}`
     )
   })
 
@@ -232,7 +233,7 @@ describe('browser clicked-link routing', () => {
     cleanupIframeRouting = installBrowserIframeClickedLinkRouting(FOREGROUND_FRAME_NAME, true, true)
     expect(clickLink(blank, { metaKey: true, shiftKey: true }).open).toHaveBeenCalledWith(
       'https://example.com/new-context',
-      FOREGROUND_FRAME_NAME
+      `${FOREGROUND_FRAME_NAME}${BROWSER_SIDE_LINK_FRAME_SUFFIX}`
     )
   })
 

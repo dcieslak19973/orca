@@ -56,21 +56,26 @@ type LinkTargetStore = {
 }
 
 /**
- * Resolve the group a clicked link should open in, creating the right-hand
- * split when the setting is on and the source pane has no sibling. Returns null
- * to mean "let createBrowserTab use the active group" — including when a split
- * cannot be created, so link-opening degrades to a tab rather than failing.
+ * Resolve the group a clicked link should open in, creating the right-hand split
+ * when side placement is requested and the source pane has no sibling. Returns
+ * null to mean "let createBrowserTab use the active group" — including when a
+ * split cannot be created, so link-opening degrades to a tab rather than failing.
+ * `invert` flips the persistent setting for a single open (modifier+Shift click).
  */
 export function resolveLinkTargetGroupId(
   store: LinkTargetStore,
-  sourcePage: { worktreeId: string; workspaceId: string }
+  sourcePage: { worktreeId: string; workspaceId: string },
+  options?: { invert?: boolean }
 ): string | null {
-  // Why: when the setting is off, degrade to the active group without touching
-  // per-worktree layout maps — the opener may fire before they are populated.
-  if (store.settings?.openLinksInSidePane !== true) {
+  const { worktreeId, workspaceId } = sourcePage
+  const settingOn = store.settings?.openLinksInSidePane === true
+  // Why: a modifier+Shift click inverts the persistent default for one open.
+  const sideRequested = options?.invert ? !settingOn : settingOn
+  // Why: when side placement is not requested, degrade to the active group without
+  // touching per-worktree layout maps — the opener may fire before they populate.
+  if (!sideRequested) {
     return null
   }
-  const { worktreeId, workspaceId } = sourcePage
   const plan = resolveLinkTargetGroupPlan({
     enabled: true,
     workspaceId,

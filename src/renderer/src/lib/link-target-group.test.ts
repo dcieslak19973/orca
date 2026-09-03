@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TabGroupLayoutNode } from '../../../shared/tab-types'
-import { resolveLinkTargetGroupPlan } from './link-target-group'
+import { resolveLinkTargetGroupId, resolveLinkTargetGroupPlan } from './link-target-group'
 
 const leaf = (groupId: string): TabGroupLayoutNode => ({ type: 'leaf', groupId })
 const split = (first: TabGroupLayoutNode, second: TabGroupLayoutNode): TabGroupLayoutNode => ({
@@ -69,5 +69,45 @@ describe('resolveLinkTargetGroupPlan', () => {
         layout: null
       })
     ).toEqual({ kind: 'active-group' })
+  })
+})
+
+describe('resolveLinkTargetGroupId invert override', () => {
+  const store = {
+    settings: { openLinksInSidePane: false } as { openLinksInSidePane?: boolean } | null,
+    unifiedTabsByWorktree: { wt: [{ entityId: 'ws-1', groupId: 'left' }] },
+    activeGroupIdByWorktree: { wt: 'left' },
+    groupsByWorktree: { wt: [{ id: 'left' }, { id: 'right' }] },
+    layoutByWorktree: { wt: split(leaf('left'), leaf('right')) },
+    createEmptySplitGroup: () => 'new-split'
+  }
+  const sourcePage = { worktreeId: 'wt', workspaceId: 'ws-1' }
+
+  it('setting off, no override: opens in the active group', () => {
+    expect(
+      resolveLinkTargetGroupId({ ...store, settings: { openLinksInSidePane: false } }, sourcePage)
+    ).toBeNull()
+  })
+
+  it('setting off, override: opens beside the clicked pane', () => {
+    expect(
+      resolveLinkTargetGroupId({ ...store, settings: { openLinksInSidePane: false } }, sourcePage, {
+        invert: true
+      })
+    ).toBe('right')
+  })
+
+  it('setting on, no override: opens beside the clicked pane', () => {
+    expect(
+      resolveLinkTargetGroupId({ ...store, settings: { openLinksInSidePane: true } }, sourcePage)
+    ).toBe('right')
+  })
+
+  it('setting on, override: opens in the active group', () => {
+    expect(
+      resolveLinkTargetGroupId({ ...store, settings: { openLinksInSidePane: true } }, sourcePage, {
+        invert: true
+      })
+    ).toBeNull()
   })
 })

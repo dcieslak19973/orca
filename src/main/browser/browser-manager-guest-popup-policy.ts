@@ -8,6 +8,7 @@ import {
 } from '../../shared/browser-url'
 import {
   BROWSER_CLICKED_LINK_ROUTING_WORLD_ID,
+  BROWSER_SIDE_LINK_FRAME_SUFFIX,
   buildBrowserClickedLinkRoutingScript,
   buildBrowserIframeClickedLinkRoutingScript
 } from './browser-clicked-link-routing'
@@ -109,10 +110,16 @@ export abstract class BrowserManagerGuestPopupPolicy extends BrowserManagerNavig
       const browserTabId = ownerContext?.browserTabId ?? null
       const browserUrl = normalizeBrowserNavigationUrl(url)
       const externalUrl = normalizeExternalBrowserUrl(url)
+      // Why: a modifier+Shift click suffixes the private frame name to ask for a side
+      // placement; strip it so the base name still matches the recognized click gesture.
+      const openToSide = frameName ? frameName.endsWith(BROWSER_SIDE_LINK_FRAME_SUFFIX) : false
+      const baseFrameName = openToSide
+        ? frameName.slice(0, -BROWSER_SIDE_LINK_FRAME_SUFFIX.length)
+        : frameName
       const expectedClickedLinkFrameName = this.clickedLinkFrameNameByGuestId.get(guest.id)
-      const iframeFrame = frameName ? iframeFrameByFrameName.get(frameName) : undefined
+      const iframeFrame = baseFrameName ? iframeFrameByFrameName.get(baseFrameName) : undefined
       let isClickedLink = Boolean(
-        expectedClickedLinkFrameName && frameName === expectedClickedLinkFrameName
+        expectedClickedLinkFrameName && baseFrameName === expectedClickedLinkFrameName
       )
       if (!isClickedLink && iframeFrame) {
         isClickedLink = true
@@ -121,7 +128,7 @@ export abstract class BrowserManagerGuestPopupPolicy extends BrowserManagerNavig
       }
 
       if (isClickedLink) {
-        if (browserTabId && browserUrl && this.openLinkInOrcaTab(browserTabId, browserUrl)) {
+        if (browserTabId && browserUrl && this.openLinkInOrcaTab(browserTabId, browserUrl, openToSide)) {
           this.forwardOrQueuePopupEvent(guest.id, {
             origin: safeOrigin(browserUrl),
             action: 'opened-in-orca'

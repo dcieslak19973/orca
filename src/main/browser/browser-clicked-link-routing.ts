@@ -1,5 +1,11 @@
 export const BROWSER_CLICKED_LINK_ROUTING_WORLD_ID = 1208
 
+// Why: a modifier+Shift click asks for the link beside its pane. The guest signals
+// that by suffixing the private frame name; main strips this to recover the base
+// match. The literal is inlined in the injected listeners below, so it must stay
+// in sync with this constant (guarded by a build-script test).
+export const BROWSER_SIDE_LINK_FRAME_SUFFIX = '::orca-side'
+
 type BrowserClickedLinkRoutingState = {
   frameName: string
   isMac: boolean
@@ -101,7 +107,9 @@ export function installBrowserClickedLinkRouting(
     // with the same disposition. The private frame name preserves that one
     // distinction without weakening OAuth popups that need window.opener.
     event.preventDefault()
-    window.open(targetUrl.toString(), state.frameName)
+    const targetFrameName =
+      modifierClick && event.shiftKey ? `${state.frameName}::orca-side` : state.frameName
+    window.open(targetUrl.toString(), targetFrameName)
   }
   routingGlobal.__orcaBrowserClickedLinkRouting = state
 
@@ -179,7 +187,8 @@ export function installBrowserIframeClickedLinkRouting(
     // A page that observes a real click cannot replay it to create more tabs.
     event.preventDefault()
     cleanup()
-    window.open(targetUrl.toString(), frameName)
+    const targetFrameName = modifierClick && event.shiftKey ? `${frameName}::orca-side` : frameName
+    window.open(targetUrl.toString(), targetFrameName)
   }
 
   const cleanup = (): void => {

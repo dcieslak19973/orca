@@ -82,7 +82,7 @@ export function registerBrowserStateIpcBridge(
     })
   )
   unsubs.push(
-    window.api.browser.onOpenLinkInOrcaTab(({ browserPageId, url }) => {
+    window.api.browser.onOpenLinkInOrcaTab(({ browserPageId, url, toSide }) => {
       const store = useAppStore.getState()
       const sourcePage = Object.values(store.browserPagesByWorkspace)
         .flat()
@@ -97,7 +97,7 @@ export function registerBrowserStateIpcBridge(
       )
       store.createBrowserTab(sourcePage.worktreeId, url, {
         title: url,
-        targetGroupId: resolveLinkTargetGroupId(store, sourcePage) ?? undefined,
+        targetGroupId: resolveLinkTargetGroupId(store, sourcePage, { invert: toSide }) ?? undefined,
         ...(sourceTab
           ? {
               sessionProfileId: sourceTab.sessionProfileId,

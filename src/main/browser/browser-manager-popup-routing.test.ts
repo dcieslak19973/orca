@@ -261,7 +261,8 @@ describe('browserManager', () => {
 
     expect(rendererSendMock).toHaveBeenCalledWith('browser:open-link-in-orca-tab', {
       browserPageId: 'browser-1',
-      url: 'https://docs.example.com/guide'
+      url: 'https://docs.example.com/guide',
+      toSide: false
     })
     expect(rendererSendMock).toHaveBeenCalledWith('browser:popup', {
       browserPageId: 'browser-1',
@@ -449,7 +450,8 @@ describe('browserManager', () => {
 
     expect(rendererSendMock).toHaveBeenCalledWith('browser:open-link-in-orca-tab', {
       browserPageId: 'browser-1',
-      url: 'https://docs.example.com/guide'
+      url: 'https://docs.example.com/guide',
+      toSide: false
     })
     expect(rendererSendMock).toHaveBeenCalledWith('browser:popup', {
       browserPageId: 'browser-1',
@@ -458,6 +460,19 @@ describe('browserManager', () => {
     })
     expect(openPopupWithOriginBarMock).not.toHaveBeenCalled()
     expect(shellOpenExternalMock).not.toHaveBeenCalled()
+
+    // A modifier+Shift click suffixes the frame name; main strips it and flags toSide.
+    expect(
+      handler({
+        url: 'https://docs.example.com/beside',
+        frameName: `${clickedLinkFrameName}::orca-side`
+      })
+    ).toEqual({ action: 'deny' })
+    expect(rendererSendMock).toHaveBeenCalledWith('browser:open-link-in-orca-tab', {
+      browserPageId: 'browser-1',
+      url: 'https://docs.example.com/beside',
+      toSide: true
+    })
   })
 
   it('routes child-frame gestures with one-use tokens', async () => {
@@ -530,7 +545,8 @@ describe('browserManager', () => {
     ).toEqual({ action: 'deny' })
     expect(rendererSendMock).toHaveBeenCalledWith('browser:open-link-in-orca-tab', {
       browserPageId: 'browser-frame',
-      url: 'https://docs.example.com/from-frame'
+      url: 'https://docs.example.com/from-frame',
+      toSide: false
     })
 
     await vi.waitFor(() => expect(executeJavaScriptMock).toHaveBeenCalledTimes(2))
