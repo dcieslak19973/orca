@@ -4,6 +4,7 @@ import {
   type AiVaultListResult,
   type AiVaultSession
 } from '../../../../shared/ai-vault-types'
+import { describeAiVaultScanError } from '../../../../shared/ai-vault-scan-error-message'
 import {
   ALL_EXECUTION_HOSTS_SCOPE,
   requestedExecutionHostScope,
@@ -60,7 +61,8 @@ export function useAiVaultSessionRefresh(
   const sessions = scanResult?.sessions ?? EMPTY_AI_VAULT_SESSIONS
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const requestTokenRef = useRef(crypto.randomUUID())
+  const requestTokenRef = useRef<string>(undefined!)
+  requestTokenRef.current ??= crypto.randomUUID()
   const refreshIdRef = useRef(0)
   const refreshInFlightRef = useRef(false)
   const pendingRefreshRef = useRef(false)
@@ -68,7 +70,8 @@ export function useAiVaultSessionRefresh(
   const pendingBackgroundRef = useRef(true)
   const lastAppliedScanRef = useRef<{ scopeKey: string; scannedAt: string } | null>(null)
   const mountedRef = useRef(true)
-  const publicationGateRef = useRef(new AiVaultSessionPublicationGate())
+  const publicationGateRef = useRef<AiVaultSessionPublicationGate>(undefined!)
+  publicationGateRef.current ??= new AiVaultSessionPublicationGate()
   const scanScopeKey = `${aiVaultSessionResultCacheKey(executionHostScope, scopePaths)}\n${sessionLimit}`
   const scopePathsRef = useRef<readonly string[]>(scopePaths)
   scopePathsRef.current = scopePaths
@@ -193,7 +196,7 @@ export function useAiVaultSessionRefresh(
           refreshIdRef.current === refreshId &&
           scanKey === currentScanScopeKey()
         ) {
-          setError(err instanceof Error ? err.message : String(err))
+          setError(describeAiVaultScanError(err instanceof Error ? err.message : String(err)))
         }
       } finally {
         refreshInFlightRef.current = false
@@ -266,6 +269,27 @@ export function useAiVaultSessionRefresh(
     }
     void refresh({ force: false, reuseLoadedDepth: true })
   }, [executionHostScope, refresh, scanScopeKey])
+
+  // Why: this panel can query the relay before it is ready — at startup, and again for the window
+  // in which a reconnect leaves the session not-ready — and the query throws 'SSH relay is not
+  // ready'. Nothing else here retries: the remaining triggers are mount, window refocus and a new
+  // agent session id, so a user whose workspace is otherwise working sits on that error
+  // indefinitely. The file explorer already recovers this way for the same reason
+  // (use-file-explorer-tree-load-effects.ts); this panel simply never did.
+  //
+  // Gated on a prior error so a local workspace, or one that already listed fine, does not rescan
+  // every time some other host connects.
+  const sshConnectedGeneration = useAppStore((s) => s.sshConnectedGeneration)
+  const sshGenerationRef = useRef(sshConnectedGeneration)
+  useEffect(() => {
+    if (sshConnectedGeneration <= sshGenerationRef.current) {
+      return
+    }
+    sshGenerationRef.current = sshConnectedGeneration
+    if (error !== null) {
+      void refresh({ background: true, force: false })
+    }
+  }, [sshConnectedGeneration, error, refresh])
 
   // Refocus checks the shared host cache without forcing another transcript scan.
   useEffect(() => {

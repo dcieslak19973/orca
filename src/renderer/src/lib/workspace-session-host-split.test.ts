@@ -6,13 +6,10 @@ import {
 } from './workspace-session-host-split'
 import { getDefaultWorkspaceSession } from '../../../shared/constants'
 import { LOCAL_EXECUTION_HOST_ID, type ExecutionHostId } from '../../../shared/execution-host'
-import type {
-  BrowserPage,
-  Tab,
-  TerminalLayoutSnapshot,
-  TerminalTab,
-  WorkspaceSessionState
-} from '../../../shared/types'
+import type { BrowserPage } from '../../../shared/browser-workspace-types'
+import type { Tab } from '../../../shared/tab-types'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../shared/terminal-tab-types'
+import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 
 const RUNTIME_A: ExecutionHostId = 'runtime:env-a'
 const RUNTIME_B: ExecutionHostId = 'runtime:env-b'
@@ -114,6 +111,32 @@ describe('splitWorkspaceSessionByHost', () => {
     expect(Object.keys(slices[LOCAL_EXECUTION_HOST_ID]?.tabsByWorktree ?? {})).toEqual(['local-wt'])
     expect(Object.keys(slices[RUNTIME_A]?.tabsByWorktree ?? {})).toEqual(['a-wt'])
     expect(Object.keys(slices[RUNTIME_B]?.tabsByWorktree ?? {})).toEqual(['b-wt'])
+  })
+
+  it('keeps ssh-qualified visit recency in the local slice and routes runtime-qualified keys to their partition', () => {
+    const state: WorkspaceSessionState = {
+      ...getDefaultWorkspaceSession(),
+      lastVisitedAtByWorktreeId: {
+        'local-wt': 1,
+        'a-wt': 2,
+        'ssh:builder|ssh-wt': 3,
+        'runtime:env-a|a-wt': 4
+      }
+    }
+
+    const slices = splitWorkspaceSessionByHost(state, ownerByPrefix())
+
+    // Why local for ssh: boot hydration reads only local + runtime:* partitions,
+    // so an ssh partition would strand the recency across restarts.
+    expect(slices[LOCAL_EXECUTION_HOST_ID]?.lastVisitedAtByWorktreeId).toEqual({
+      'local-wt': 1,
+      'ssh:builder|ssh-wt': 3
+    })
+    expect(slices[RUNTIME_A]?.lastVisitedAtByWorktreeId).toEqual({
+      'a-wt': 2,
+      'runtime:env-a|a-wt': 4
+    })
+    expect(slices['ssh:builder' as ExecutionHostId]).toBeUndefined()
   })
 
   it('routes tab-keyed maps via the owning tab worktree (legacy + unified)', () => {
@@ -367,5 +390,48 @@ describe('split → merge round trip', () => {
       terminalLayoutsByTabId: { 't-a': makeLayout() }
     }
     expect(roundTrip(state)).toEqual(state)
+  })
+})
+
+/**
+ * The main-process load path drops a global field from a non-local partition when the local slice
+ * already has it, on the strength of exactly these two rules. If either moves, that prune starts
+ * discarding a value the renderer would otherwise have read.
+ */
+describe('mergeWorkspaceSessionsFromHosts global-field precedence', () => {
+  const localEntry = {
+    url: 'local',
+    normalizedUrl: 'local',
+    title: 'l',
+    lastVisitedAt: 2,
+    visitCount: 1
+  }
+  const hostEntry = {
+    url: 'host',
+    normalizedUrl: 'host',
+    title: 'h',
+    lastVisitedAt: 1,
+    visitCount: 1
+  }
+
+  it("takes a global field from 'local' whenever local has one, ignoring every other slice", () => {
+    const merged = mergeWorkspaceSessionsFromHosts({
+      [LOCAL_EXECUTION_HOST_ID]: {
+        ...getDefaultWorkspaceSession(),
+        browserUrlHistory: [localEntry]
+      },
+      [RUNTIME_A]: { ...getDefaultWorkspaceSession(), browserUrlHistory: [hostEntry] }
+    })
+    expect(merged.browserUrlHistory).toEqual([localEntry])
+  })
+
+  it('falls back to another slice only when local does not have the field', () => {
+    const local = getDefaultWorkspaceSession()
+    delete local.browserUrlHistory
+    const merged = mergeWorkspaceSessionsFromHosts({
+      [LOCAL_EXECUTION_HOST_ID]: local,
+      [RUNTIME_A]: { ...getDefaultWorkspaceSession(), browserUrlHistory: [hostEntry] }
+    })
+    expect(merged.browserUrlHistory).toEqual([hostEntry])
   })
 })
