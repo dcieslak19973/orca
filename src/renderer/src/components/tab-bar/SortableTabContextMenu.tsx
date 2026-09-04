@@ -17,7 +17,7 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import type { TerminalTab } from '../../../../shared/types'
+import type { TerminalTab } from '../../../../shared/terminal-tab-types'
 import { useAppStore } from '../../store'
 import { formatShortcutLabel, useOptionalShortcutLabel } from '@/hooks/useShortcutLabel'
 import { translate } from '@/i18n/i18n'
@@ -107,8 +107,9 @@ type SortableTabContextMenuProps = {
   onRenameOpen: () => void
   onSetTabColor: (tabId: string, color: string | null) => void
   onTogglePin: () => void
-  /** True when this tab is an agent terminal that can switch to the native chat
-   *  view; gates the "Switch view" menu item. */
+  /** True when this tab is an agent terminal that can switch between the terminal
+   *  and native chat views; gates the "Switch view" menu item. Structured
+   *  sessions never qualify — they have no terminal underneath. */
   canToggleViewMode?: boolean
   /** True when the tab is currently showing the native chat view (drives the
    *  item's label/icon between "chat" and "terminal"). */
