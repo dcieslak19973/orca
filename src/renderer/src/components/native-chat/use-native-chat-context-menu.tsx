@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type MouseEventHandler,
@@ -40,6 +39,7 @@ type NativeChatContextMenuState = {
 
 type UseNativeChatContextMenuArgs = {
   rootRef: RefObject<HTMLElement | null>
+  /** Bridge-only escape hatch; structured sessions never mount this menu. */
   onSwitchToTerminal?: () => void
   actions: NativeChatContextMenuActions
 }
@@ -59,6 +59,8 @@ export type NativeChatContextMenuActions = {
   onSetTitle: () => void
   onCopyTerminalId: () => void
   onCopyPaneId: () => void
+  canCopyAgentSessionId: boolean
+  onCopyAgentSessionId: () => void
   canClosePane: boolean
   onClosePane: () => void
 }
@@ -78,6 +80,8 @@ export const emptyNativeChatContextMenuActions: Omit<NativeChatContextMenuAction
   onSetTitle: () => {},
   onCopyTerminalId: () => {},
   onCopyPaneId: () => {},
+  canCopyAgentSessionId: false,
+  onCopyAgentSessionId: () => {},
   canClosePane: false,
   onClosePane: () => {}
 }
@@ -98,7 +102,7 @@ export function useNativeChatContextMenu({
     point: { x: 0, y: 0 },
     selectedText: ''
   })
-  const shortcutLabel = useMemo(() => nativeChatToggleShortcutLabel(isMacPlatform()), [])
+  const shortcutLabel = nativeChatToggleShortcutLabel(isMacPlatform())
 
   const rememberCurrentSelection = useCallback(() => {
     const selectedText = getNativeChatSelectedText(rootRef.current)
@@ -237,6 +241,15 @@ export function useNativeChatContextMenu({
               'Set Title…'
             )}
           </DropdownMenuItem>
+          {actions.canCopyAgentSessionId ? (
+            <DropdownMenuItem onSelect={actions.onCopyAgentSessionId}>
+              <Copy />
+              {translate(
+                'components.terminalPane.TerminalContextMenu.copySessionId',
+                'Copy Session ID'
+              )}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={actions.onCopyTerminalId}>
             <Copy />
             {translate(

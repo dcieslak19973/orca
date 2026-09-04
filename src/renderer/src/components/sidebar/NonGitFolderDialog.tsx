@@ -11,12 +11,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/store'
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
-import { buildDismissedOnboardingFolderAgentStartup } from '@/lib/onboarding-folder-agent-startup'
+import { resolveDismissedOnboardingFolderAgentLaunch } from '@/lib/onboarding-folder-agent-startup'
 import { isNativeChatTranscriptLocalReadable } from '@/lib/native-chat-transcript-readability'
 import { markOnboardingProjectAdded } from '@/lib/onboarding-project-checklist'
 import { translate } from '@/i18n/i18n'
 import { upsertAddedRepoWithProjectHostSetup } from './add-repo-store-upsert'
 import { worktreeRefreshOptions } from './add-repo-runtime-owner'
+import { startStructuredCodexLaunch } from '@/lib/structured-agent-session-launch'
+import { StructuredAgentSessionCreateRefusalError } from '@/lib/launch-structured-codex-session'
 
 const NonGitFolderDialog = React.memo(function NonGitFolderDialog() {
   const activeModal = useAppStore((s) => s.activeModal)
@@ -30,6 +32,7 @@ const NonGitFolderDialog = React.memo(function NonGitFolderDialog() {
   const connectionId = typeof modalData.connectionId === 'string' ? modalData.connectionId : ''
   const runtimeEnvironmentId =
     typeof modalData.runtimeEnvironmentId === 'string' ? modalData.runtimeEnvironmentId : ''
+  const displayName = typeof modalData.displayName === 'string' ? modalData.displayName.trim() : ''
   const runtimeEnvironmentName =
     runtimeEnvironmentId &&
     (runtimeEnvironments.find((environment) => environment.id === runtimeEnvironmentId)?.name ||
@@ -58,7 +61,8 @@ const NonGitFolderDialog = React.memo(function NonGitFolderDialog() {
           const result = await window.api.repos.addRemote({
             connectionId,
             remotePath: folderPath,
-            kind: 'folder'
+            kind: 'folder',
+            ...(displayName ? { displayName } : {})
           })
           if ('error' in result) {
             throw new Error(result.error)
@@ -84,17 +88,36 @@ const NonGitFolderDialog = React.memo(function NonGitFolderDialog() {
             const onboarding = await window.api.onboarding.get().catch(() => null)
             // Why: SSH users can hit this dialog from Add Project after
             // dismissing onboarding, bypassing the local addNonGitFolder path.
-            const startup = buildDismissedOnboardingFolderAgentStartup(
-              useAppStore.getState().settings,
+            const launch = resolveDismissedOnboardingFolderAgentLaunch({
+              settings: useAppStore.getState().settings,
               onboarding,
-              hadProjectBeforeAdd,
-              isNativeChatTranscriptLocalReadable(connectionId)
-            )
+              hasExistingProject: hadProjectBeforeAdd,
+              executionHostId: ownerOptions.executionHostId ?? connectionId,
+              nativeChatTranscriptIsLocalReadable: isNativeChatTranscriptLocalReadable(connectionId)
+            })
             activateAndRevealWorktree(folderWorktree.id, {
               sidebarRevealBehavior: 'auto',
               executionHostId: ownerOptions.executionHostId,
-              ...(startup ? { startup } : {})
+              ...(launch.startup ? { startup: launch.startup } : {}),
+              ...(launch.route === 'structured-native-chat' ? { providesInitialSurface: true } : {})
             })
+            if (launch.route === 'structured-native-chat' && launch.agent === 'codex') {
+              const structured = startStructuredCodexLaunch(folderWorktree.id)
+              const fallback = structured.claimDefinitiveRefusalFallback(() => {
+                activateAndRevealWorktree(folderWorktree.id, {
+                  sidebarRevealBehavior: 'auto',
+                  executionHostId: ownerOptions.executionHostId,
+                  ...(launch.fallbackStartup ? { startup: launch.fallbackStartup } : {})
+                })
+              })
+              try {
+                await structured.launchResult
+              } catch (error) {
+                if (error instanceof StructuredAgentSessionCreateRefusalError) {
+                  await fallback
+                }
+              }
+            }
           }
         } catch (err) {
           // This code path calls addRemote directly (not through the store),
@@ -111,11 +134,12 @@ const NonGitFolderDialog = React.memo(function NonGitFolderDialog() {
       })()
     } else if (folderPath) {
       void addNonGitFolder(folderPath, {
-        runtimeEnvironmentId: runtimeEnvironmentId || null
+        runtimeEnvironmentId: runtimeEnvironmentId || null,
+        ...(displayName ? { displayName } : {})
       })
     }
     closeModal()
-  }, [addNonGitFolder, closeModal, folderPath, connectionId, runtimeEnvironmentId])
+  }, [addNonGitFolder, closeModal, displayName, folderPath, connectionId, runtimeEnvironmentId])
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

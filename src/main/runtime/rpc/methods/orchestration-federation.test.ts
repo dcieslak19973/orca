@@ -152,7 +152,8 @@ describe('orchestration federation', () => {
     } as never)
     vi.spyOn(runtime, 'closeTerminal').mockResolvedValue({
       handle: 'term_windows_worker',
-      closed: true
+      tabId: 'tab-windows-worker',
+      ptyKilled: true
     } as never)
   }
 
@@ -207,6 +208,19 @@ describe('orchestration federation', () => {
     expect(workerRuntime.sendTerminalAgentPrompt).toHaveBeenCalledWith(
       'term_windows_worker',
       expect.stringContaining(`Your task ID is: ${task.id}`)
+    )
+  })
+
+  it('carries an explicit worker label as user display-name provenance', async () => {
+    const task = createHomeTask()
+
+    await homeDispatcher.dispatch(startRequest(task.id, { displayName: 'Windows release audit' }))
+
+    expect(workerRuntime.createManagedWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: 'Windows release audit',
+        displayNameKind: 'user'
+      })
     )
   })
 
@@ -664,7 +678,7 @@ describe('orchestration federation', () => {
 
     expect(shown).toMatchObject({
       ok: true,
-      result: { observation: { status: 'running', exactWorker: true } }
+      result: { observation: { status: 'live', exactWorker: true } }
     })
     expect(homeDb.getFederatedDispatch(dispatch.id)?.remote_runtime_epoch).not.toBe(oldEpoch)
     expect(homeDb.getFederatedDispatch(dispatch.id)?.peer_fingerprint).toBe(

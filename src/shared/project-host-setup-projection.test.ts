@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   projectHostSetupProjectionFromRepos,
   getProjectHostSetupsForProject,
-  getProjectHostSetupWorktreeMeta,
   isGitHubBackedRepo,
   getProjectIdForProviderIdentity,
   isProjectRemoteIdentityPending
 } from './project-host-setup-projection'
-import type { Repo } from './types'
+import { getProjectHostSetupWorktreeMeta } from './project-host-setup-lookup'
+import type { Repo } from './repo-types'
 
 function repo(overrides: Partial<Repo> & Pick<Repo, 'id' | 'path' | 'displayName'>): Repo {
   return {
@@ -626,5 +626,61 @@ describe('isProjectRemoteIdentityPending', () => {
         repo({ ...base, upstream: { owner: 'stablyai', repo: 'orca' } })
       )
     ).toBe(false)
+  })
+})
+
+describe('derived project identity stability', () => {
+  const base = { id: 'r', path: '/r', displayName: 'r' } as const
+
+  // Why pinned: this id is the persisted Project primary key, so folding a host alias here would
+  // silently re-key existing projects on upgrade and drop their runtime preference.
+  it('keeps a www. remote provider-neutral instead of folding it onto github.com', () => {
+    const projection = projectHostSetupProjectionFromRepos([
+      repo({
+        ...base,
+        gitRemoteIdentity: {
+          canonicalKey: 'www.github.com/acme/app',
+          remoteName: 'origin',
+          remoteUrl: 'https://www.github.com/acme/app.git'
+        }
+      })
+    ])
+    expect(projection.projects.map((project) => project.id)).toEqual([
+      'git:www.github.com/acme/app'
+    ])
+  })
+
+  it('still folds the documented ssh.github.com alias onto github.com', () => {
+    const projection = projectHostSetupProjectionFromRepos([
+      repo({
+        ...base,
+        gitRemoteIdentity: {
+          canonicalKey: 'ssh.github.com/acme/app',
+          remoteName: 'origin',
+          remoteUrl: 'ssh://git@ssh.github.com:443/acme/app.git'
+        }
+      })
+    ])
+    expect(projection.projects.map((project) => project.id)).toEqual(['github:acme/app'])
+  })
+})
+
+describe('getProjectHostSetupWorktreeMeta host selection', () => {
+  it("picks the setup for the repo's own execution host when a repoId spans two hosts", () => {
+    const sshRepo = repo({
+      id: 'repo-shared',
+      path: '/remote/orca',
+      displayName: 'orca',
+      connectionId: 'build-box'
+    })
+    // Local first in the array: a repoId-only match would stamp the wrong host durably.
+    const setups = [
+      ...projectHostSetupProjectionFromRepos([
+        repo({ id: 'repo-shared', path: '/local/orca', displayName: 'orca' })
+      ]).setups,
+      ...projectHostSetupProjectionFromRepos([sshRepo]).setups
+    ]
+
+    expect(getProjectHostSetupWorktreeMeta(setups, sshRepo).hostId).toBe('ssh:build-box')
   })
 })

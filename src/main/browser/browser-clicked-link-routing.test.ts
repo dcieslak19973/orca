@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  BROWSER_SIDE_LINK_FRAME_SUFFIX,
   buildBrowserClickedLinkRoutingScript,
   buildBrowserIframeClickedLinkRoutingScript,
   installBrowserIframeClickedLinkRouting,
@@ -64,7 +65,7 @@ describe('browser clicked-link routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('routes plain target=_blank links back into the current Orca tab', () => {
+  it('routes plain target=_blank links into a new Orca tab', () => {
     const link = document.createElement('a')
     link.href = 'https://docs.example.com/guide'
     link.target = '_blank'
@@ -73,9 +74,8 @@ describe('browser clicked-link routing', () => {
 
     const { event, open } = clickLink(link)
 
-    expect(event.defaultPrevented).toBe(false)
-    expect(open).not.toHaveBeenCalled()
-    expect(link.getAttribute('target')).toBe('_self')
+    expect(event.defaultPrevented).toBe(true)
+    expect(open).toHaveBeenCalledWith('https://docs.example.com/guide', FOREGROUND_FRAME_NAME)
   })
 
   it('routes the host-platform modifier without trusting an emulated guest user agent', () => {
@@ -107,7 +107,7 @@ describe('browser clicked-link routing', () => {
     )
     expect(clickLink(link, { metaKey: true, shiftKey: true }).open).toHaveBeenCalledWith(
       'https://example.com/reference',
-      FOREGROUND_FRAME_NAME
+      `${FOREGROUND_FRAME_NAME}${BROWSER_SIDE_LINK_FRAME_SUFFIX}`
     )
   })
 
@@ -127,9 +127,11 @@ describe('browser clicked-link routing', () => {
 
     expect(clickLink(cancelled).open).not.toHaveBeenCalled()
     expect(cancelled.getAttribute('target')).toBe('_blank')
-    expect(clickLink(rewritten).open).not.toHaveBeenCalled()
-    expect(rewritten.href).toBe('https://example.com/rewritten')
-    expect(rewritten.getAttribute('target')).toBe('_self')
+    // The page's own handler ran first, so routing must follow the rewritten href.
+    expect(clickLink(rewritten).open).toHaveBeenCalledWith(
+      'https://example.com/rewritten',
+      FOREGROUND_FRAME_NAME
+    )
   })
 
   it('routes SVG links but leaves download links and links without href alone', () => {
@@ -145,8 +147,10 @@ describe('browser clicked-link routing', () => {
     document.body.append(svgLink, areaDownload, noHref)
     installRouting()
 
-    expect(clickLink(svgLink).open).not.toHaveBeenCalled()
-    expect(svgLink.getAttribute('target')).toBe('_self')
+    expect(clickLink(svgLink).open).toHaveBeenCalledWith(
+      'https://example.com/svg',
+      FOREGROUND_FRAME_NAME
+    )
     expect(clickLink(areaDownload).open).not.toHaveBeenCalled()
     expect(clickLink(noHref).open).not.toHaveBeenCalled()
   })
@@ -195,7 +199,7 @@ describe('browser clicked-link routing', () => {
     expect(script).not.toContain('BrowserClickedLinkRoutingState')
   })
 
-  it('routes plain iframe target=_blank links into the top-level guest', () => {
+  it('routes plain iframe target=_blank links into a new Orca tab', () => {
     const link = document.createElement('a')
     link.href = 'https://example.com/from-frame'
     link.target = '_blank'
@@ -204,9 +208,8 @@ describe('browser clicked-link routing', () => {
 
     const { event, open } = clickLink(link)
 
-    expect(event.defaultPrevented).toBe(false)
-    expect(open).not.toHaveBeenCalled()
-    expect(link.getAttribute('target')).toBe('_top')
+    expect(event.defaultPrevented).toBe(true)
+    expect(open).toHaveBeenCalledWith('https://example.com/from-frame', FOREGROUND_FRAME_NAME)
   })
 
   it('routes explicit iframe new-tab gestures through one-use frame names', () => {
@@ -230,7 +233,7 @@ describe('browser clicked-link routing', () => {
     cleanupIframeRouting = installBrowserIframeClickedLinkRouting(FOREGROUND_FRAME_NAME, true, true)
     expect(clickLink(blank, { metaKey: true, shiftKey: true }).open).toHaveBeenCalledWith(
       'https://example.com/new-context',
-      FOREGROUND_FRAME_NAME
+      `${FOREGROUND_FRAME_NAME}${BROWSER_SIDE_LINK_FRAME_SUFFIX}`
     )
   })
 

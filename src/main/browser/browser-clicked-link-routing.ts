@@ -1,5 +1,11 @@
 export const BROWSER_CLICKED_LINK_ROUTING_WORLD_ID = 1208
 
+// Why: a modifier+Shift click asks for the link beside its pane. The guest signals
+// that by suffixing the private frame name; main strips this to recover the base
+// match. The literal is inlined in the injected listeners below, so it must stay
+// in sync with this constant (guarded by a build-script test).
+export const BROWSER_SIDE_LINK_FRAME_SUFFIX = '::orca-side'
+
 type BrowserClickedLinkRoutingState = {
   frameName: string
   isMac: boolean
@@ -75,8 +81,9 @@ export function installBrowserClickedLinkRouting(
     const baseTarget = document.querySelector('base[target]')?.getAttribute('target') ?? ''
     const ownTarget = link.getAttribute('target')
     const effectiveTarget = (ownTarget === null ? baseTarget : ownTarget).trim().toLowerCase()
-    const opensNewContext = middleClick || modifierClick
-    if (!opensNewContext && effectiveTarget !== '_blank') {
+    // target=_blank is a new-tab request, exactly as it is in every other
+    // browser; the modifiers are the other two ways to ask for one.
+    if (!(middleClick || modifierClick || effectiveTarget === '_blank')) {
       return
     }
 
@@ -96,18 +103,13 @@ export function installBrowserClickedLinkRouting(
       return
     }
 
-    if (!opensNewContext) {
-      // Why: changing only the browsing context keeps Chromium's native anchor
-      // navigation, including referrer policy, attribution, and history.
-      link.setAttribute('target', '_self')
-      return
-    }
-
     // Why: Electron reports direct link clicks and featureless window.open()
     // with the same disposition. The private frame name preserves that one
     // distinction without weakening OAuth popups that need window.opener.
     event.preventDefault()
-    window.open(targetUrl.toString(), state.frameName)
+    const targetFrameName =
+      modifierClick && event.shiftKey ? `${state.frameName}::orca-side` : state.frameName
+    window.open(targetUrl.toString(), targetFrameName)
   }
   routingGlobal.__orcaBrowserClickedLinkRouting = state
 
@@ -118,8 +120,8 @@ export function installBrowserClickedLinkRouting(
 }
 
 /**
- * Keeps plain target=_blank clicks inside the top-level guest when Electron's
- * isolated-world API cannot target a child frame.
+ * Same routing for links inside child frames, which Electron's isolated-world
+ * API cannot reach, so this runs in the page world against a one-use token.
  */
 export function installBrowserIframeClickedLinkRouting(
   frameName: string,
@@ -161,8 +163,7 @@ export function installBrowserIframeClickedLinkRouting(
     const baseTarget = document.querySelector('base[target]')?.getAttribute('target') ?? ''
     const ownTarget = link.getAttribute('target')
     const effectiveTarget = (ownTarget === null ? baseTarget : ownTarget).trim().toLowerCase()
-    const opensNewContext = middleClick || modifierClick
-    if (!opensNewContext && effectiveTarget !== '_blank') {
+    if (!(middleClick || modifierClick || effectiveTarget === '_blank')) {
       return
     }
 
@@ -182,18 +183,12 @@ export function installBrowserIframeClickedLinkRouting(
       return
     }
 
-    if (!opensNewContext) {
-      // Why: WebContents isolated worlds only cover the main frame. Rewriting
-      // to `_top` preserves native anchor semantics without opening a popup.
-      link.setAttribute('target', '_top')
-      return
-    }
-
     // Why: child-frame code runs in the page world, so each token is one-use.
     // A page that observes a real click cannot replay it to create more tabs.
     event.preventDefault()
     cleanup()
-    window.open(targetUrl.toString(), frameName)
+    const targetFrameName = modifierClick && event.shiftKey ? `${frameName}::orca-side` : frameName
+    window.open(targetUrl.toString(), targetFrameName)
   }
 
   const cleanup = (): void => {

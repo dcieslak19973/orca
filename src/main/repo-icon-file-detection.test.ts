@@ -1,6 +1,23 @@
+import { readFile, stat } from 'node:fs/promises'
+import type * as FsPromisesModule from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
+import type { ExecutionHostFilesystemRoute } from './providers/execution-host-provider-dispatch'
 import type { FileReadResult, FileStat, IFilesystemProvider } from './providers/types'
 import { detectRepoFileIcon } from './repo-icon-file-detection'
+
+function sshRoute(
+  connectionId: string,
+  provider: IFilesystemProvider | null
+): ExecutionHostFilesystemRoute {
+  return { kind: 'ssh', hostId: `ssh:${connectionId}`, connectionId, provider }
+}
+
+// Why: the boundary assertion is "no local read happened", which needs the real
+// fs entrypoints spied rather than stubbed.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromisesModule>()
+  return { ...actual, stat: vi.fn(actual.stat), readFile: vi.fn(actual.readFile) }
+})
 
 const WEBP_BASE64 = 'UklGRhoAAABXRUJQVlA4IA4AAAAwAQCdASoBAAEAAQIlSkwAAA=='
 const PNG_BASE64 =
@@ -28,7 +45,7 @@ describe('detectRepoFileIcon remote probing', () => {
       readFile: async () => ({ content: WEBP_BASE64, isBinary: true, mimeType: 'image/webp' })
     })
 
-    await expect(detectRepoFileIcon('/repo', provider)).resolves.toEqual({
+    await expect(detectRepoFileIcon('/repo', sshRoute('m4air', provider))).resolves.toEqual({
       type: 'image',
       src: `data:image/webp;base64,${WEBP_BASE64}`,
       source: 'file',
@@ -52,7 +69,7 @@ describe('detectRepoFileIcon remote probing', () => {
       }
     })
 
-    await expect(detectRepoFileIcon('/repo', provider)).resolves.toMatchObject({
+    await expect(detectRepoFileIcon('/repo', sshRoute('m4air', provider))).resolves.toMatchObject({
       source: 'file',
       label: 'favicon.png'
     })
@@ -75,8 +92,47 @@ describe('detectRepoFileIcon remote probing', () => {
       }
     })
 
-    await expect(detectRepoFileIcon('/repo', provider)).resolves.toBeNull()
+    await expect(detectRepoFileIcon('/repo', sshRoute('m4air', provider))).resolves.toBeNull()
     expect(maxActiveStats).toBeGreaterThan(1)
     expect(maxActiveStats).toBeLessThanOrEqual(6)
+  })
+})
+
+describe('detectRepoFileIcon connection boundary', () => {
+  it('never reads the client filesystem for a remote repo whose provider is missing', async () => {
+    vi.mocked(stat).mockClear()
+    vi.mocked(readFile).mockClear()
+
+    await expect(detectRepoFileIcon('/repo', sshRoute('ssh-target-1', null))).resolves.toBeNull()
+
+    expect(stat).not.toHaveBeenCalled()
+    expect(readFile).not.toHaveBeenCalled()
+  })
+
+  it('never reads the client filesystem for a runtime host', async () => {
+    // Why: a runtime host's files live on that server. It is not "local with no provider".
+    vi.mocked(stat).mockClear()
+    vi.mocked(readFile).mockClear()
+
+    await expect(
+      detectRepoFileIcon('/repo', {
+        kind: 'runtime',
+        hostId: 'runtime:env-a',
+        environmentId: 'env-a'
+      })
+    ).resolves.toBeNull()
+
+    expect(stat).not.toHaveBeenCalled()
+    expect(readFile).not.toHaveBeenCalled()
+  })
+
+  it('still probes the local filesystem for a repo on this machine', async () => {
+    vi.mocked(stat).mockClear()
+
+    await expect(
+      detectRepoFileIcon('/repo', { kind: 'local', hostId: 'local' })
+    ).resolves.toBeNull()
+
+    expect(stat).toHaveBeenCalled()
   })
 })
