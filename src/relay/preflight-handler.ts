@@ -268,6 +268,17 @@ export async function resolveRelayCommandPath(
   return null
 }
 
+/**
+ * Boolean form of {@link resolveRelayCommandPath} for callers that only need to
+ * know whether `command` is on PATH (e.g. TUI agent detection).
+ */
+export async function isCommandOnPathForRelay(
+  command: string,
+  options: RelayCommandLookupOptions = {}
+): Promise<boolean> {
+  return (await resolveRelayCommandPath(command, options)) !== null
+}
+
 export function hasAbsoluteCommandPath(output: string, platform: NodeJS.Platform): boolean {
   return firstAbsoluteCommandPath(output, platform) !== null
 }
