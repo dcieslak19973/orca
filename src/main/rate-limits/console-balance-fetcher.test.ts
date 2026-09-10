@@ -56,7 +56,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await fetcher.fetch('test-key')
+    await fetcher.fetchBalance('test-key')
 
     expect(netFetchMock).toHaveBeenCalledOnce()
     const [url] = netFetchMock.mock.calls[0]
@@ -74,7 +74,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await fetcher.fetch('test-key', 'https://custom.example.com/api/')
+    await fetcher.fetchBalance('test-key', 'https://custom.example.com/api/')
 
     const [url] = netFetchMock.mock.calls[0]
     expect(url).toBe('https://custom.example.com/api/organizations/balance')
@@ -91,14 +91,14 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await fetcher.fetch('test-key', 'https://custom.example.com/api')
+    await fetcher.fetchBalance('test-key', 'https://custom.example.com/api')
 
     const [url] = netFetchMock.mock.calls[0]
     expect(url).toMatch(/^https:\/\/custom\.example\.com\/api\/organizations\/balance$/)
   })
 
   it('wraps a malformed endpoint instead of leaking a raw TypeError', async () => {
-    await expect(fetcher.fetch('test-key', 'not-a-url')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key', 'not-a-url')).rejects.toThrow(
       /Failed to fetch console balance:/
     )
     expect(netFetchMock).not.toHaveBeenCalled()
@@ -107,7 +107,7 @@ describe('ConsoleBalanceFetcher', () => {
   it('rejects a non-object JSON body', async () => {
     for (const body of ['null', '[]', '"text"']) {
       netFetchMock.mockResolvedValueOnce(new Response(body, { status: 200 }))
-      await expect(fetcher.fetch('test-key')).rejects.toThrow(/must be an object/)
+      await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(/must be an object/)
     }
   })
 
@@ -115,7 +115,7 @@ describe('ConsoleBalanceFetcher', () => {
     netFetchMock.mockResolvedValueOnce(
       new Response('{"id":"org-123","balance_in_cents":1e999}', { status: 200 })
     )
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(/balance_in_cents/)
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(/balance_in_cents/)
   })
 
   it('drops a non-finite spend rate rather than propagating it', async () => {
@@ -125,13 +125,13 @@ describe('ConsoleBalanceFetcher', () => {
         { status: 200 }
       )
     )
-    const balance = await fetcher.fetch('test-key')
+    const balance = await fetcher.fetchBalance('test-key')
     expect(balance.spend_rate_cents_per_hour).toBeUndefined()
   })
 
   it('normalizes a non-Error rejection', async () => {
     netFetchMock.mockRejectedValueOnce('socket closed')
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       'Failed to fetch console balance: socket closed'
     )
   })
@@ -142,7 +142,7 @@ describe('ConsoleBalanceFetcher', () => {
     )
     const controller = new AbortController()
 
-    await fetcher.fetch('test-key', undefined, controller.signal)
+    await fetcher.fetchBalance('test-key', undefined, controller.signal)
 
     const [, init] = netFetchMock.mock.calls[0]
     expect(init.signal.aborted).toBe(false)
@@ -161,7 +161,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await fetcher.fetch('my-secret-key')
+    await fetcher.fetchBalance('my-secret-key')
 
     const [, options] = netFetchMock.mock.calls[0]
     expect(options?.headers).toEqual({
@@ -181,7 +181,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await fetcher.fetch('test-key')
+    await fetcher.fetchBalance('test-key')
 
     const [, options] = netFetchMock.mock.calls[0]
     expect(options?.signal).toBeDefined()
@@ -203,7 +203,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    const result = await fetcher.fetch('test-key')
+    const result = await fetcher.fetchBalance('test-key')
 
     expect(result.organization_id).toBe('org-abc-123')
     expect(result.balance_in_cents).toBe(75_000)
@@ -222,7 +222,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    const result = await fetcher.fetch('test-key')
+    const result = await fetcher.fetchBalance('test-key')
 
     expect(result.organization_id).toBe('org-xyz')
     expect(result.balance_in_cents).toBe(50_000)
@@ -243,7 +243,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    const result = await fetcher.fetch('test-key')
+    const result = await fetcher.fetchBalance('test-key')
 
     expect(result.spend_rate_cents_per_hour).toBeUndefined()
   })
@@ -256,7 +256,7 @@ describe('ConsoleBalanceFetcher', () => {
       })
     )
 
-    await expect(fetcher.fetch('invalid-key')).rejects.toThrow(/Console API 401: Unauthorized/)
+    await expect(fetcher.fetchBalance('invalid-key')).rejects.toThrow(/Console API 401: Unauthorized/)
   })
 
   it('throws on missing id field', async () => {
@@ -269,7 +269,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       /Console API response missing or invalid id field/
     )
   })
@@ -285,7 +285,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       /Console API response missing or invalid id field/
     )
   })
@@ -300,7 +300,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       /Console API response missing or invalid balance_in_cents field/
     )
   })
@@ -316,7 +316,7 @@ describe('ConsoleBalanceFetcher', () => {
       )
     )
 
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       /Console API response missing or invalid balance_in_cents field/
     )
   })
@@ -324,7 +324,7 @@ describe('ConsoleBalanceFetcher', () => {
   it('wraps fetch errors with context', async () => {
     netFetchMock.mockRejectedValueOnce(new Error('Network timeout'))
 
-    await expect(fetcher.fetch('test-key')).rejects.toThrow(
+    await expect(fetcher.fetchBalance('test-key')).rejects.toThrow(
       /Failed to fetch console balance: Network timeout/
     )
   })

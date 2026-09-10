@@ -4,7 +4,11 @@ import type { ConsoleBalance } from '../../types/console-api'
 export class ConsoleBalanceFetcher {
   private defaultEndpoint = 'https://console.claude.ai/api'
 
-  async fetch(apiKey: string, endpoint?: string, signal?: AbortSignal): Promise<ConsoleBalance> {
+  async fetchBalance(
+    apiKey: string,
+    endpoint?: string,
+    signal?: AbortSignal
+  ): Promise<ConsoleBalance> {
     try {
       // Inside the try: a malformed custom endpoint should surface as a fetch
       // failure, not a bare TypeError from the URL constructor.

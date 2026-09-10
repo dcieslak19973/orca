@@ -20,7 +20,7 @@ export async function fetchConsoleBalance(
   endpoint?: string,
   signal?: AbortSignal
 ): Promise<ConsoleBalance> {
-  return consoleBalanceFetcher.fetch(apiKey, endpoint, signal)
+  return consoleBalanceFetcher.fetchBalance(apiKey, endpoint, signal)
 }
 
 export async function fetchClaudeRateLimits(
