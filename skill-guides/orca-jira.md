@@ -103,7 +103,7 @@ ORCA jira comment add ENG-123 --body "Fixed in <pr-url>. Root cause was ..." --j
 ORCA jira status set ENG-123 --to "In Review" --json
 ```
 
-There is no `ORCA jira attach` command. Put the PR/MR link in the completion comment.
+Orca's Jira CLI has no attach subcommand. Put the PR/MR link in the completion comment instead.
 
 ## Follow-Up Issues
 
