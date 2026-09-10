@@ -15,7 +15,6 @@ import { getBitbucketAuthStatus } from '../bitbucket/client'
 import { getGiteaAuthStatus } from '../gitea/client'
 import { _resetKnownHostsCache } from '../gitlab/gl-utils'
 import { mergePersistedWindowsPathAsync } from '../pty/windows-environment-path'
-import { getActiveMultiplexer } from '../ssh/ssh-target-registry'
 import {
   detectWslCommandsOnPath,
   type WslPreflightTarget
@@ -28,13 +27,7 @@ import {
 
 export type { PreflightRuntimeContext }
 import { hydrateShellPathForAgentDetection } from '../ipc/agent-detection-shell-path'
-import {
-  execCommandInWslOrThrow,
-  execLocalPreflightCommandOrThrow,
-  isCommandAvailable,
-  isCommandOnPath,
-  shellQuote
-} from '../ipc/preflight-command-exec'
+import { isCommandAvailable, isCommandOnPath } from '../ipc/preflight-command-exec'
 import {
   detectRemoteWindowsTerminalCapabilities,
   type RemoteWindowsTerminalCapabilities
@@ -45,6 +38,14 @@ import {
   resolveDetectedTuiAgentIds
 } from '../ipc/tui-agent-detection-commands'
 import { invalidateWslGuestEnvironment } from '../wsl/wsl-guest-environment'
+import {
+  detectRemoteAgents,
+  detectRemoteForgeClis,
+  isGhAuthenticated,
+  isGlabAuthenticated
+} from './agent-forge-detection-probes'
+
+export { detectRemoteAgents, detectRemoteForgeClis }
 
 export type PreflightStatus = {
   git: { installed: boolean }
@@ -112,8 +113,6 @@ let preflightRunCounter = 0
 let preflightCacheEpoch = 0
 
 const LOCAL_PREFLIGHT_CACHE_KEY = 'local'
-// Why: keep a wedged remote host from delaying local integration status.
-const REMOTE_FORGE_PROBE_TIMEOUT_MS = 8000
 
 function preflightCacheKey(
   wslTarget: WslPreflightTarget | null,
@@ -132,10 +131,6 @@ export function _resetPreflightCache(): void {
   // Why bump rather than just clear: a probe already in flight would otherwise
   // settle after this and repopulate the cache an integration just invalidated.
   preflightCacheEpoch += 1
-}
-
-function uniqueAgentIds(ids: Iterable<string>): string[] {
-  return [...new Set(ids)]
 }
 
 async function detectCommandRuntime(
@@ -249,74 +244,6 @@ export async function refreshShellPathAndDetectAgents(
     shellHydrationOk: hydration.ok,
     pathSource: hydration.ok ? 'shell_hydrate' : 'sync_seed_only',
     pathFailureReason: hydration.failureReason
-  }
-}
-
-export async function detectRemoteAgents(args: { connectionId: string }): Promise<string[]> {
-  const mux = getActiveMultiplexer(args.connectionId)
-  if (!mux || mux.isDisposed()) {
-    // Why: remote agent detection is passive UI polling. A disconnected host has
-    // no detectable agents until reconnect, but should not spam IPC errors.
-    return []
-  }
-  const result = (await mux.request('preflight.detectAgents', {
-    commands: KNOWN_TUI_AGENT_DETECTION_COMMANDS
-  })) as { agents: string[] }
-  return uniqueAgentIds(result.agents)
-}
-
-export async function detectRemoteForgeClis(args: {
-  connectionId: string
-}): Promise<Record<string, { installed: boolean; authenticated: boolean }> | null> {
-  const mux = getActiveMultiplexer(args.connectionId)
-  if (!mux || mux.isDisposed()) {
-    return null
-  }
-  try {
-    const result = (await mux.request(
-      'preflight.detectForgeClis',
-      { clis: ['gh', 'glab'] },
-      { timeoutMs: REMOTE_FORGE_PROBE_TIMEOUT_MS }
-    )) as { results?: Record<string, { installed: boolean; authenticated: boolean }> } | null
-    return result?.results ?? null
-  } catch {
-    // Old relays do not implement this optional RPC; unknown must not read false.
-    return null
-  }
-}
-
-async function isGhAuthenticated(wslTarget?: WslPreflightTarget): Promise<boolean> {
-  try {
-    await (wslTarget
-      ? execCommandInWslOrThrow(wslTarget, `${shellQuote('gh')} auth status`)
-      : execLocalPreflightCommandOrThrow('gh', ['auth', 'status']))
-    // Why: for plain-text `gh auth status`, exit 0 means gh did not detect any
-    // authentication issues for the checked hosts/accounts.
-    return true
-  } catch (error) {
-    // Why: some environments may surface partial command output on the thrown
-    // error object. Keep a compatibility fallback so we avoid a false auth
-    // warning if success markers are present despite a non-zero result.
-    const stdout = (error as { stdout?: string }).stdout ?? ''
-    const stderr = (error as { stderr?: string }).stderr ?? ''
-    const output = `${stdout}\n${stderr}`
-    return output.includes('Logged in') || output.includes('Active account: true')
-  }
-}
-
-// Why: parallel to isGhAuthenticated for the glab CLI. glab writes auth
-// status to stderr in some versions and stdout in others; check both.
-async function isGlabAuthenticated(wslTarget?: WslPreflightTarget): Promise<boolean> {
-  try {
-    await (wslTarget
-      ? execCommandInWslOrThrow(wslTarget, `${shellQuote('glab')} auth status`)
-      : execLocalPreflightCommandOrThrow('glab', ['auth', 'status']))
-    return true
-  } catch (error) {
-    const stdout = (error as { stdout?: string }).stdout ?? ''
-    const stderr = (error as { stderr?: string }).stderr ?? ''
-    const output = `${stdout}\n${stderr}`
-    return output.includes('Logged in')
   }
 }
 

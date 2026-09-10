@@ -6,14 +6,8 @@ import {
   resolveProjectExecutionRuntime,
   type ProjectExecutionRuntimeResolution
 } from '../../../shared/project-execution-runtime'
-import {
-  getRepoExecutionHostId,
-  LOCAL_EXECUTION_HOST_ID,
-  parseExecutionHostId
-} from '../../../shared/execution-host'
-import type { Repo } from '../../../shared/repo-types'
-import type { Worktree } from '../../../shared/worktree/types'
-import { getIndexedRepoMap, getIndexedWorktreeById } from '@/store/worktree-repo-index'
+import { getRepoExecutionHostId, parseExecutionHostId } from '../../../shared/execution-host'
+import { getIndexedRepoMap } from '@/store/worktree-repo-index'
 import { getProviderRuntimeContextKey } from './provider-runtime-context'
 import { getRendererAppPlatform } from './renderer-app-platform'
 import {
@@ -26,6 +20,16 @@ import {
   getWslPreflightContext,
   type LocalPreflightContext
 } from './local-preflight-context-cache'
+import {
+  EMPTY_REPOS,
+  getLocalPreflightProjectId,
+  getLocalRuntimeProject,
+  getLocalRuntimeRepoForWorktree,
+  getLocalWorktree,
+  isLocalRuntimeRepo,
+  isLocalRuntimeWorktree,
+  type LocalProjectRuntimeState
+} from './local-runtime-worktree-lookup'
 
 export { localPreflightContextKey } from './local-preflight-context-key'
 export type { LocalPreflightContext } from './local-preflight-context-cache'
@@ -36,16 +40,6 @@ export {
   _hasWslPreflightContextCacheEntryForTest,
   resetLocalPreflightContextCachesForTests
 } from './local-preflight-context-cache'
-
-type LocalProjectRuntimeState = Pick<
-  AppState,
-  'activeRepoId' | 'activeWorktreeId' | 'projects' | 'repos' | 'settings' | 'worktreesByRepo'
->
-
-// Why: the shared indexes are WeakMap-keyed on slice identity, so a fresh `{}`
-// or `[]` fallback would miss the cache on every read.
-const EMPTY_WORKTREES_BY_REPO: AppState['worktreesByRepo'] = {}
-const EMPTY_REPOS: AppState['repos'] = []
 
 type LocalProjectRuntimeWslContext = {
   wslAvailable?: boolean
@@ -303,60 +297,4 @@ function getLocalPreflightWslDistro(state: AppState, worktreeId?: string | null)
   }
   const activePath = activeWorktree?.path ?? repo.path
   return getWslDistroFromPath(activePath)
-}
-
-function getLocalRuntimeRepoForWorktree(
-  state: LocalProjectRuntimeState,
-  worktree?: Pick<Worktree, 'repoId'> | null
-): Pick<Repo, 'id' | 'path' | 'connectionId' | 'executionHostId'> | undefined {
-  const repoId = worktree?.repoId ?? state.activeRepoId
-  return repoId ? getIndexedRepoMap(state.repos ?? EMPTY_REPOS).get(repoId) : undefined
-}
-
-function isLocalRuntimeRepo(
-  repo?: Pick<Repo, 'connectionId' | 'executionHostId'> | null
-): repo is Pick<Repo, 'id' | 'path' | 'connectionId' | 'executionHostId'> {
-  if (!repo) {
-    return false
-  }
-  return getRepoExecutionHostId(repo) === LOCAL_EXECUTION_HOST_ID
-}
-
-function isLocalRuntimeWorktree(worktree?: Pick<Worktree, 'hostId'> | null): boolean {
-  return !worktree?.hostId || worktree.hostId === LOCAL_EXECUTION_HOST_ID
-}
-
-function getLocalRuntimeProject(
-  state: LocalProjectRuntimeState,
-  projectId: string,
-  repoId: string
-) {
-  return state.projects?.find(
-    (entry) =>
-      entry.id === projectId || entry.id === repoId || entry.sourceRepoIds?.includes(repoId)
-  )
-}
-
-function getLocalWorktree(
-  state: LocalProjectRuntimeState,
-  worktreeId?: string | null
-): Pick<Worktree, 'id' | 'repoId' | 'projectId' | 'path' | 'hostId'> | null {
-  const targetWorktreeId = worktreeId ?? state.activeWorktreeId
-  if (!targetWorktreeId) {
-    return null
-  }
-  return (
-    getIndexedWorktreeById(state.worktreesByRepo ?? EMPTY_WORKTREES_BY_REPO, targetWorktreeId) ??
-    null
-  )
-}
-
-function getLocalPreflightProjectId(
-  state: LocalProjectRuntimeState,
-  worktreeId?: string | null
-): string {
-  const activeWorktree = getLocalWorktree(state, worktreeId)
-  return (
-    activeWorktree?.projectId ?? activeWorktree?.repoId ?? state.activeRepoId ?? 'local-project'
-  )
 }
