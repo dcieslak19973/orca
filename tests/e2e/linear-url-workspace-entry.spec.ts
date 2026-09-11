@@ -1,7 +1,8 @@
+import { openSidebarWorkspaceComposer } from './helpers/sidebar-project-dialog'
 import type { ElectronApplication, Page } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
-import type { LinearIssue } from '../../src/shared/types'
+import type { LinearIssue } from '../../src/shared/linear/issue-types'
 
 const LINEAR_URL =
   'https://linear.app/stably/issue/STA-4084/restore-osc-133-shell-integration-when-an-exec-in-user-rc-files-strips'
@@ -118,7 +119,7 @@ test.describe('Linear URL workspace entry', () => {
     orcaPage
   }, testInfo) => {
     await installLinearFixture(orcaPage, LINEAR_ISSUE, null)
-    await orcaPage.getByRole('button', { name: 'New workspace', exact: true }).click()
+    await openSidebarWorkspaceComposer(orcaPage)
     const dialog = orcaPage.getByRole('dialog', { name: /Create (Workspace|Worktree)/i })
     const input = dialog.locator('[data-workspace-name-input="true"]')
     await expect(input).toBeVisible()
@@ -168,7 +169,7 @@ test.describe('Linear URL workspace entry', () => {
     orcaPage
   }) => {
     await installLinearFixture(orcaPage, null)
-    await orcaPage.getByRole('button', { name: 'New workspace', exact: true }).click()
+    await openSidebarWorkspaceComposer(orcaPage)
     const dialog = orcaPage.getByRole('dialog', { name: /Create (Workspace|Worktree)/i })
     const input = dialog.locator('[data-workspace-name-input="true"]')
 
