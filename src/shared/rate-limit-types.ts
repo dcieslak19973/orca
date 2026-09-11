@@ -1,3 +1,5 @@
+import type { ConsoleBalance } from '../types/console-api'
+
 export type RateLimitWindow = {
   /** Percentage of the window consumed (0–100). */
   usedPercent: number
@@ -86,6 +88,10 @@ export type ProviderRateLimits = {
   error: string | null
   status: ProviderRateLimitStatus
   usageMetadata?: UsageRateLimitMetadata
+  /** Console organization balance, null if not available. */
+  consoleBalance?: ConsoleBalance
+  /** Error fetching console balance, null when consoleBalance is present. */
+  consoleBalanceError?: string
 }
 
 export type CodexRateLimitResetOutcome = 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed'
@@ -131,6 +137,13 @@ export type RateLimitState = {
    * between snapshot refreshes.
    */
   minimaxCookieConfigured: boolean
+  /**
+   * True when a MiniMax API key is persisted on disk. The key value itself
+   * never leaves main, so the renderer only sees this boolean. The status bar
+   * ORs it with the cookie flag to decide whether to keep the MiniMax bar
+   * visible across reloads.
+   */
+  minimaxApiKeyConfigured: boolean
   /** True when main finds a Grok CLI session file (~/.grok/auth.json or GROK_HOME). */
   grokAuthConfigured: boolean
   claudeTarget: RateLimitRuntimeTarget
