@@ -38,6 +38,32 @@ describe('codex account auth warning', () => {
     ).toBe(false)
   })
 
+  it('warns re-auth when the app-server quits over a dead refresh token', () => {
+    expect(
+      getCodexAccountAuthWarning({
+        limits: codexLimits('Your ChatGPT session could not be refreshed. Please sign in again.'),
+        target: { runtime: 'host', wslDistro: null },
+        runtime: { runtime: 'host' },
+        activeAccountId: 'account-1',
+        accountId: 'account-1'
+      })
+    ).toBe('stale-sign-in')
+  })
+
+  it('does not warn re-auth when the app-server quits over bad argv', () => {
+    expect(
+      getCodexAccountAuthWarning({
+        limits: codexLimits(
+          "Codex RPC process exited (exit code 2): error: invalid value 'untrusted' for '--ask-for-approval <APPROVAL_POLICY>'"
+        ),
+        target: { runtime: 'host', wslDistro: null },
+        runtime: { runtime: 'host' },
+        activeAccountId: 'account-1',
+        accountId: 'account-1'
+      })
+    ).toBeNull()
+  })
+
   it('matches the active host account on the current rate-limit target', () => {
     expect(
       getCodexAccountAuthWarning({
@@ -103,6 +129,41 @@ describe('codex account auth warning', () => {
         authKind: 'api-key'
       })
     ).toBeNull()
+  })
+
+  // Why: AccountsPane can only resolve authKind for the host home, so a WSL
+  // system default arrives with authKind undefined (#9313). The ChatGPT-only
+  // rate-limit rejection must still not read as a re-auth the user can act on.
+  it('does not mislabel a WSL system default with unresolved identity as needing re-authentication', () => {
+    // Why: pin that the message stays classified as an auth error, so the null
+    // below proves the API-key guard fired rather than the rate-limit fetcher
+    // having quietly lost its 15s PTY-probe short-circuit (#8765).
+    expect(isCodexAuthError('chatgpt authentication required to read rate limits')).toBe(true)
+    expect(
+      getCodexAccountAuthWarning({
+        limits: codexLimits('chatgpt authentication required to read rate limits'),
+        target: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        runtime: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        activeAccountId: null,
+        accountId: null,
+        authKind: undefined
+      })
+    ).toBeNull()
+  })
+
+  it('still warns for a genuinely expired WSL system default', () => {
+    expect(
+      getCodexAccountAuthWarning({
+        limits: codexLimits(
+          'Your access token could not be refreshed. Please log out and sign in again.'
+        ),
+        target: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        runtime: { runtime: 'wsl', wslDistro: 'Ubuntu' },
+        activeAccountId: null,
+        accountId: null,
+        authKind: undefined
+      })
+    ).toBe('stale-sign-in')
   })
 
   it('warns only when the active system default has no usable login', () => {
