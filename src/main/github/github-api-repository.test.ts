@@ -9,14 +9,16 @@ const {
   getOwnerRepoForRemoteMock,
   getSshGitProviderGenerationMock,
   isGitHubHostAuthenticatedMock,
-  resolveBranchHeadRemoteNameMock
+  resolveBranchHeadRemoteNameMock,
+  readLocalGitConfigSignatureMock
 } = vi.hoisted(() => ({
   getEnterpriseGitHubRepoSlugMock: vi.fn(),
   getOwnerRepoMock: vi.fn(),
   getOwnerRepoForRemoteMock: vi.fn(),
   getSshGitProviderGenerationMock: vi.fn(() => 0),
   isGitHubHostAuthenticatedMock: vi.fn(),
-  resolveBranchHeadRemoteNameMock: vi.fn()
+  resolveBranchHeadRemoteNameMock: vi.fn(),
+  readLocalGitConfigSignatureMock: vi.fn()
 }))
 
 vi.mock('./github-branch-head-remote', () => ({
@@ -49,6 +51,10 @@ vi.mock('./github-enterprise-repository', async (importOriginal) => ({
   isGitHubHostAuthenticated: isGitHubHostAuthenticatedMock
 }))
 
+vi.mock('./local-git-config-signature', () => ({
+  readLocalGitConfigSignature: readLocalGitConfigSignatureMock
+}))
+
 import {
   _resetOriginGitHubApiRepositoryCache,
   getGitHubApiRepositoryForRemote,
@@ -67,6 +73,7 @@ beforeEach(() => {
   getSshGitProviderGenerationMock.mockReset().mockReturnValue(0)
   isGitHubHostAuthenticatedMock.mockReset().mockResolvedValue(false)
   resolveBranchHeadRemoteNameMock.mockReset().mockResolvedValue(null)
+  readLocalGitConfigSignatureMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe('githubHostExecOptions', () => {
@@ -308,6 +315,25 @@ describe('origin repository cache', () => {
     getSshGitProviderGenerationMock.mockReturnValue(2)
     await expect(getOriginGitHubApiRepository('/repo', 'ssh-1')).resolves.toEqual(newRepository)
     expect(getEnterpriseGitHubRepoSlugMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-probes the Enterprise identity when the local git config signature changes', async () => {
+    vi.useFakeTimers()
+    const repository = { owner: 'acme', repo: 'widgets', host: 'github.acme-corp.com' }
+    getEnterpriseGitHubRepoSlugMock.mockResolvedValue(repository)
+    readLocalGitConfigSignatureMock.mockResolvedValue('sig-1')
+
+    await expect(getGitHubApiRepositoryForRemote('/repo', 'origin')).resolves.toEqual(repository)
+    // Within the 30s TTL, an unchanged signature reuses the cached identity.
+    await expect(getGitHubApiRepositoryForRemote('/repo', 'origin')).resolves.toEqual(repository)
+    expect(getEnterpriseGitHubRepoSlugMock).toHaveBeenCalledTimes(1)
+
+    // A changed remote (new config signature) must invalidate before the TTL.
+    readLocalGitConfigSignatureMock.mockResolvedValue('sig-2')
+    vi.setSystemTime(Date.now() + 1_000)
+    await expect(getGitHubApiRepositoryForRemote('/repo', 'origin')).resolves.toEqual(repository)
+    expect(getEnterpriseGitHubRepoSlugMock).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
   })
 
   it('does not reuse a cached negative after the SSH provider reconnects', async () => {
