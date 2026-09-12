@@ -1,6 +1,7 @@
 import { Circle, CircleCheck, CircleDot, ChevronRight, ListChecks } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import { assignUniqueListKeys } from '@/lib/unique-list-keys'
 import { translate } from '@/i18n/i18n'
 import {
   diffNativeChatTaskLists,
@@ -9,25 +10,6 @@ import {
   type NativeChatTaskChange,
   type NativeChatTaskList as TaskList
 } from '../../../../shared/native-chat-task-list'
-
-/**
- * Stable per-row keys for provider task lists whose only identity is content
- * plus occurrence (see native-chat-task-list.ts). Keying on the occurrence rank
- * rather than the array index keeps a row's key stable when a sibling above it
- * is added or removed.
- */
-function keyedByOccurrence<T>(
-  items: T[],
-  identity: (item: T) => string
-): { key: string; item: T }[] {
-  const seen = new Map<string, number>()
-  return items.map((item) => {
-    const id = identity(item)
-    const rank = seen.get(id) ?? 0
-    seen.set(id, rank + 1)
-    return { key: rank === 0 ? id : `${id}\u0000${rank}`, item }
-  })
-}
 
 function statusLabel(task: NativeChatTask): string {
   if (task.status === 'completed') {
@@ -93,7 +75,7 @@ function Checklist({ list }: { list: TaskList }): React.JSX.Element {
       aria-label={translate('components.native-chat.taskList.title', 'Tasks')}
       className="space-y-1 py-1"
     >
-      {keyedByOccurrence(list.tasks, (task) => task.content).map(({ key, item: task }) => (
+      {assignUniqueListKeys(list.tasks, (task) => task.content).map(({ key, item: task }) => (
         <TaskRow key={key} task={task} />
       ))}
     </ul>
@@ -166,9 +148,9 @@ export function NativeChatTaskList({
         <>
           {changes.length > 0 ? (
             <ul className="space-y-1 py-1">
-              {keyedByOccurrence(
+              {assignUniqueListKeys(
                 changes,
-                (change) => `${change.kind}\u0000${change.task.content}`
+                (change) => JSON.stringify([change.kind, change.task.content])
               ).map(({ key, item: change }) => (
                 <TaskRow key={key} task={change.task} label={changeLabel(change)} />
               ))}
