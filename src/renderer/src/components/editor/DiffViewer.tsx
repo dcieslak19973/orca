@@ -412,8 +412,7 @@ export default function DiffViewer({
             modified={modifiedContent}
             theme={isDark ? 'vs-dark' : 'vs'}
             onMount={handleMount}
-            // Why: a file can have multiple live diff tabs, so key models off tab identity (not file path) to avoid cross-tab reuse.
-            // Why: Changes mode rotates only the original-side model after HEAD moves, preserving the modified side's undo stack.
+            // Why: key models by tab identity and preserve the modified undo stack across Changes-mode HEAD rotations.
             originalModelPath={currentDiffModelPaths.originalModelPath}
             modifiedModelPath={currentDiffModelPaths.modifiedModelPath}
             keepCurrentOriginalModel
