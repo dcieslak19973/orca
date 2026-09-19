@@ -336,7 +336,6 @@ export default function DiffViewer({
         diffEditor.focus()
       }
 
-      // Why: clear modifiedEditor on dispose so decorator effects don't call into a disposed Monaco editor.
       diffEditor.onDidDispose(() => {
         lineNumberOptionsSubRef.current?.dispose()
         lineNumberOptionsSubRef.current = null
