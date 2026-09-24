@@ -33,6 +33,8 @@ import { useNativeChatPtyComposerSend } from './use-native-chat-pty-composer-sen
 import { useNativeChatStructuredComposerSend } from './use-native-chat-structured-composer-send'
 import { useImeEnterGestureOwnership } from '@/lib/ime-composition-keyboard-event'
 import { useNativeChatComposerAppMenuSelection } from './use-native-chat-composer-app-menu-selection'
+import { useNativeChatWorkspaceFileDrop } from './use-native-chat-workspace-file-drop'
+import { useNativeChatComposerSubmit } from './use-native-chat-composer-submit'
 
 export type {
   NativeChatComposerHandle,
@@ -173,6 +175,14 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
       resolvePendingImageAttachment,
       dropPendingImageAttachment
     } = attachments
+    useNativeChatWorkspaceFileDrop({
+      terminalTabId,
+      structuredWorktreeId: structuredTransport?.worktreeId,
+      disabled,
+      paneKey,
+      attachResolvedPaths,
+      setNotice
+    })
     // A pasted image has no agent-readable path until its save lands; sending
     // mid-save would ship the message without the image the chip promises.
     const hasPendingAttachment = imageAttachments.some((attachment) => attachment.pending)
@@ -237,7 +247,8 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
         targetPtyId,
         dispatchCommand: dispatchSessionOptionCommand,
         onAgentPicker: onSwitchToTerminal,
-        readTerminalScreen
+        readTerminalScreen,
+        paneKey
       })
     const sessionOptionsSurface = structuredTransport?.optionsSurface ?? ptySessionOptionsSurface
     const sessionOptionsSnapshot = structuredTransport?.optionSnapshot ?? ptySessionOptionsSnapshot
@@ -277,24 +288,18 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
       clearImageAttachments,
       setNotice
     })
-    const send = useCallback(() => {
-      if (hasPendingAttachment) {
-        return
-      }
-      if (!structuredTransport) {
-        sendPty()
-      } else if ((draft.trim() !== '' || imageAttachments.length > 0) && !disabled) {
-        sendStructured(draft, imageAttachments)
-      }
-    }, [
-      disabled,
+    const { send, goalMode } = useNativeChatComposerSubmit({
+      structuredTransport,
       draft,
-      hasPendingAttachment,
+      caret,
       imageAttachments,
+      disabled,
       sendPty,
       sendStructured,
-      structuredTransport
-    ])
+      setDraft,
+      setCaret,
+      setHistory
+    })
 
     const interrupt = useCallback(() => {
       cancelPendingSends()
@@ -303,10 +308,9 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
         return
       }
       const target = resolveTarget()
-      if (!target) {
-        return
+      if (target) {
+        sendRuntimePtyInput(target.settings, target.ptyId, ESC)
       }
-      sendRuntimePtyInput(target.settings, target.ptyId, ESC)
     }, [cancelPendingSends, isWorking, onStop, resolveTarget])
 
     const dispatchPtyPickerCommand = useNativeChatPickerCommandDispatch({
@@ -326,13 +330,10 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
       setNotice
     })
     const dispatchPickerCommand = useCallback(
-      (command: Parameters<typeof dispatchPtyPickerCommand>[0]) => {
-        if (structuredTransport) {
-          sendStructured(`/${command.name}`)
-          return
-        }
-        dispatchPtyPickerCommand(command)
-      },
+      (command: Parameters<typeof dispatchPtyPickerCommand>[0]) =>
+        structuredTransport
+          ? sendStructured(`/${command.name}`)
+          : dispatchPtyPickerCommand(command),
       [dispatchPtyPickerCommand, sendStructured, structuredTransport]
     )
 
@@ -342,8 +343,8 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
       draft,
       history,
       isComposing: imeEnterGesture.isComposing,
-      completePickerItem: completeItem,
-      dispatchPickerCommand,
+      completePickerItem: goalMode.interceptPick(completeItem),
+      dispatchPickerCommand: goalMode.interceptPick(dispatchPickerCommand),
       dismissPicker: dismiss,
       interrupt,
       send,
@@ -398,7 +399,8 @@ const NativeChatComposerPane = forwardRef<NativeChatComposerHandle, NativeChatCo
         }}
         onPaste={handlePaste}
         pickerListboxId={picker.listboxId}
-        onChoosePickerItem={completeItem}
+        onChoosePickerItem={goalMode.interceptPick(completeItem)}
+        goalMode={goalMode}
         onRetrySkills={picker.retrySkills}
         onAcceptMention={() => {
           if (autocomplete.mode !== 'mention') {

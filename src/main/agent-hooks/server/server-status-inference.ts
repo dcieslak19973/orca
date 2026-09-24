@@ -5,6 +5,7 @@ import {
 import { markCodexLeadTurnInterrupted } from '../../../shared/agent-hook-listener/providers/codex-state'
 import {
   isAgentInterruptInputIntent,
+  isNavigationEscapeIntent,
   type AgentInterruptInferenceRequest
 } from '../../../shared/agent-interrupt-intent'
 import {
@@ -14,9 +15,9 @@ import {
 import { AGENT_STATUS_STALE_AFTER_MS, type AgentType } from '../../../shared/agent-status-types'
 import type { EnrichedAgentHookEventPayload } from './server-types'
 import { equivalentInterruptAgentType, isValidPaneKey } from './server-status-identity'
-import { AgentHookServerListeners } from './server-listeners'
+import { AgentHookServerRowOwnership } from './server-row-ownership'
 
-export abstract class AgentHookServerStatusInference extends AgentHookServerListeners {
+export abstract class AgentHookServerStatusInference extends AgentHookServerRowOwnership {
   inferInterrupt(request: AgentInterruptInferenceRequest): boolean {
     if (!isValidPaneKey(request.paneKey)) {
       return false
@@ -70,6 +71,11 @@ export abstract class AgentHookServerStatusInference extends AgentHookServerList
     ) {
       return false
     }
+    // Why: re-checked here, not only in the renderer, so a stale or direct inference request
+    // cannot route around the renderer's skip and synthesize a false stopped row.
+    if (isNavigationEscapeIntent(agentType, request.intent)) {
+      return false
+    }
     // Why: a 'working' pane can be child-driven; Ctrl+C doesn't stop background children, so inferring done would retire live child rows.
     if (payload.subagents?.some((subagent) => subagent.state !== 'idle')) {
       return false
@@ -102,9 +108,18 @@ export abstract class AgentHookServerStatusInference extends AgentHookServerList
         ...(payload.model ? { model: payload.model } : {}),
         interrupted: true,
         // Why: idle children are display state; dropping them on an inferred interrupt blanks rows a later hook would restore.
-        ...(payload.subagents ? { subagents: payload.subagents } : {})
+        ...(payload.subagents ? { subagents: payload.subagents } : {}),
+        // Why: the interrupt ends a running main agent's turn; one a watch loop held open had already
+        // settled, so it keeps its own clock and verdict.
+        mainAgent:
+          payload.mainAgent?.state === 'done'
+            ? payload.mainAgent
+            : { state: 'done', outcome: 'cancellation', stateStartedAt: Date.now() }
       }
     })
+    if (!inferred) {
+      return false
+    }
     console.debug('[agent-hooks] inferred interrupted agent status', {
       paneKey: inferred.paneKey,
       agentType,
@@ -163,9 +178,13 @@ export abstract class AgentHookServerStatusInference extends AgentHookServerList
         ...(restored.turnCompletedAt !== undefined
           ? { turnCompletedAt: restored.turnCompletedAt }
           : {}),
-        ...(payload.subagents ? { subagents: payload.subagents } : {})
+        ...(payload.subagents ? { subagents: payload.subagents } : {}),
+        mainAgent: restored.mainAgent
       }
     })
+    if (!inferred) {
+      return false
+    }
     console.debug('[agent-hooks] inferred resolved question status', {
       paneKey: inferred.paneKey,
       state: inferred.payload.state
