@@ -10,7 +10,8 @@ const {
   getSshGitProviderGenerationMock,
   isGitHubHostAuthenticatedMock,
   resolveBranchHeadRemoteNameMock,
-  readLocalGitConfigSignatureMock
+  readLocalGitConfigSignatureMock,
+  shouldProbeGitRemoteMock
 } = vi.hoisted(() => ({
   getEnterpriseGitHubRepoSlugMock: vi.fn(),
   getOwnerRepoMock: vi.fn(),
@@ -18,7 +19,8 @@ const {
   getSshGitProviderGenerationMock: vi.fn(() => 0),
   isGitHubHostAuthenticatedMock: vi.fn(),
   resolveBranchHeadRemoteNameMock: vi.fn(),
-  readLocalGitConfigSignatureMock: vi.fn()
+  readLocalGitConfigSignatureMock: vi.fn(),
+  shouldProbeGitRemoteMock: vi.fn(async () => true)
 }))
 
 vi.mock('./github-branch-head-remote', () => ({
@@ -55,9 +57,14 @@ vi.mock('./local-git-config-signature', () => ({
   readLocalGitConfigSignature: readLocalGitConfigSignatureMock
 }))
 
+vi.mock('../git/remote-name-listing', () => ({
+  shouldProbeGitRemote: shouldProbeGitRemoteMock
+}))
+
 import {
   _resetOriginGitHubApiRepositoryCache,
   getGitHubApiRepositoryForRemote,
+  getIssueGitHubApiRepository,
   getOriginGitHubApiRepository,
   githubHostExecOptions,
   resolveGitHubApiRepository,
@@ -74,6 +81,7 @@ beforeEach(() => {
   isGitHubHostAuthenticatedMock.mockReset().mockResolvedValue(false)
   resolveBranchHeadRemoteNameMock.mockReset().mockResolvedValue(null)
   readLocalGitConfigSignatureMock.mockReset().mockResolvedValue(undefined)
+  shouldProbeGitRemoteMock.mockReset().mockResolvedValue(true)
 })
 
 describe('githubHostExecOptions', () => {
@@ -150,17 +158,20 @@ describe('resolveGitHubRepoExecution', () => {
     expect(isGitHubHostAuthenticatedMock).not.toHaveBeenCalled()
   })
 
-  it('normalizes github.com without spending an auth inventory probe', async () => {
-    await expect(
-      resolveGitHubApiRepository('/repo', {
-        owner: 'acme',
-        repo: 'widgets',
-        host: ' GitHub.COM '
-      })
-    ).resolves.toEqual({ owner: 'acme', repo: 'widgets', host: 'github.com' })
+  it.each(['acme', 'octocat_acme'])(
+    'normalizes github.com for %s without an auth inventory probe',
+    async (owner) => {
+      await expect(
+        resolveGitHubApiRepository('/repo', {
+          owner,
+          repo: 'widgets',
+          host: ' GitHub.COM '
+        })
+      ).resolves.toEqual({ owner, repo: 'widgets', host: 'github.com' })
 
-    expect(isGitHubHostAuthenticatedMock).not.toHaveBeenCalled()
-  })
+      expect(isGitHubHostAuthenticatedMock).not.toHaveBeenCalled()
+    }
+  )
 
   it('backfills the origin host for a host-less caller-specific resolver', async () => {
     const ownerRepo = { owner: 'upstream', repo: 'widgets' }
@@ -445,5 +456,148 @@ describe('resolveGitHubApiRepositoryCandidates head repository', () => {
     const { headRepo } = await resolveGitHubApiRepositoryCandidates('/repo', null, {}, BRANCH)
 
     expect(headRepo).toBeNull()
+  })
+})
+
+describe('skip missing upstream remote probes', () => {
+  it('starts the issue origin probe before checking whether upstream exists', async () => {
+    let releaseRemoteProbe: (value: boolean) => void = () => undefined
+    shouldProbeGitRemoteMock.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        releaseRemoteProbe = resolve
+      })
+    )
+    let originStarted = false
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) => {
+      if (remote === 'origin') {
+        originStarted = true
+        return { owner: 'fork', repo: 'orca' }
+      }
+      return { owner: 'stablyai', repo: 'orca' }
+    })
+
+    const resultPromise = getIssueGitHubApiRepository('/repo')
+    expect(originStarted).toBe(true)
+
+    releaseRemoteProbe(true)
+    await expect(resultPromise).resolves.toEqual({
+      owner: 'stablyai',
+      repo: 'orca',
+      host: 'github.com'
+    })
+  })
+
+  it('does not probe upstream for issue identity when that remote is absent', async () => {
+    shouldProbeGitRemoteMock.mockResolvedValue(false)
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) =>
+      remote === 'origin' ? { owner: 'acme', repo: 'widgets' } : null
+    )
+
+    await expect(getIssueGitHubApiRepository('/repo')).resolves.toEqual({
+      owner: 'acme',
+      repo: 'widgets',
+      host: 'github.com'
+    })
+    expect(getOwnerRepoForRemoteMock.mock.calls.map(([, remote]) => remote)).toEqual(['origin'])
+  })
+
+  it('still probes upstream for issue identity when that remote is present', async () => {
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) =>
+      remote === 'upstream' ? { owner: 'stablyai', repo: 'orca' } : { owner: 'fork', repo: 'orca' }
+    )
+
+    await expect(getIssueGitHubApiRepository('/repo')).resolves.toEqual({
+      owner: 'stablyai',
+      repo: 'orca',
+      host: 'github.com'
+    })
+    expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith('/repo', 'upstream', undefined, {})
+  })
+
+  it('observes a rejected origin probe when upstream resolves the issue repository', async () => {
+    const originError = new Error('origin probe failed')
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) => {
+      if (remote === 'origin') {
+        throw originError
+      }
+      return { owner: 'stablyai', repo: 'orca' }
+    })
+
+    await expect(getIssueGitHubApiRepository('/repo')).resolves.toEqual({
+      owner: 'stablyai',
+      repo: 'orca',
+      host: 'github.com'
+    })
+  })
+
+  it('preserves a rejected origin probe when upstream cannot resolve the issue repository', async () => {
+    const originError = new Error('origin probe failed')
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) => {
+      if (remote === 'origin') {
+        throw originError
+      }
+      return null
+    })
+
+    await expect(getIssueGitHubApiRepository('/repo')).rejects.toBe(originError)
+  })
+
+  it('does not probe upstream for PR candidates when that remote is absent', async () => {
+    shouldProbeGitRemoteMock.mockResolvedValue(false)
+    getOwnerRepoForRemoteMock.mockResolvedValue({ owner: 'fork', repo: 'orca' })
+
+    await expect(resolveGitHubApiRepositoryCandidates('/repo')).resolves.toEqual({
+      candidates: [{ owner: 'fork', repo: 'orca', host: 'github.com' }],
+      headRepo: { owner: 'fork', repo: 'orca', host: 'github.com' }
+    })
+    expect(getOwnerRepoForRemoteMock.mock.calls.map(([, remote]) => remote)).toEqual(['origin'])
+  })
+
+  it('observes and propagates a verified origin probe failure while listing remotes', async () => {
+    let releaseRemoteProbe: (value: boolean) => void = () => undefined
+    shouldProbeGitRemoteMock.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        releaseRemoteProbe = resolve
+      })
+    )
+    const originError = new Error('origin probe failed')
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) => {
+      if (remote === 'origin') {
+        throw originError
+      }
+      return { owner: 'stablyai', repo: 'orca' }
+    })
+
+    const resultPromise = resolveGitHubApiRepositoryCandidates('/repo')
+    await vi.waitFor(() =>
+      expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith(
+        '/repo',
+        'origin',
+        undefined,
+        {},
+        { requireVerifiedSshProbe: true }
+      )
+    )
+    releaseRemoteProbe(true)
+
+    await expect(resultPromise).rejects.toBe(originError)
+  })
+
+  it('still probes upstream for PR candidates when that remote is present', async () => {
+    getOwnerRepoForRemoteMock.mockImplementation(async (_path, remote) =>
+      remote === 'upstream' ? { owner: 'Acme', repo: 'Orca' } : { owner: 'acme', repo: 'orca' }
+    )
+
+    await expect(resolveGitHubApiRepositoryCandidates('/repo')).resolves.toEqual({
+      candidates: [{ owner: 'Acme', repo: 'Orca', host: 'github.com' }],
+      headRepo: { owner: 'acme', repo: 'orca', host: 'github.com' }
+    })
+    expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith(
+      '/repo',
+      'upstream',
+      undefined,
+      {},
+      { requireVerifiedSshProbe: true }
+    )
   })
 })

@@ -4,6 +4,7 @@ import {
   githubRepoIdentityKey,
   isDefaultGitHubHost
 } from '../../shared/github/repository-identity-key'
+import { shouldProbeGitRemote } from '../git/remote-name-listing'
 import { ghRepoExecOptions, githubRepoContext, type LocalGitExecOptions } from './gh-utils'
 import { isGitHubHostAuthenticated } from './github-enterprise-repository'
 import { githubHostExecOptions } from './github-repository-host'
@@ -12,30 +13,30 @@ import {
   type GitHubApiRepositoryResolution
 } from './github-api-repository-validation'
 import { resolveBranchHeadRepository } from './github-branch-head-remote'
-import { getGitHubApiRepositoryForRemote } from './github-remote-repository-identity'
+import {
+  _resetOriginGitHubApiRepositoryCache,
+  getGitHubApiRepositoryForRemote,
+  getOriginGitHubApiRepository
+} from './github-api-repository-remote-probe'
 
 export {
   githubHostExecOptions,
   githubRepositorySlugArg,
   githubRepositoryWebHost
 } from './github-repository-host'
-export {
-  _resetOriginGitHubApiRepositoryCache,
-  getGitHubApiRepositoryForRemote
-} from './github-remote-repository-identity'
 export type GitHubApiRepository = GitHubOwnerRepo
-export type GitHubRepoExecOptions = ReturnType<typeof ghRepoExecOptions> & { host?: string }
+export type GitHubRepoExecOptions = ReturnType<typeof ghRepoExecOptions> & {
+  host?: string
+  env?: NodeJS.ProcessEnv
+}
 export type GitHubRepoExecution = {
   ownerRepo: GitHubApiRepository | null
   ghOptions: GitHubRepoExecOptions
 }
-
-export async function getOriginGitHubApiRepository(
-  repoPath: string,
-  connectionId?: string | null,
-  localGitOptions: LocalGitExecOptions = {}
-): Promise<GitHubApiRepository | null> {
-  return getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions)
+export {
+  _resetOriginGitHubApiRepositoryCache,
+  getGitHubApiRepositoryForRemote,
+  getOriginGitHubApiRepository
 }
 
 /** Hosted mirror of getIssueOwnerRepo: issues prefer `upstream` over `origin`. */
@@ -44,16 +45,26 @@ export async function getIssueGitHubApiRepository(
   connectionId?: string | null,
   localGitOptions: LocalGitExecOptions = {}
 ): Promise<GitHubApiRepository | null> {
-  const upstream = await getGitHubApiRepositoryForRemote(
+  const originPromise = getGitHubApiRepositoryForRemote(
     repoPath,
-    'upstream',
+    'origin',
     connectionId,
     localGitOptions
+  ).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason })
   )
+  const upstream = (await shouldProbeGitRemote(repoPath, 'upstream', connectionId, localGitOptions))
+    ? await getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions)
+    : null
   if (upstream) {
     return upstream
   }
-  return getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions)
+  const origin = await originPromise
+  if (origin.status === 'rejected') {
+    throw origin.reason
+  }
+  return origin.value
 }
 
 export type GitHubApiRepositoryCandidates = {
@@ -78,14 +89,36 @@ export async function resolveGitHubApiRepositoryCandidates(
   localGitOptions: LocalGitExecOptions = {},
   branchName?: string | null
 ): Promise<GitHubApiRepositoryCandidates> {
-  const [upstream, origin] = await Promise.all([
-    getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions, {
+  const originPromise = getGitHubApiRepositoryForRemote(
+    repoPath,
+    'origin',
+    connectionId,
+    localGitOptions,
+    {
       requireVerifiedSshProbe: true
-    }),
-    getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions, {
-      requireVerifiedSshProbe: true
-    })
+    }
+  ).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason })
+  )
+  const probeUpstream = await shouldProbeGitRemote(
+    repoPath,
+    'upstream',
+    connectionId,
+    localGitOptions
+  )
+  const [upstream, originResult] = await Promise.all([
+    probeUpstream
+      ? getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions, {
+          requireVerifiedSshProbe: true
+        })
+      : null,
+    originPromise
   ])
+  if (originResult.status === 'rejected') {
+    throw originResult.reason
+  }
+  const origin = originResult.value
   const seen = new Set<string>()
   const candidates: GitHubApiRepository[] = []
   for (const candidate of [upstream, origin]) {
