@@ -44,6 +44,7 @@ import {
   isGhAuthenticated,
   isGlabAuthenticated
 } from './agent-forge-detection-probes'
+import { prunePreflightWslCache } from '../preflight-wsl-cache'
 
 export { detectRemoteAgents, detectRemoteForgeClis }
 
@@ -97,6 +98,7 @@ let cached: PreflightStatus | null = null
 // would report "git not installed" until relaunch; expiring lets it self-heal
 // while still collapsing the burst of calls that made this expensive.
 const WSL_PREFLIGHT_CACHE_TTL_MS = 30_000
+const MAX_WSL_PREFLIGHT_DISTRO_ENTRIES = 128
 const cachedByWslDistro = new Map<string, { result: PreflightStatus; expiresAt: number }>()
 // Collapses concurrent callers (several panes mounting at once) onto one probe
 // set instead of one full set each before the first result lands.
@@ -114,10 +116,7 @@ let preflightCacheEpoch = 0
 
 const LOCAL_PREFLIGHT_CACHE_KEY = 'local'
 
-function preflightCacheKey(
-  wslTarget: WslPreflightTarget | null,
-  sshConnectionId?: string
-): string {
+function preflightCacheKey(wslTarget: WslPreflightTarget | null, sshConnectionId?: string): string {
   const runtimeKey = wslTarget ? `wsl:${wslTarget.distro ?? ''}` : LOCAL_PREFLIGHT_CACHE_KEY
   return sshConnectionId ? `${runtimeKey}:ssh:${sshConnectionId}` : runtimeKey
 }
@@ -255,6 +254,12 @@ export async function runPreflightCheck(
   const sshHost = context?.sshHost
   const cacheable = !sshHost
   const cacheKey = preflightCacheKey(wslTarget, sshHost?.connectionId)
+  prunePreflightWslCache(
+    cachedByWslDistro,
+    latestPreflightRun,
+    Date.now(),
+    MAX_WSL_PREFLIGHT_DISTRO_ENTRIES
+  )
 
   if (!force && cacheable) {
     if (wslTarget) {
@@ -289,6 +294,12 @@ export async function runPreflightCheck(
           result,
           expiresAt: Date.now() + WSL_PREFLIGHT_CACHE_TTL_MS
         })
+        prunePreflightWslCache(
+          cachedByWslDistro,
+          latestPreflightRun,
+          Date.now(),
+          MAX_WSL_PREFLIGHT_DISTRO_ENTRIES
+        )
       } else {
         cached = result
       }

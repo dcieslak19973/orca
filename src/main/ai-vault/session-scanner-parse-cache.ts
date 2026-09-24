@@ -78,7 +78,9 @@ function resumableStateFactoryFor(
     case 'hermes':
     case 'cline':
     case 'kimi':
+    case 'muse':
     case 'opencode':
+    case 'opencode2':
     case 'rovo':
       return null
   }

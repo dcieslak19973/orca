@@ -68,6 +68,7 @@ export function structuredHostStub(
     release: vi.fn(() => undefined),
     respondToPrompt: vi.fn(async () => ({ ok: true, replayed: false })),
     setOption: vi.fn(async () => ({ ok: true, replayed: false })),
+    changeThreadGoal: vi.fn(async () => ({ ok: true, replayed: false })),
     requestHandoff: vi.fn(async () => ({ status: { owner: 'native' } })),
     handoffStatus: vi.fn(async () => ({ owner: 'native' })),
     readOptions: vi.fn(async () => ({ models: [], current: { model: 'gpt-live' } })),
@@ -78,6 +79,9 @@ export function structuredHostStub(
       subscriber.emit({ type: 'snapshot', sessions: [] })
       return () => undefined
     }),
+    // No opening emit, unlike the status feed above: a completion is an edge, so this stream
+    // opens empty and a subscriber that was away has missed what passed.
+    subscribeTurnCompletions: vi.fn(() => () => undefined),
     unsubscribe: vi.fn()
   }
 }
