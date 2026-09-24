@@ -372,7 +372,12 @@ function median(values: readonly number[]): number {
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
 }
 
-test.describe('Worktree switch first paint', () => {
+// Linux needs a mapped window for animation frames after reload; run on an isolated display.
+test.describe('Worktree switch first paint @headful', () => {
+  test.skip(
+    process.env.ORCA_BACKGROUND_LAUNCH === '1',
+    'First-paint measurement requires a mapped window'
+  )
   test('repaints an unmounted worktree within the switch budget', async ({
     orcaPage,
     testRepoPath
@@ -471,7 +476,9 @@ test.describe('Worktree switch first paint', () => {
     // runners cannot hold a latency threshold, but "the switch mounted one pane"
     // and "the warm set came back" are exact and are the real regression guards.
     if (process.env.CI) {
-      console.log(`[switch-budget] CI run, latency budget not enforced (median ${median(restored).toFixed(1)}ms)`)
+      console.log(
+        `[switch-budget] CI run, latency budget not enforced (median ${median(restored).toFixed(1)}ms)`
+      )
       return
     }
     expect(median(restored)).toBeLessThanOrEqual(FIRST_PAINT_BUDGET_MS)
