@@ -1,5 +1,5 @@
 import type { ImageSourcePropType } from 'react-native'
-import type { TuiAgent } from '../../../src/shared/types'
+import type { TuiAgent } from '../../../src/shared/tui-agent'
 
 // Why: mobile previously rendered these agent icons from Google's favicon
 // service, which is unreachable in some regions (e.g. mainland China) and
@@ -39,5 +39,7 @@ export const MOBILE_AGENT_ICON_ASSETS: Partial<Record<TuiAgent, ImageSourcePropT
   rovo: require('../../../src/shared/agent-icons/rovo.png'),
   hermes: require('../../../src/shared/agent-icons/hermes.png'),
   devin: require('../../../src/shared/agent-icons/devin.png'),
+  muse: require('../../../src/shared/agent-icons/muse.png'),
+  zcode: require('../../../src/shared/agent-icons/zcode.png'),
   openclaw: require('../../../src/shared/agent-icons/openclaw.png')
 }

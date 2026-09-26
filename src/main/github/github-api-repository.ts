@@ -1,152 +1,42 @@
-import type { GitHubOwnerRepo, IssueSourcePreference } from '../../shared/types'
+import type { GitHubOwnerRepo } from '../../shared/github/pull-request-types'
+import type { IssueSourcePreference } from '../../shared/repo-types'
 import {
   githubRepoIdentityKey,
   isDefaultGitHubHost
-} from '../../shared/github-repository-identity-key'
+} from '../../shared/github/repository-identity-key'
+import { shouldProbeGitRemote } from '../git/remote-name-listing'
+import { ghRepoExecOptions, githubRepoContext, type LocalGitExecOptions } from './gh-utils'
+import { isGitHubHostAuthenticated } from './github-enterprise-repository'
+import { githubHostExecOptions } from './github-repository-host'
 import {
-  getOwnerRepoForRemote,
-  ghRepoExecOptions,
-  githubRepoContext,
-  type LocalGitExecOptions
-} from './gh-utils'
+  isValidGitHubApiRepository,
+  type GitHubApiRepositoryResolution
+} from './github-api-repository-validation'
+import { resolveBranchHeadRepository } from './github-branch-head-remote'
 import {
-  getEnterpriseGitHubRepoSlug,
-  getEnterpriseGitHubRepoSlugForRemote,
-  isGitHubHostAuthenticated
-} from './github-enterprise-repository'
+  _resetOriginGitHubApiRepositoryCache,
+  getGitHubApiRepositoryForRemote,
+  getOriginGitHubApiRepository
+} from './github-api-repository-remote-probe'
 
+export {
+  githubHostExecOptions,
+  githubRepositorySlugArg,
+  githubRepositoryWebHost
+} from './github-repository-host'
 export type GitHubApiRepository = GitHubOwnerRepo
-export type GitHubRepoExecOptions = ReturnType<typeof ghRepoExecOptions> & { host?: string }
+export type GitHubRepoExecOptions = ReturnType<typeof ghRepoExecOptions> & {
+  host?: string
+  env?: NodeJS.ProcessEnv
+}
 export type GitHubRepoExecution = {
   ownerRepo: GitHubApiRepository | null
   ghOptions: GitHubRepoExecOptions
 }
-
-type GitHubApiRepositoryResolution =
-  | GitHubApiRepository
-  | null
-  | undefined
-  | (() => Promise<GitHubApiRepository | null>)
-
-// Why: renderer/RPC repository overrides are interpolated into REST paths.
-// Reject path syntax before an authenticated gh process can target it.
-const GITHUB_OWNER_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/
-const GITHUB_REPO_SLUG_RE = /^[A-Za-z0-9._-]+$/
-
-function isValidGitHubApiRepository(repository: GitHubApiRepository): boolean {
-  return (
-    GITHUB_OWNER_SLUG_RE.test(repository.owner) &&
-    GITHUB_REPO_SLUG_RE.test(repository.repo) &&
-    repository.repo !== '.' &&
-    repository.repo !== '..'
-  )
-}
-
-// Why: the enterprise branch spawns an uncached `git remote get-url` (an SSH
-// round trip on connection-backed repos) — hot paths like per-file contents
-// and viewed-state toggles resolve per call, so cache like ownerRepoCache does.
-const ORIGIN_REPO_CACHE_TTL_MS = 30_000
-const ORIGIN_REPO_CACHE_MAX_ENTRIES = 512
-const originRepoCache = new Map<string, { value: GitHubApiRepository | null; expiresAt: number }>()
-const originRepoInFlight = new Map<string, Promise<GitHubApiRepository | null>>()
-
-function originRepoCacheKey(
-  repoPath: string,
-  remoteName: string,
-  connectionId?: string | null,
-  localGitOptions: LocalGitExecOptions = {}
-): string {
-  return `${connectionId ?? 'local'}\0${localGitOptions.wslDistro ?? ''}\0${repoPath}\0${remoteName}`
-}
-
-/** @internal - exposed for tests only */
-export function _resetOriginGitHubApiRepositoryCache(): void {
-  originRepoCache.clear()
-  originRepoInFlight.clear()
-}
-
-function pruneOriginRepoCache(now: number): void {
-  for (const [key, entry] of originRepoCache) {
-    if (entry.expiresAt <= now) {
-      originRepoCache.delete(key)
-    }
-  }
-  while (originRepoCache.size > ORIGIN_REPO_CACHE_MAX_ENTRIES) {
-    const oldestKey = originRepoCache.keys().next().value
-    if (oldestKey === undefined) {
-      return
-    }
-    originRepoCache.delete(oldestKey)
-  }
-}
-
-/**
- * Host-qualified repository identity for one remote: github.com remotes come
- * from the cached slug parser; any other GitHub-shaped host is auth-gated so a
- * non-GitHub forge never routes to the GitHub provider.
- */
-export async function getGitHubApiRepositoryForRemote(
-  repoPath: string,
-  remoteName: string,
-  connectionId?: string | null,
-  localGitOptions: LocalGitExecOptions = {}
-): Promise<GitHubApiRepository | null> {
-  // Why: generic PR resolution prefers upstream, but this API represents the
-  // caller-selected remote exactly (#7331).
-  const ownerRepo = await getOwnerRepoForRemote(repoPath, remoteName, connectionId, localGitOptions)
-  if (ownerRepo) {
-    return { ...ownerRepo, host: 'github.com' }
-  }
-  const cacheKey = originRepoCacheKey(repoPath, remoteName, connectionId, localGitOptions)
-  const now = Date.now()
-  pruneOriginRepoCache(now)
-  const cached = originRepoCache.get(cacheKey)
-  if (cached && cached.expiresAt > now) {
-    return cached.value
-  }
-  const inFlight = originRepoInFlight.get(cacheKey)
-  if (inFlight) {
-    return inFlight
-  }
-  const probe = (async () => {
-    const enterpriseOptions =
-      Object.keys(localGitOptions).length > 0 ? { localGitExecOptions: localGitOptions } : {}
-    const slug =
-      remoteName === 'origin'
-        ? await getEnterpriseGitHubRepoSlug(repoPath, connectionId, enterpriseOptions)
-        : await getEnterpriseGitHubRepoSlugForRemote(
-            repoPath,
-            remoteName,
-            connectionId,
-            enterpriseOptions
-          )
-    // Why: undefined means the gh auth inventory could not be read. Caching it
-    // as a negative would turn a transient spawn failure into a 30-second miss.
-    if (slug !== undefined) {
-      originRepoCache.set(cacheKey, {
-        value: slug,
-        expiresAt: Date.now() + ORIGIN_REPO_CACHE_TTL_MS
-      })
-      pruneOriginRepoCache(Date.now())
-    }
-    return slug ?? null
-  })()
-  originRepoInFlight.set(cacheKey, probe)
-  try {
-    return await probe
-  } finally {
-    if (originRepoInFlight.get(cacheKey) === probe) {
-      originRepoInFlight.delete(cacheKey)
-    }
-  }
-}
-
-export async function getOriginGitHubApiRepository(
-  repoPath: string,
-  connectionId?: string | null,
-  localGitOptions: LocalGitExecOptions = {}
-): Promise<GitHubApiRepository | null> {
-  return getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions)
+export {
+  _resetOriginGitHubApiRepositoryCache,
+  getGitHubApiRepositoryForRemote,
+  getOriginGitHubApiRepository
 }
 
 /** Hosted mirror of getIssueOwnerRepo: issues prefer `upstream` over `origin`. */
@@ -155,16 +45,26 @@ export async function getIssueGitHubApiRepository(
   connectionId?: string | null,
   localGitOptions: LocalGitExecOptions = {}
 ): Promise<GitHubApiRepository | null> {
-  const upstream = await getGitHubApiRepositoryForRemote(
+  const originPromise = getGitHubApiRepositoryForRemote(
     repoPath,
-    'upstream',
+    'origin',
     connectionId,
     localGitOptions
+  ).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason })
   )
+  const upstream = (await shouldProbeGitRemote(repoPath, 'upstream', connectionId, localGitOptions))
+    ? await getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions)
+    : null
   if (upstream) {
     return upstream
   }
-  return getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions)
+  const origin = await originPromise
+  if (origin.status === 'rejected') {
+    throw origin.reason
+  }
+  return origin.value
 }
 
 export type GitHubApiRepositoryCandidates = {
@@ -172,16 +72,53 @@ export type GitHubApiRepositoryCandidates = {
   headRepo: GitHubApiRepository | null
 }
 
-/** Hosted mirror of resolvePRRepositoryCandidates: upstream first, then origin. */
+/**
+ * Hosted mirror of resolvePRRepositoryCandidates: upstream first, then origin.
+ *
+ * `headRepo` names the repository whose branch a pull request would be opened
+ * from. With `branchName` supplied it is resolved from the remote that actually
+ * holds the branch, so a cross-fork head is filtered on the fork's owner rather
+ * than the canonical repo's (#12956); it is null when no single remote can be
+ * identified, which routes the caller to the head-owner-agnostic lookup that
+ * resolves cross-fork heads on its own. Without `branchName` it stays `origin`,
+ * preserving every caller that is not doing a branch lookup.
+ */
 export async function resolveGitHubApiRepositoryCandidates(
   repoPath: string,
   connectionId?: string | null,
-  localGitOptions: LocalGitExecOptions = {}
+  localGitOptions: LocalGitExecOptions = {},
+  branchName?: string | null
 ): Promise<GitHubApiRepositoryCandidates> {
-  const [upstream, origin] = await Promise.all([
-    getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions),
-    getGitHubApiRepositoryForRemote(repoPath, 'origin', connectionId, localGitOptions)
+  const originPromise = getGitHubApiRepositoryForRemote(
+    repoPath,
+    'origin',
+    connectionId,
+    localGitOptions,
+    {
+      requireVerifiedSshProbe: true
+    }
+  ).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason })
+  )
+  const probeUpstream = await shouldProbeGitRemote(
+    repoPath,
+    'upstream',
+    connectionId,
+    localGitOptions
+  )
+  const [upstream, originResult] = await Promise.all([
+    probeUpstream
+      ? getGitHubApiRepositoryForRemote(repoPath, 'upstream', connectionId, localGitOptions, {
+          requireVerifiedSshProbe: true
+        })
+      : null,
+    originPromise
   ])
+  if (originResult.status === 'rejected') {
+    throw originResult.reason
+  }
+  const origin = originResult.value
   const seen = new Set<string>()
   const candidates: GitHubApiRepository[] = []
   for (const candidate of [upstream, origin]) {
@@ -195,7 +132,13 @@ export async function resolveGitHubApiRepositoryCandidates(
     seen.add(key)
     candidates.push(candidate)
   }
-  return { candidates, headRepo: origin }
+  const headRepo = branchName
+    ? await resolveBranchHeadRepository(
+        { repoPath, branchName, connectionId, localGitOptions },
+        (remote) => getGitHubApiRepositoryForRemote(repoPath, remote, connectionId, localGitOptions)
+      )
+    : origin
+  return { candidates, headRepo }
 }
 
 export type ResolvedGitHubApiRepositorySource = {
@@ -291,15 +234,6 @@ export async function resolveGitHubApiRepository(
   return null
 }
 
-// Why: the gh runner host-qualifies argv from `options.host`, so every known
-// host must be carried through. Pinning github.com prevents a process-level
-// GH_HOST from silently redirecting an otherwise unambiguous API request.
-export function githubHostExecOptions(repository: GitHubApiRepository | null | undefined): {
-  host?: string
-} {
-  return repository?.host ? { host: repository.host } : {}
-}
-
 export async function resolveGitHubRepoExecution(
   repoPath: string,
   repository?: GitHubApiRepositoryResolution,
@@ -327,20 +261,4 @@ export async function resolveGitHubRepoExecution(
       ...githubHostExecOptions(ownerRepo)
     }
   }
-}
-
-export function githubRepositoryWebHost(repository: GitHubApiRepository): string {
-  return repository.host ?? 'github.com'
-}
-
-/**
- * Positional `HOST/OWNER/REPO` argv value (e.g. `gh repo view <slug>`).
- * Positional slugs bypass the runner's `--repo` qualifier, so they must be
- * qualified here whenever the host is known.
- */
-export function githubRepositorySlugArg(repository: GitHubApiRepository): string {
-  const slug = `${repository.owner}/${repository.repo}`
-  // Why: github.com must be explicit too; otherwise process-level GH_HOST can
-  // redirect positional `gh repo view OWNER/REPO` calls to an Enterprise host.
-  return repository.host ? `${repository.host}/${slug}` : slug
 }

@@ -232,3 +232,14 @@ describe('terminal.sendText explicit worktree routing', () => {
     expect(delegate.listTerminals).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('terminal.sendText', () => {
+  it('returns the runtime send acceptance', async () => {
+    const { delegate, services } = createTerminalHarness(['terminal:local:one'])
+
+    const outcome = await sendTerminalText(services, 'terminal:local:one')
+
+    expect(outcome).toEqual({ ok: true, value: { accepted: true } })
+    expect(delegate.sendTerminal).toHaveBeenCalledTimes(1)
+  })
+})
