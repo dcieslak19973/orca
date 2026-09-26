@@ -1,5 +1,5 @@
 import type { ITerminalInitOnlyOptions, ITerminalOptions, ITheme } from '@xterm/xterm'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import type { DashboardCardTerminalInput } from '../../../../shared/dashboard-snapshot'
 import { resolveTerminalFontWeights } from '../../../../shared/terminal-fonts'
 import { normalizeTerminalLineHeight } from '../../../../shared/terminal-line-height-settings'
@@ -10,7 +10,7 @@ import {
   resolveTerminalCursorInactiveStyle
 } from '@/lib/pane-manager/pane-terminal-options'
 import { buildLocalConptyTerminalOptions } from '@/lib/pane-manager/windows-pty-compatibility'
-import { buildFontFamily } from '@/components/terminal-pane/layout-serialization'
+import { buildFontFamily } from '@/lib/monospace-font-family'
 import { resolveTerminalMinimumContrastRatio } from '@/lib/terminal-contrast-correction'
 
 /** Options a live settings change can write onto an open preview terminal. */
@@ -80,7 +80,8 @@ export function buildPreviewTerminalOptions(args: {
     theme: args.theme ?? undefined,
     minimumContrastRatio: resolveTerminalMinimumContrastRatio(
       args.theme?.background,
-      args.themeMode
+      args.themeMode,
+      args.settings?.terminalMinimumContrastRatio
     )
   }
 }

@@ -2,7 +2,7 @@ import { normalizeRuntimePathForComparison } from './cross-platform-path'
 import {
   createWorktreeVisibilitySourceMatcher,
   type WorktreeVisibilitySourceMatcher
-} from './worktree-visibility-sources'
+} from './worktree/visibility-sources'
 
 /** Why: agent CLIs reserve these repo-root paths for scratch; broader matches
  *  can hide legitimate user worktrees (#9388). */
@@ -14,20 +14,32 @@ const AGENT_SCRATCH_PATH_PREFIXES: readonly (readonly string[])[] = [
 export type AgentScratchWorktreePathMatcher = (worktreePath: string) => boolean
 
 export function createAgentScratchWorktreeSourceMatcher(
-  checkoutPaths: readonly string[]
+  checkoutPaths: readonly string[],
+  configuredWorktreeBasePaths: readonly string[]
 ): WorktreeVisibilitySourceMatcher {
-  return createWorktreeVisibilitySourceMatcher(checkoutPaths)
+  return createWorktreeVisibilitySourceMatcher(checkoutPaths, [], configuredWorktreeBasePaths)
 }
 
 export function createAgentScratchWorktreePathMatcher(
-  checkoutPaths: readonly string[]
+  checkoutPaths: readonly string[],
+  configuredWorktreeBasePaths: readonly string[]
 ): AgentScratchWorktreePathMatcher {
-  const classify = createAgentScratchWorktreeSourceMatcher(checkoutPaths)
+  const classify = createAgentScratchWorktreeSourceMatcher(
+    checkoutPaths,
+    configuredWorktreeBasePaths
+  )
   return (worktreePath) => classify(worktreePath)?.kind === 'built-in'
 }
 
-export function isAgentScratchWorktreePath(repoPath: string, worktreePath: string): boolean {
-  return createAgentScratchWorktreePathMatcher([repoPath])(worktreePath)
+export function isAgentScratchWorktreePath(
+  repoPath: string,
+  worktreePath: string,
+  configuredWorktreeBasePaths: readonly string[]
+): boolean {
+  return createAgentScratchWorktreePathMatcher(
+    [repoPath],
+    configuredWorktreeBasePaths
+  )(worktreePath)
 }
 
 /** Why: agent CLIs also mint whole scratch *repos* under these containers; a
