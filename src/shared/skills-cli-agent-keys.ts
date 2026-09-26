@@ -1,4 +1,4 @@
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
 
 /**
  * The community `skills` CLI's own `--agent` key for each agent Orca detects.
@@ -19,6 +19,7 @@ export const SKILLS_CLI_AGENT_KEY_BY_TUI_AGENT = {
   codex: 'codex',
   autohand: 'autohand-code',
   opencode: 'opencode',
+  opencode2: 'opencode',
   'mimo-code': null,
   pi: 'pi',
   omp: null,
@@ -49,7 +50,9 @@ export const SKILLS_CLI_AGENT_KEY_BY_TUI_AGENT = {
   devin: 'devin',
   ante: null,
   // Why: Orca detects trae by `traecli`, an alias only TRAE CN ships.
-  trae: 'trae-cn'
+  trae: 'trae-cn',
+  muse: null,
+  zcode: 'zcode'
 } satisfies Record<TuiAgent, string | null>
 
 /**
@@ -68,7 +71,7 @@ export const SKILLS_CLI_UNIVERSAL_AGENT_KEY = 'universal'
  * emptiness. An unknown-but-plausible key is left to the CLI, which rejects it
  * loudly with its own valid list before writing anything.
  */
-export function isSkillsCliAgentKeyShaped(value: string): boolean {
+export function isUsableSkillsCliAgentKey(value: string): boolean {
   return /^(?:\*|[a-z0-9][a-z0-9.-]*)$/i.test(value)
 }
 
