@@ -4,10 +4,7 @@
 // truncate without splitting surrogate pairs. Extracted from
 // agent-status-types.ts, which owns the payload shapes and per-field caps.
 
-import {
-  compactDispatchPromptForStatus,
-  isOrcaDispatchStatusPrompt
-} from './orca-dispatch-status-prompt'
+import { compactDispatchPromptForStatus } from './orca-dispatch-status-prompt'
 
 /** Maximum character length for the prompt field. Truncated on parse. */
 export const AGENT_STATUS_MAX_FIELD_LENGTH = 200
@@ -45,14 +42,13 @@ export function normalizePromptField(value: unknown): string {
   if (typeof value !== 'string') {
     return ''
   }
-  if (isOrcaDispatchStatusPrompt(value)) {
-    return compactDispatchPromptForStatus(
+  return (
+    compactDispatchPromptForStatus(
       value,
       AGENT_STATUS_MAX_FIELD_LENGTH,
       normalizeSingleLinePreview
-    )
-  }
-  return normalizeSingleLinePreview(value, AGENT_STATUS_MAX_FIELD_LENGTH)
+    ) ?? normalizeSingleLinePreview(value, AGENT_STATUS_MAX_FIELD_LENGTH)
+  )
 }
 
 function normalizeSingleLinePreview(value: string, maxLength: number): string {
@@ -210,4 +206,12 @@ export function normalizeOptionalMultilineField(
   }
   const normalized = normalizeMultilineField(value, maxLength)
   return normalized.length > 0 ? normalized : undefined
+}
+
+/** Keep a lead turn's end time only on the gated `working` row and that turn's later all-clear `done`. */
+export function normalizeTurnCompletedAtField(value: unknown, state: string): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined
+  }
+  return state === 'working' || state === 'done' ? value : undefined
 }

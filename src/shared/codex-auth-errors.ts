@@ -1,3 +1,12 @@
+// API-key homes cannot read ChatGPT rate limits, but the error still skips the PTY probe.
+const CODEX_API_KEY_RATE_LIMIT_ERROR_RE = /chatgpt authentication required/i
+
+/** Carries the sign-in link of an in-flight `codex login` from main to every window. */
+export const CODEX_PENDING_LOGIN_URL_CHANGED_CHANNEL = 'codexAccounts:pendingLoginUrlChanged'
+
+/** The rejection a cancelled `codex login` produces; the Accounts pane reads it to keep a cancellation out of the error toast. */
+export const CODEX_LOGIN_CANCELLED_MESSAGE = 'Codex sign-in was cancelled.'
+
 const CODEX_AUTH_ERROR_PATTERNS = [
   /access token could not be refreshed/i,
   /authentication session could not be refreshed/i,
@@ -12,7 +21,7 @@ const CODEX_AUTH_ERROR_PATTERNS = [
   // Why: app-server rejects account/rateLimits/read with this when auth.json
   // holds only an API key; without classification the fetcher falls through to
   // a hidden PTY probe that can only time out (15s) on every refresh.
-  /chatgpt authentication required/i
+  CODEX_API_KEY_RATE_LIMIT_ERROR_RE
 ]
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[a-zA-Z]`, 'g')
 
@@ -22,6 +31,16 @@ export function isCodexAuthError(error: string | null | undefined): boolean {
     return false
   }
   return CODEX_AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+}
+
+/** True only for the ChatGPT-usage rejection an API-key home always returns, which
+ *  callers use to separate "cannot read ChatGPT limits" from a real stale sign-in. */
+export function isCodexApiKeyRateLimitError(error: string | null | undefined): boolean {
+  const message = error?.trim()
+  if (!message) {
+    return false
+  }
+  return CODEX_API_KEY_RATE_LIMIT_ERROR_RE.test(message)
 }
 
 export function extractCodexAuthError(output: string | null | undefined): string | null {
