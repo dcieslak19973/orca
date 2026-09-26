@@ -79,6 +79,7 @@ import { rateLimitsApi } from './api/rate-limits-bridge'
 import { consoleApi } from './api/console-bridge'
 import { minimaxCredentialsApi } from './api/minimax-credentials-bridge'
 import { grokAccountsApi } from './api/grok-accounts-bridge'
+import { cursorAccountsApi } from './api/cursor-accounts-bridge'
 import { sshApi } from './api/ssh-bridge'
 import { automationsApi } from './api/automations-bridge'
 import { e2eApi } from './api/e2e-bridge'
@@ -179,6 +180,7 @@ const api = {
   console: consoleApi,
   minimaxCredentials: minimaxCredentialsApi,
   grokAccounts: grokAccountsApi,
+  cursorAccounts: cursorAccountsApi,
   ssh: sshApi,
   automations: automationsApi,
   e2e: e2eApi,
